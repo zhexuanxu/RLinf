@@ -154,6 +154,11 @@ class BehaviorEnv(gym.Env):
         self.logger = get_logger()
 
         self.auto_reset = cfg.auto_reset
+        self.max_episode_steps = cfg.max_episode_steps
+        # Per-env step counter for enforcing truncation.  OmniGibson's
+        # Timeout condition has an off-by-one (_current_step is checked
+        # before increment), so we enforce truncation here.
+        self._step_count = torch.zeros(num_envs, dtype=torch.long, device=self.device)
         if self.record_metrics:
             self._init_metrics()
         self._init_env()
@@ -255,6 +260,7 @@ class BehaviorEnv(gym.Env):
         rewards = torch.zeros(self.num_envs, dtype=bool)
         infos = self._record_metrics(rewards, infos)
         self._reset_metrics()
+        self._step_count[:] = 0
         return obs, infos
 
     def step(
@@ -305,6 +311,17 @@ class BehaviorEnv(gym.Env):
             obs_list.append(self._wrap_obs(raw_obs_list[i]))
             infos_list.append(infos)
 
+        # Track steps and enforce truncation at max_episode_steps.
+        # OmniGibson's Timeout has an off-by-one (_current_step is checked
+        # before increment in _post_step), so its timeout fires one step
+        # late.  We enforce truncation here based on our own step count.
+        self._step_count += chunk_size
+        forced_truncation = (self._step_count >= self.max_episode_steps).cpu()
+        if forced_truncation.any():
+            raw_truncations_list[-1] = torch.logical_or(
+                raw_truncations_list[-1], forced_truncation
+            )
+
         chunk_rewards = torch.stack(raw_rewards_list, dim=1)  # [num_envs, chunk_steps]
         raw_terminations = torch.stack(
             raw_terminations_list, dim=1
@@ -322,15 +339,29 @@ class BehaviorEnv(gym.Env):
         # `terminations|truncations`, so we fall back to info-done here.
         #
         # `raw_infos_list[i]` is a list of per-env info dicts for chunk step i.
+        # NOTE: OmniGibson's `info["done"]` is a **dict** (not a bool), e.g.
+        # {"success": False, "termination_conditions": {"timeout": {"done": ...}, ...}}.
+        # A non-empty dict is always truthy, so `bool(info["done"])` would be
+        # True every step. We must inspect the termination_conditions instead.
         info_done_flags = []
         for i in range(chunk_size):
             step_infos = raw_infos_list[i]
             step_done = [
-                bool(info.get("done", {})) if isinstance(info, dict) else False
+                self._extract_info_done(info) if isinstance(info, dict) else False
                 for info in step_infos
             ]
             info_done_flags.append(torch.tensor(step_done, dtype=torch.bool))
         past_info_dones = torch.stack(info_done_flags, dim=1).any(dim=1)
+
+        ######
+        raw_dones = past_terminations | past_truncations
+        mismatch = raw_dones & ~past_info_dones
+        if mismatch.any():
+            self.logger.warning(
+                "terminations|truncations is True but info-done is False for envs %s. "
+                "This may indicate an inconsistency in OmniGibson's termination reporting.",
+                mismatch.nonzero(as_tuple=True)[0].tolist(),
+            )        
 
         # If the config asks to ignore terminations, map info-done into
         # truncations; otherwise map it into terminations.
@@ -364,7 +395,7 @@ class BehaviorEnv(gym.Env):
 
     @property
     def elapsed_steps(self):
-        return torch.tensor(self.cfg.max_episode_steps)
+        return self._step_count
 
     @property
     def is_start(self):
@@ -408,13 +439,17 @@ class BehaviorEnv(gym.Env):
                 "episode_length": info.get("episode_length", 0),
             }
             self.returns[env_idx] += reward
-            if "success" in info:
-                self.success_once[env_idx] = (
-                    self.success_once[env_idx] | info["success"]
-                )
-                episode_info["success_once"] = self.success_once[env_idx].clone()
-            if "fail" in info:
-                self.fail_once[env_idx] = self.fail_once[env_idx] | info["fail"]
+            # OmniGibson stores success/fail under info["done"]["success"]
+            # (a dict), not as top-level info keys.  Extract from both
+            # locations for compatibility.
+            done_dict = info.get("done", {}) if isinstance(info.get("done"), dict) else {}
+            step_success = done_dict.get("success", False) or info.get("success", False)
+            self.success_once[env_idx] = self.success_once[env_idx] | step_success
+            episode_info["success_once"] = self.success_once[env_idx].clone()
+
+            step_fail = done_dict.get("fail", False) or info.get("fail", False)
+            if step_fail:
+                self.fail_once[env_idx] = self.fail_once[env_idx] | step_fail
                 episode_info["fail_once"] = self.fail_once[env_idx].clone()
             episode_info["return"] = self.returns[env_idx].clone()
             episode_info["episode_len"] = self.elapsed_steps.clone()
@@ -428,6 +463,39 @@ class BehaviorEnv(gym.Env):
 
         infos = {"episode": to_tensor(list_of_dict_to_dict_of_list(info_lists))}
         return infos
+
+    @staticmethod
+    def _extract_info_done(info: dict) -> bool:
+        """Extract a boolean done flag from an OmniGibson info dict.
+
+        OmniGibson's ``info["done"]`` is a dict like
+        ``{"success": bool, "termination_conditions": {name: {"done": bool, ...}, ...}}``.
+        A non-empty dict is always truthy, so ``bool(info["done"])`` would be
+        ``True`` every step.  Instead we check whether any termination condition
+        actually fired.  If ``info["done"]`` is already a plain boolean (future
+        OG versions or other envs), use it directly.
+        """
+        done_val = info.get("done")
+        if done_val is None:
+            return False
+        if isinstance(done_val, bool):
+            return done_val
+        if isinstance(done_val, dict):
+            assert "termination_conditions" in done_val or "success" in done_val, (
+                f"Unexpected info['done'] dict structure: keys={list(done_val.keys())}. "
+                f"Expected 'termination_conditions' or 'success' key."
+            )
+            # Check termination_conditions → any {"done": True}.
+            tc = done_val.get("termination_conditions", {})
+            if tc:
+                return any(
+                    v.get("done", False) if isinstance(v, dict) else bool(v)
+                    for v in tc.values()
+                )
+            # Fallback: check top-level "success" (True → episode done).
+            return bool(done_val.get("success", False))
+        # Unknown type — coerce to bool as a last resort.
+        return bool(done_val)
 
     def _handle_auto_reset(self, dones, extracted_obs, infos):
         final_obs = extracted_obs.copy()

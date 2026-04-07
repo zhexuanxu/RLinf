@@ -38,6 +38,11 @@ def get_model(cfg: DictConfig):
         from rlinf.models.embodiment.flow_policy import get_model
     elif model_type == SupportedModel.LINGBOTVLA:
         from rlinf.models.embodiment.lingbotvla import get_model
+    elif model_type in (
+        SupportedModel.QWEN2_5_VL_EMBODIED,
+        SupportedModel.QWEN3_VL_EMBODIED,
+    ):
+        from rlinf.models.embodiment.VLM import get_model
     else:
         return None
 

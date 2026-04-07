@@ -1,3 +1,11 @@
+# Dual-system (VLM + VLA) embodied eval config.
+#
+# Extends behavior_ppo_openpi_pi05.yaml with:
+#   - vlm: Qwen2.5-VL model settings (loaded on the rollout GPU alongside VLA)
+#
+# The VLM and VLA share the rollout GPU — no separate "agentloop" component.
+# The standard `actor, env, rollout` placement is used.
+
 defaults:
   - env/behavior_r1pro@env.train
   - env/behavior_r1pro@env.eval
@@ -15,20 +23,21 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor,env,rollout: all
+    actor,env: 0-1
+    rollout: 2-3
 
 runner:
   task_type: embodied
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "behavior_openpi05"
+    experiment_name: "qwen2.5"
     logger_backends: ["tensorboard"]
 
-  max_epochs: 1000
+  max_epochs: 1
   max_steps: -1
 
-  only_eval: False
+  only_eval: True
   val_check_interval: -1
   save_interval: 40
   seq_length: 4096
@@ -41,8 +50,8 @@ algorithm:
   normalize_advantages: True
   kl_penalty: kl
   group_size: 1
-  rollout_epoch: 8
-  eval_rollout_epoch: 2
+  rollout_epoch: 16
+  eval_rollout_epoch: 64
 
   reward_type: chunk_level
   logprob_type: token_level
@@ -79,13 +88,13 @@ env:
   group_name: "EnvGroup"
 
   train:
-    total_num_envs: 4
-    max_episode_steps: 3000
-    max_steps_per_rollout_epoch: 3000
+    total_num_envs: 2
+    max_episode_steps: 4096
+    max_steps_per_rollout_epoch: 4096
   eval:
-    total_num_envs: 4
-    max_episode_steps: 3200
-    max_steps_per_rollout_epoch: 3200
+    total_num_envs: 2
+    max_episode_steps: 4096
+    max_steps_per_rollout_epoch: 4096
     video_cfg:
       save_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
@@ -99,6 +108,35 @@ rollout:
   model:
     model_path: /mnt/public/daibo/models/pi05_b1kpt50_pt
     precision: ${actor.model.precision}
+
+# VLM (Qwen2.5-VL) settings — loaded on the rollout GPU alongside the VLA.
+vlm:
+  log_subtasks: False
+  # Enable MEM-style language memory (pi_HL(l, m | o, m_prev, g)).
+  # When False, the VLM outputs only a subtask (memoryless mode).
+  enable_memory: True
+  # Number of observation images to save per trajectory (-1 = all, 0 = none).
+  k_images: -1
+
+  # VLM generation / sampling parameters.
+  sampling_params:
+    do_sample: True
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    repetition_penalty: 1.0
+    max_new_tokens: 512
+
+  model:
+    model_type: "qwen2.5_vl_embodied"
+    model_path: /mnt/public/new_fuxu/Qwen2.5-VL-3B-Instruct
+    # model_type: "qwen3_vl_embodied"
+    # model_path: /mnt/public/xzxuan/models/Qwen3-VL-4B-Thinking    
+    precision: "bf16"
+    is_lora: False
+    # Qwen2.5-VL image resolution hints (controls visual token count).
+    min_pixels: 3136    # 56 * 56
+    max_pixels: 12845056  # 1280 * 28 * 28
 
 actor:
   group_name: "ActorGroup"

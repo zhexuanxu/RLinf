@@ -18,6 +18,7 @@ import hydra
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf
 
+from rlinf.agents.dualsystem.eval_runner import DualSystemEvalRunner
 from rlinf.config import validate_cfg
 from rlinf.runners.embodied_eval_runner import EmbodiedEvalRunner
 from rlinf.scheduler import Cluster
@@ -50,7 +51,8 @@ def main(cfg) -> None:
         cluster, name=cfg.env.group_name, placement_strategy=env_placement
     )
 
-    runner = EmbodiedEvalRunner(
+    runner_cls = DualSystemEvalRunner if cfg.get("vlm") else EmbodiedEvalRunner
+    runner = runner_cls(
         cfg=cfg,
         rollout=rollout_group,
         env=env_group,

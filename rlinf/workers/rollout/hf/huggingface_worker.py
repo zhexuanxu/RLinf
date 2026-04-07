@@ -145,8 +145,44 @@ class MultiStepRolloutWorker(Worker):
         self.log_info(f"Rollout worker initialized with dst_ranks: {self.dst_ranks}")
         self.log_info(f"Rollout worker initialized with src_ranks: {self.src_ranks}")
         self.setup_sample_params()
+
+        # Dual-system agentloop: load VLM and create agentloop if configured.
+        # Must be after setup_sample_params() so _vlm_sampling_params is available.
+        self.agentloop = None
+        if self.cfg.get("vlm", None) is not None:
+            self._init_vlm()
+
         if self.enable_offload:
             self.offload_model()
+
+    def _init_vlm(self):
+        """Load the VLM model and create the DualSystemAgentLoop.
+
+        Called from ``init_worker`` when ``cfg.vlm`` is present.  The VLM and
+        VLA (``self.hf_model``) share the same rollout GPU.
+        """
+        from rlinf.agents.dualsystem import DualSystemAgentLoop
+
+        vlm_model_config = copy.deepcopy(self.cfg.vlm.model)
+        vlm_model = get_model(vlm_model_config)
+        vlm_model.to(self.device)
+        vlm_model.eval()
+
+        vlm_cfg = self.cfg.vlm
+        log_subtasks = vlm_cfg.get("log_subtasks", False)
+        enable_memory = vlm_cfg.get("enable_memory", False)
+
+        self.agentloop = DualSystemAgentLoop(
+            vlm_model=vlm_model,
+            vla_model=self.hf_model,
+            log_subtasks=log_subtasks,
+            enable_memory=enable_memory,
+            vlm_sampling_params=self._vlm_sampling_params,
+        )
+        self.log_info(
+            f"DualSystemAgentLoop initialized (VLM + VLA on rollout GPU, "
+            f"memory={enable_memory})."
+        )
 
     def setup_sample_params(self):
         # length parameters for rollout
@@ -187,6 +223,17 @@ class MultiStepRolloutWorker(Worker):
                 "beta_decay": self.cfg.algorithm.get("dagger", {}).get(
                     "beta_decay", 0.99
                 ),
+            }
+
+        # VLM sampling parameters (used by the dual-system agentloop).
+        if self.cfg.get("vlm", None) is not None:
+            self._vlm_sampling_params = {
+                "do_sample": self.cfg.vlm.get("sampling_params", {}).get("do_sample", True),
+                "temperature": self.cfg.vlm.get("sampling_params", {}).get("temperature", 1.0),
+                "top_p": self.cfg.vlm.get("sampling_params", {}).get("top_p", 1.0),
+                "top_k": self.cfg.vlm.get("sampling_params", {}).get("top_k", 20),
+                "repetition_penalty": self.cfg.vlm.get("sampling_params", {}).get("repetition_penalty", 1.0),
+                "max_new_tokens": self.cfg.vlm.get("sampling_params", {}).get("max_new_tokens", 512),
             }
 
     def update_dagger_beta(self):
@@ -265,6 +312,15 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.MLP_POLICY,
         ]:
             kwargs["return_obs"] = not hasattr(self.hf_model, "q_head")
+
+        # Dual-system agentloop path: reuses the same kwargs computed above
+        # so the VLA call is fully consistent with the standard path.
+        if self.agentloop is not None:
+            actions, result = self.agentloop.run_step(
+                env_obs, mode=mode, vla_kwargs=kwargs
+            )
+            result["expert_label_flag"] = False
+            return actions, result
 
         only_save_expert = self.cfg.algorithm.get("dagger", {}).get(
             "only_save_expert", True
@@ -417,28 +473,68 @@ class MultiStepRolloutWorker(Worker):
     async def evaluate(self, input_channel: Channel, output_channel: Channel):
         if self.enable_offload:
             self.reload_model()
-        for _ in tqdm(
+
+        eval_trajectory: list[dict[str, Any]] = []
+        auto_reset = self.cfg.env.eval.get("auto_reset", False)
+
+        for eval_epoch_idx in tqdm(
             range(self.cfg.algorithm.eval_rollout_epoch),
             desc="Evaluating Rollout Epochs",
             disable=(self._rank != 0),
         ):
+            # Reset agentloop memory when the env is reset.  The env worker
+            # resets the environment only when ``not auto_reset or epoch == 0``
+            # (see env_worker.evaluate).  We mirror that condition so memory
+            # is not cleared mid-episode when auto_reset is active.
+            if self.agentloop is not None:
+                if not auto_reset or eval_epoch_idx == 0:
+                    self.agentloop.reset_memory()
+
             for _ in range(self.n_eval_chunk_steps):
                 for _ in range(self.num_pipeline_stages):
                     env_output = await self.recv_env_output(input_channel, mode="eval")
-                    actions, _ = self.predict(env_output["obs"], mode="eval")
+
+                    if self.agentloop is not None:
+                        # Reset memory for environments that just auto-reset
+                        # BEFORE predict — the obs is already from the new
+                        # episode so VLM must start with clean memory.
+                        dones = env_output.get("dones")
+                        if dones is not None and dones.any():
+                            self.agentloop.reset_memory_for_envs(dones)
+
+                    actions, result = self.predict(env_output["obs"], mode="eval")
                     self.send_chunk_actions(output_channel, actions, mode="eval")
+
+                    if self.agentloop is not None:
+                        step_record = {
+                            "obs": env_output["obs"],
+                            "actions": actions.cpu(),
+                            "subtasks": result.get("subtasks"),
+                            "memories": result.get("memories"),
+                            "vlm_inputs": result.get("vlm_inputs"),
+                            "vlm_outputs": result.get("vlm_outputs"),
+                        }
+                        eval_trajectory.append(step_record)
 
         if self.enable_offload:
             self.offload_model()
+
+        if self.agentloop is not None and eval_trajectory:
+            return eval_trajectory
+        return None
 
     def offload_model(self):
         if self.enable_cuda_graph:
             self.hf_model.release_cuda_graph()
         self.hf_model.to("cpu")
+        if self.agentloop is not None:
+            self.agentloop.vlm_model.to("cpu")
         self.torch_platform.empty_cache()
 
     def reload_model(self):
         self.hf_model.to(self.device)
+        if self.agentloop is not None:
+            self.agentloop.vlm_model.to(self.device)
         if self.enable_cuda_graph:
             self.hf_model.capture_cuda_graph(
                 train_batch_size=self.train_batch_size,
@@ -543,7 +639,16 @@ class MultiStepRolloutWorker(Worker):
             ]
             merged_final_obs = _merge_obs_dicts(final_obs_or_obs)
 
-        return {"obs": merged_obs, "final_obs": merged_final_obs}
+        # Merge optional dones tensor (present in eval mode for memory reset).
+        dones_list = [obs_batch.get("dones", None) for obs_batch in obs_batches]
+        if any(d is not None for d in dones_list):
+            merged_dones = torch.cat(
+                [d for d in dones_list if d is not None], dim=0
+            )
+        else:
+            merged_dones = None
+
+        return {"obs": merged_obs, "final_obs": merged_final_obs, "dones": merged_dones}
 
     def send_chunk_actions(
         self,

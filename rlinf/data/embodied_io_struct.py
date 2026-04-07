@@ -342,6 +342,9 @@ class ChunkStepResult:
     forward_inputs: dict[str, torch.Tensor] = field(default_factory=dict)
     versions: torch.Tensor = None  # [B, 1]
 
+    # Dual-system agentloop fields (VLM subtask generation)
+    subtasks: Optional[list] = None  # [B] VLM-generated subtask strings
+
     def __post_init__(self):
         if self.actions is not None:
             self.actions = self.actions.cpu().contiguous()
@@ -384,6 +387,10 @@ class Trajectory:
 
     curr_obs: dict[str, Any] = field(default_factory=dict)
     next_obs: dict[str, Any] = field(default_factory=dict)
+
+    # Dual-system agentloop: VLM-generated subtasks per step.
+    # list of length traj_length; each element is a list[str] of length B.
+    subtasks: list = field(default_factory=list)
 
     @staticmethod
     def _generate_field_mask(
@@ -532,6 +539,9 @@ class EmbodiedRolloutResult:
     curr_obs: list[dict[str, Any]] = field(default_factory=list)  # trajectory_length
     next_obs: list[dict[str, Any]] = field(default_factory=list)  # trajectory_length
 
+    # Dual-system agentloop: VLM-generated subtasks per step.
+    subtasks: list[list] = field(default_factory=list)  # trajectory_length
+
     def append_step_result(self, result: ChunkStepResult):
         if result.actions is not None:
             self.actions.append(result.actions)
@@ -554,6 +564,8 @@ class EmbodiedRolloutResult:
             self.versions.append(result.versions)
         if result.forward_inputs:
             self.forward_inputs.append(result.forward_inputs)
+        if result.subtasks is not None:
+            self.subtasks.append(result.subtasks)
 
     def mark_last_step_with_flags(self, save_flags: torch.Tensor):
         if not self.intervene_flags:
@@ -670,6 +682,9 @@ class EmbodiedRolloutResult:
             trajectory.next_obs = stack_list_of_dict_tensor(self.next_obs)
             for key in trajectory.next_obs.keys():
                 trajectory.next_obs[key] = trajectory.next_obs[key].cpu().contiguous()
+
+        if len(self.subtasks) > 0:
+            trajectory.subtasks = list(self.subtasks)
 
         trajectory.model_weights_id = get_model_weights_id(
             trajectory.versions

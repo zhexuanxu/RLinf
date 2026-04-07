@@ -80,6 +80,10 @@ class EnvWorker(Worker):
         )
         self.actor_split_num = self.get_actor_split_num()
 
+        # Per-stage tracking of which envs were done in the previous eval
+        # chunk, used to detect *newly* completed episodes (rising-edge).
+        self._prev_eval_dones: list[torch.Tensor | None] = [None] * self.stage_num
+
     def init_worker(self):
         self.dst_ranks = {
             "train": self._setup_dst_ranks(
@@ -345,20 +349,36 @@ class EnvWorker(Worker):
             infos = infos_list[-1] if infos_list else None
         chunk_dones = torch.logical_or(chunk_terminations, chunk_truncations)
 
-        if chunk_dones.any():
-            if "episode" in infos:
-                for key in infos["episode"]:
-                    env_info[key] = infos["episode"][key].cpu()
+        # Rising-edge detection: only collect metrics for envs that
+        # *just* completed (transition from not-done → done).  Without
+        # this, metrics would be collected repeatedly for the same
+        # episode on every subsequent chunk after termination.
+        current_dones = chunk_dones[:, -1]  # [num_envs] bool
+        prev = self._prev_eval_dones[stage_id]
+        if prev is None:
+            prev = torch.zeros_like(current_dones)
+        newly_done = current_dones & ~prev
+        self._prev_eval_dones[stage_id] = current_dones.clone()
+
+        if newly_done.any():
+            # Prefer final_info (pre-reset metrics from auto-reset) over
+            # episode (which may contain post-reset zeros).
             if "final_info" in infos:
                 final_info = infos["final_info"]
                 for key in final_info["episode"]:
-                    env_info[key] = final_info["episode"][key][chunk_dones[:, -1]].cpu()
+                    env_info[key] = final_info["episode"][key][newly_done].cpu()
+            elif "episode" in infos:
+                for key in infos["episode"]:
+                    env_info[key] = infos["episode"][key][newly_done].cpu()
+            env_info["_num_completed"] = torch.tensor([newly_done.sum().item()])
+            self.log_info(f"env info {env_info}")
 
         env_output = EnvOutput(
             obs=extracted_obs,
             final_obs=infos["final_observation"]
             if "final_observation" in infos
             else None,
+            dones=chunk_dones,
         )
         return env_output, env_info
 
@@ -814,6 +834,7 @@ class EnvWorker(Worker):
             if not self.cfg.env.eval.auto_reset or eval_rollout_epoch == 0:
                 for stage_id in range(self.stage_num):
                     self.eval_env_list[stage_id].is_start = True
+                    self._prev_eval_dones[stage_id] = None
                     extracted_obs, infos = self.eval_env_list[stage_id].reset()
                     env_output = EnvOutput(
                         obs=extracted_obs,
@@ -859,6 +880,7 @@ class EnvWorker(Worker):
                         {
                             "obs": env_batch["obs"],
                             "final_obs": env_batch["final_obs"],
+                            "dones": env_batch["dones"],
                         },
                         mode="eval",
                     )
