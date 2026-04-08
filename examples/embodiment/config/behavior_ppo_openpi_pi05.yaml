@@ -84,8 +84,8 @@ env:
     max_steps_per_rollout_epoch: 3000
   eval:
     total_num_envs: 4
-    max_episode_steps: 3200
-    max_steps_per_rollout_epoch: 3200
+    max_episode_steps: 4096
+    max_steps_per_rollout_epoch: 4096
     video_cfg:
       save_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
