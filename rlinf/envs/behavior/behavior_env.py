@@ -406,9 +406,6 @@ class BehaviorEnv(gym.Env):
         self.success_once = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.bool
         )
-        self.fail_once = torch.zeros(
-            self.num_envs, device=self.device, dtype=torch.bool
-        )
         self.returns = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float32
         )
@@ -425,29 +422,22 @@ class BehaviorEnv(gym.Env):
         self.prev_step_reward[mask] = 0.0
         if self.record_metrics:
             self.success_once[mask] = False
-            self.fail_once[mask] = False
             self.returns[mask] = 0
 
     def _record_metrics(self, rewards, infos):
         info_lists = []
         for env_idx, (reward, info) in enumerate(zip(rewards, infos)):
+            done_dict = info.get("done", {})
             episode_info = {
-                "success": info.get("done", {}).get("success", False),
+                "success": done_dict.get("success", False),
                 "episode_length": info.get("episode_length", 0),
             }
             self.returns[env_idx] += reward
-            # OmniGibson stores success/fail under info["done"]["success"]
-            # (a dict), not as top-level info keys.  Extract from both
-            # locations for compatibility.
-            done_dict = info.get("done", {}) if isinstance(info.get("done"), dict) else {}
-            step_success = done_dict.get("success", False) or info.get("success", False)
-            self.success_once[env_idx] = self.success_once[env_idx] | step_success
+            self.success_once[env_idx] = self.success_once[env_idx] | done_dict.get(
+                "success", False
+            )
             episode_info["success_once"] = self.success_once[env_idx].clone()
 
-            step_fail = done_dict.get("fail", False) or info.get("fail", False)
-            if step_fail:
-                self.fail_once[env_idx] = self.fail_once[env_idx] | step_fail
-                episode_info["fail_once"] = self.fail_once[env_idx].clone()
             episode_info["return"] = self.returns[env_idx].clone()
             episode_info["episode_len"] = self.elapsed_steps.clone()
             episode_info["reward"] = (
@@ -463,36 +453,8 @@ class BehaviorEnv(gym.Env):
 
     @staticmethod
     def _extract_info_done(info: dict) -> bool:
-        """Extract a boolean done flag from an OmniGibson info dict.
-
-        OmniGibson's ``info["done"]`` is a dict like
-        ``{"success": bool, "termination_conditions": {name: {"done": bool, ...}, ...}}``.
-        A non-empty dict is always truthy, so ``bool(info["done"])`` would be
-        ``True`` every step.  Instead we check whether any termination condition
-        actually fired.  If ``info["done"]`` is already a plain boolean (future
-        OG versions or other envs), use it directly.
-        """
-        done_val = info.get("done")
-        if done_val is None:
-            return False
-        if isinstance(done_val, bool):
-            return done_val
-        if isinstance(done_val, dict):
-            assert "termination_conditions" in done_val or "success" in done_val, (
-                f"Unexpected info['done'] dict structure: keys={list(done_val.keys())}. "
-                f"Expected 'termination_conditions' or 'success' key."
-            )
-            # Check termination_conditions → any {"done": True}.
-            tc = done_val.get("termination_conditions", {})
-            if tc:
-                return any(
-                    v.get("done", False) if isinstance(v, dict) else bool(v)
-                    for v in tc.values()
-                )
-            # Fallback: check top-level "success" (True → episode done).
-            return bool(done_val.get("success", False))
-        # Unknown type — coerce to bool as a last resort.
-        return bool(done_val)
+        tc = info["done"]["termination_conditions"]
+        return any(v["done"] for v in tc.values())
 
     def _handle_auto_reset(self, dones, extracted_obs, infos):
         final_obs = extracted_obs.copy()

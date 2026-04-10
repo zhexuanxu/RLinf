@@ -63,9 +63,6 @@ def compute_evaluate_metrics(eval_metrics_list):
         dict: Aggregated metrics with mean values and trajectory count
     """
     all_eval_metrics = {}
-
-    # Collect the union of keys across all workers — some workers may have
-    # no completed episodes and return an empty dict.
     env_info_keys: set[str] = set()
     for eval_metrics in eval_metrics_list:
         env_info_keys.update(eval_metrics.keys())
@@ -77,8 +74,6 @@ def compute_evaluate_metrics(eval_metrics_list):
         trajectory_counts.append(count)
 
     for env_info_key in env_info_keys:
-        # Only collect from workers that actually have this key (i.e.
-        # workers where at least one episode completed).
         metric = [
             eval_metrics[env_info_key]
             for eval_metrics in eval_metrics_list
