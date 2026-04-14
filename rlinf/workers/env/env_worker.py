@@ -955,6 +955,7 @@ class EnvWorker(Worker):
                     rewards = self.compute_bootstrap_rewards(
                         env_output, rollout_result.bootstrap_values, reward_model_output
                     )
+                    # breakpoint()
                     chunk_step_result = ChunkStepResult(
                         actions=rollout_result.forward_inputs.get("action", None),
                         prev_logprobs=rollout_result.prev_logprobs
@@ -1038,7 +1039,7 @@ class EnvWorker(Worker):
 
             self.store_last_obs_and_intervened_info(env_outputs)
             self.finish_rollout()
-
+        breakpoint()
         if actor_channel is not None:
             for stage_id in range(self.stage_num):
                 await self.send_rollout_trajectories(

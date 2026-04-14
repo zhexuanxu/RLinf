@@ -1105,7 +1105,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             recv_list.append(trajectory)
 
         self.rollout_batch = convert_trajectories_to_batch(recv_list)
-
+        
         self.rollout_batch = self._process_received_rollout_batch(self.rollout_batch)
 
     def _process_received_rollout_batch(
@@ -1115,6 +1115,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         original shape: [rollout_epoch x n_chunk_steps, bsz, num_action_chunks, ...]
         target shape: [n_chunk_steps, rollout_epoch x bsz, num_action_chunks, ...]
         """
+        breakpoint()
         rollout_epoch = self.cfg.algorithm.rollout_epoch
         rollout_batch = process_nested_dict_for_adv(rollout_batch, rollout_epoch)
 
