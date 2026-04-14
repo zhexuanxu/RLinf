@@ -71,26 +71,55 @@ class DualSystemAgentLoop:
         log_subtasks: bool = False,
         enable_memory: bool = False,
         vlm_sampling_params: dict | None = None,
+        frequency: int = 1,
     ):
         self.vlm_model = vlm_model
         self.vla_model = vla_model
         self.log_subtasks = log_subtasks
         self.enable_memory = enable_memory
         self.vlm_sampling_params = vlm_sampling_params or {}
+        # How many run_step() calls between successive VLM invocations.
+        # ``frequency=1`` (default) calls the VLM every step (original behavior).
+        # ``frequency=N`` calls the VLM once every N steps and reuses the
+        # cached subtask for the remaining (N-1) steps.
+        self.frequency = max(1, int(frequency))
 
         # Per-environment memory strings.  Initialised lazily on the first
         # call to run_step (when batch size is known) or via reset_memory().
         self._memories: list[str] | None = None
+
+        # Counter and per-env caches for VLM-frequency control.
+        self._vlm_step_counter: int = 0
+        self._cached_subtasks: list[str] | None = None
+        self._cached_raw_outputs: list[str] | None = None
+        self._cached_input_memories: list[str] | None = None
+        self._cached_prompts: list[str] | None = None
+
+        # Per-environment trajectory tracking (used by the eval runner to
+        # tag JSONL records). Lazily initialised in ``run_step`` once the
+        # batch size is known. ``_traj_idx[i]`` is the current trajectory
+        # index for env i within this rollout worker; it is bumped by
+        # ``reset_memory`` (epoch boundary, all envs) and
+        # ``reset_memory_for_envs`` (auto-reset, only the affected envs).
+        # ``_step_in_traj[i]`` counts steps emitted for env i in its current
+        # trajectory and is incremented at the end of each ``run_step``.
+        self._traj_idx: list[int] | None = None
+        self._step_in_traj: list[int] | None = None
 
     # ------------------------------------------------------------------
     # Memory management
     # ------------------------------------------------------------------
 
     def reset_memory(self, batch_size: int | None = None):
-        """Reset the memory state for all environments.
+        """Reset the memory state and cached VLM outputs for all environments.
 
-        Call this between evaluation epochs / episodes so that memory from
-        a previous episode does not leak into the next one.
+        Call this between evaluation epochs / episodes so that memory and
+        cached subtasks from a previous episode do not leak into the next one.
+
+        Side effect: when the trajectory tracker has already been initialised
+        (i.e. this is not the very first reset), every env's ``traj_idx`` is
+        bumped by 1 and ``step_in_traj`` is zeroed. This is how an
+        ``auto_reset=False`` epoch boundary is recorded as a new trajectory.
         """
         if batch_size is not None:
             self._memories = ["" for _ in range(batch_size)]
@@ -99,26 +128,66 @@ class DualSystemAgentLoop:
         else:
             self._memories = None
 
+        # Invalidate the VLM-frequency cache so the next run_step re-plans.
+        self._vlm_step_counter = 0
+        self._cached_subtasks = None
+        self._cached_raw_outputs = None
+        self._cached_input_memories = None
+        self._cached_prompts = None
+
+        # Bump the trajectory index for every env IF the tracker has been
+        # initialised. The first reset (before any run_step) leaves
+        # ``_traj_idx`` as None and is handled lazily on first run_step.
+        if self._traj_idx is not None:
+            for i in range(len(self._traj_idx)):
+                self._traj_idx[i] += 1
+                self._step_in_traj[i] = 0
+
     def reset_memory_for_envs(self, done_mask: torch.Tensor):
-        """Selectively reset memory for environments that have terminated.
+        """Selectively reset memory and cached VLM outputs for done envs.
 
         This is called on each eval step when the env auto-resets done
-        episodes, so that memory from a finished episode does not bleed
-        into the new episode that starts in the same batch slot.
+        episodes, so that memory and cached subtasks from a finished episode
+        do not bleed into the new episode that starts in the same batch slot.
+
+        Side effect: every env marked done in ``done_mask`` has its
+        ``traj_idx`` incremented and ``step_in_traj`` zeroed, so the next
+        ``run_step`` records the upcoming chunk under a new trajectory.
 
         Args:
             done_mask: Boolean tensor of shape ``[B]`` (or ``[B, C]`` where
                 the last column ``[:, -1]`` indicates the final done state).
-                ``True`` entries have their memory cleared.
+                ``True`` entries have their memory and cache cleared.
         """
-        if self._memories is None:
-            return
         # Handle [B, C] dones — use the last chunk-step column.
         if done_mask.dim() > 1:
             done_mask = done_mask[:, -1]
-        for i in range(min(len(self._memories), done_mask.shape[0])):
-            if done_mask[i].item():
-                self._memories[i] = ""
+
+        if self._memories is not None:
+            for i in range(min(len(self._memories), done_mask.shape[0])):
+                if done_mask[i].item():
+                    self._memories[i] = ""
+
+        # Mark the cached subtask as stale for done envs by setting it to None.
+        # ``run_step`` will detect this and force a fresh VLM call next step.
+        if self._cached_subtasks is not None:
+            for i in range(min(len(self._cached_subtasks), done_mask.shape[0])):
+                if done_mask[i].item():
+                    self._cached_subtasks[i] = None
+                    if self._cached_raw_outputs is not None and i < len(self._cached_raw_outputs):
+                        self._cached_raw_outputs[i] = None
+                    if self._cached_input_memories is not None and i < len(self._cached_input_memories):
+                        self._cached_input_memories[i] = None
+                    if self._cached_prompts is not None and i < len(self._cached_prompts):
+                        self._cached_prompts[i] = None
+
+        # Bump trajectory index for envs that just finished. The next
+        # ``run_step`` will record the upcoming chunk under traj_idx+1.
+        if self._traj_idx is not None:
+            for i in range(min(len(self._traj_idx), done_mask.shape[0])):
+                if done_mask[i].item():
+                    self._traj_idx[i] += 1
+                    self._step_in_traj[i] = 0
 
     # ------------------------------------------------------------------
     # Main step
@@ -148,56 +217,104 @@ class DualSystemAgentLoop:
         task_descriptions = obs["task_descriptions"]
         assert len(task_descriptions) == batch_size, "Length of task_descriptions must match batch size."
 
-        # ----- Build per-sample prompts ----- #
-        input_memories: list[str] | None = None
-        if self.enable_memory:
-            # Lazy-init memory.
-            if self._memories is None or len(self._memories) != batch_size:
-                self._memories = ["" for _ in range(batch_size)]
-            # Snapshot AFTER init but BEFORE VLM call (for logging).
-            input_memories = list(self._memories)
+        # Lazy-init the per-env trajectory tracker on the first run_step call
+        # (or whenever the batch size changes). The first call always records
+        # under traj_idx=0; subsequent epoch boundaries / auto-resets bump it
+        # via reset_memory / reset_memory_for_envs.
+        if self._traj_idx is None or len(self._traj_idx) != batch_size:
+            self._traj_idx = [0] * batch_size
+            self._step_in_traj = [0] * batch_size
 
-            prompts = [
-                MEMORY_VLM_PROMPT.format(
-                    task_description=task_descriptions[i],
-                    memory=self._memories[i] or "(no memory yet)",
-                )
-                for i in range(batch_size)
-            ]
-        else:
-            prompts = [
-                DEFAULT_VLM_PROMPT.format(
-                    task_description=task_descriptions[i]
-                    if i < len(task_descriptions)
-                    else "",
-                )
-                for i in range(batch_size)
-            ]
-
-        # ----- Turn 1: VLM generates subtask (+ memory) ----- #
-        # Pass the list of prompts so the VLM processes the whole batch in
-        # one forward pass (images + texts are padded together).
-        raw_outputs = self.vlm_model.generate_subtask(
-            obs, prompt=prompts, **self.vlm_sampling_params
+        # Decide whether this step needs a fresh VLM call. The VLM is called
+        # whenever (a) the global step counter hits a frequency boundary, OR
+        # (b) the cache is empty / has the wrong batch size, OR (c) any env's
+        # cached subtask was invalidated by a memory reset (set to None).
+        cache_valid = (
+            self._cached_subtasks is not None
+            and len(self._cached_subtasks) == batch_size
+            and all(s is not None for s in self._cached_subtasks)
         )
-        # ----- Parse outputs ----- #
-        subtasks: list[str] = []
-        if self.enable_memory:
-            new_memories: list[str] = []
-            for i, raw in enumerate(raw_outputs):
-                sub, mem = parse_subtask_and_memory(raw)
-                subtasks.append(sub)
-                # If parsing failed to produce a new memory, keep the old one.
-                new_memories.append(mem if mem else self._memories[i])
-            # Update memory state — strictly aligned per batch index.
-            self._memories = new_memories
+        on_frequency_boundary = (self._vlm_step_counter % self.frequency == 0)
+        call_vlm = on_frequency_boundary or not cache_valid
+        self._vlm_step_counter += 1
+
+        input_memories: list[str] | None = None
+        prompts: list[str] | None = None
+        raw_outputs: list[str] = []
+        subtasks: list[str]
+
+        if call_vlm:
+            # ----- Build per-sample prompts ----- #
+            if self.enable_memory:
+                # Lazy-init memory.
+                if self._memories is None or len(self._memories) != batch_size:
+                    self._memories = ["" for _ in range(batch_size)]
+                # Snapshot AFTER init but BEFORE VLM call (for logging).
+                input_memories = list(self._memories)
+
+                prompts = [
+                    MEMORY_VLM_PROMPT.format(
+                        task_description=task_descriptions[i],
+                        memory=self._memories[i] or "(no memory yet)",
+                    )
+                    for i in range(batch_size)
+                ]
+            else:
+                prompts = [
+                    DEFAULT_VLM_PROMPT.format(
+                        task_description=task_descriptions[i]
+                        if i < len(task_descriptions)
+                        else "",
+                    )
+                    for i in range(batch_size)
+                ]
+
+            # ----- Turn 1: VLM generates subtask (+ memory) ----- #
+            # Pass the list of prompts so the VLM processes the whole batch in
+            # one forward pass (images + texts are padded together).
+            raw_outputs = self.vlm_model.generate_subtask(
+                obs, prompt=prompts, **self.vlm_sampling_params
+            )
+            # ----- Parse outputs ----- #
+            subtasks = []
+            if self.enable_memory:
+                new_memories: list[str] = []
+                for i, raw in enumerate(raw_outputs):
+                    sub, mem = parse_subtask_and_memory(raw)
+                    subtasks.append(sub)
+                    # If parsing failed to produce a new memory, keep the old one.
+                    new_memories.append(mem if mem else self._memories[i])
+                # Update memory state — strictly aligned per batch index.
+                self._memories = new_memories
+            else:
+                for raw in raw_outputs:
+                    sub, _ = parse_subtask_only(raw)
+                    subtasks.append(sub)
+
+            # Refresh the per-env cache so subsequent skipped turns can reuse.
+            self._cached_subtasks = list(subtasks)
+            self._cached_raw_outputs = list(raw_outputs)
+            self._cached_input_memories = list(input_memories) if input_memories is not None else None
+            self._cached_prompts = list(prompts)
+            skip = False
         else:
-            for raw in raw_outputs:
-                sub, _ = parse_subtask_only(raw)
-                subtasks.append(sub)
+            # Reuse the cached VLM output. We still emit one VLM-style
+            # entry into the result so the JSONL records have one VLM turn
+            # per agentloop step (with skip=True).
+            subtasks = list(self._cached_subtasks)
+            raw_outputs = list(self._cached_raw_outputs) if self._cached_raw_outputs is not None else []
+            input_memories = (
+                list(self._cached_input_memories)
+                if self._cached_input_memories is not None
+                else None
+            )
+            prompts = list(self._cached_prompts) if self._cached_prompts is not None else None
+            skip = True
 
         if self.log_subtasks and subtasks:
-            logger.info("[DualSystem] VLM subtask: %s", subtasks[0])
+            logger.info(
+                "[DualSystem] VLM subtask (skip=%s): %s", skip, subtasks[0]
+            )
             if self.enable_memory and self._memories:
                 logger.info("[DualSystem] Memory: %s", self._memories[0][:200])
 
@@ -220,22 +337,34 @@ class DualSystemAgentLoop:
         # ----- Assemble result with detailed logging ----- #
         vla_result["subtasks"] = subtasks
 
-        # VLM inputs: what the VLM saw this turn.
+        # VLM inputs: what the VLM saw this turn (or what was cached).
         vla_result["vlm_inputs"] = {
             "task_descriptions": list(task_descriptions),
             "prompts": prompts,
             "input_memories": input_memories,  # None when memory disabled
+            "skip": skip,
         }
 
-        # VLM outputs: what the VLM produced this turn.
+        # VLM outputs: what the VLM produced this turn (or the cached value).
         vla_result["vlm_outputs"] = {
             "raw_outputs": list(raw_outputs),
             "subtasks": list(subtasks),
             "output_memories": list(self._memories) if self.enable_memory else None,
+            "skip": skip,
         }
 
         if self.enable_memory:
             vla_result["memories"] = list(self._memories)
+
+        # Snapshot per-env trajectory tracking BEFORE bumping step_in_traj
+        # so the recorded value matches what the eval runner needs.
+        vla_result["env_traj_idx"] = list(self._traj_idx)
+        vla_result["env_step_in_traj"] = list(self._step_in_traj)
+
+        # Bump step_in_traj for every env now that this step has been
+        # recorded. The next run_step will see step_in_traj+1.
+        for i in range(len(self._step_in_traj)):
+            self._step_in_traj[i] += 1
 
         return actions, vla_result
 

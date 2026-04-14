@@ -174,6 +174,7 @@ class MultiStepRolloutWorker(Worker):
         vlm_cfg = self.cfg.vlm
         log_subtasks = vlm_cfg.get("log_subtasks", False)
         enable_memory = vlm_cfg.get("enable_memory", False)
+        frequency = int(vlm_cfg.get("frequency", 1))
 
         self.agentloop = DualSystemAgentLoop(
             vlm_model=vlm_model,
@@ -181,10 +182,11 @@ class MultiStepRolloutWorker(Worker):
             log_subtasks=log_subtasks,
             enable_memory=enable_memory,
             vlm_sampling_params=self._vlm_sampling_params,
+            frequency=frequency,
         )
         self.log_info(
             f"DualSystemAgentLoop initialized (VLM + VLA on rollout GPU, "
-            f"memory={enable_memory})."
+            f"memory={enable_memory}, frequency={frequency})."
         )
 
     def setup_sample_params(self):
@@ -517,6 +519,11 @@ class MultiStepRolloutWorker(Worker):
                             "memories": result.get("memories"),
                             "vlm_inputs": result.get("vlm_inputs"),
                             "vlm_outputs": result.get("vlm_outputs"),
+                            # The agentloop populates per-env trajectory
+                            # tracking (env_traj_idx, env_step_in_traj) inside
+                            # ``run_step`` and exposes them through ``result``.
+                            "env_traj_idx": result.get("env_traj_idx"),
+                            "env_step_in_traj": result.get("env_step_in_traj"),
                         }
                         eval_trajectory.append(step_record)
 

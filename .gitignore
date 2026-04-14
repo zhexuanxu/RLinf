@@ -20,3 +20,7 @@ uv.lock
 rlinf/envs/maniskill/assets
 PKG-INFO
 *.egg-info/
+behavior_doc/
+CLAUDE.md
+TODO.md
+run.sh

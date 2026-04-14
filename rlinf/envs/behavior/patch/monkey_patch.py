@@ -48,11 +48,13 @@ def apply() -> None:
     # list path during dynamic camera resize. Use the same detach style as
     # VisionSensor._remove_modality_from_backend for compatibility.
 
+    from rlinf.envs.behavior.patch import SUPPORTED_OMNIGIBSON_VERSION
+
     import omnigibson as og
 
     if (
         getattr(VisionSensor, "__rlinf_resize_setter_patched__", False)
-        or og.__version__ != "3.7.2"
+        or og.__version__ not in SUPPORTED_OMNIGIBSON_VERSION
     ):
         return
 

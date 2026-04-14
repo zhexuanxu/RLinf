@@ -85,12 +85,19 @@ class DualSystemEvalRunner(EmbodiedEvalRunner):
     # ------------------------------------------------------------------
 
     def _log_trajectories(self, trajectory_data: list):
-        """Save trajectory data from all rollout workers to disk.
+        """Save per-env trajectory data from all rollout workers to disk.
+
+        Each rollout worker returns a flat list of step records (one per
+        chunk-step) where each record's batch dim spans multiple envs and
+        possibly multiple trajectories. We expand them here so the JSONL
+        contains one record per (worker_idx, env_idx, traj_idx, step_in_traj).
 
         Args:
-            trajectory_data: List of per-worker trajectory lists.  Each worker
+            trajectory_data: List of per-worker trajectory lists. Each worker
                 returns a ``list[dict]`` with keys ``obs``, ``actions``,
-                ``subtasks``.
+                ``subtasks``, ``vlm_inputs``, ``vlm_outputs``,
+                ``env_traj_idx`` (list[int], one per env in batch),
+                ``env_step_in_traj`` (list[int], one per env in batch).
         """
         log_dir = Path(self.trajectory_log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -100,52 +107,102 @@ class DualSystemEvalRunner(EmbodiedEvalRunner):
 
         jsonl_path = log_dir / "trajectory.jsonl"
 
-        with open(jsonl_path, "a") as f:
-            for worker_idx, worker_traj in enumerate(trajectory_data):
-                if not isinstance(worker_traj, list):
+        # Collect all records first so we can sort them by
+        # (worker_idx, env_idx, traj_idx, step_in_traj).
+        all_records: list[dict] = []
+
+        for worker_idx, worker_traj in enumerate(trajectory_data):
+            if not isinstance(worker_traj, list) or not worker_traj:
+                continue
+
+            # First pass: count how many step records each (env_idx,
+            # traj_idx) pair contains, so we can sample image indices
+            # uniformly within each trajectory.
+            steps_per_traj: dict[tuple[int, int], int] = {}
+            for step in worker_traj:
+                env_traj_idx = step.get("env_traj_idx") or []
+                for env_i, traj_i in enumerate(env_traj_idx):
+                    key = (env_i, int(traj_i))
+                    steps_per_traj[key] = steps_per_traj.get(key, 0) + 1
+
+            save_set: set[tuple[int, int, int]] = set()
+            for (env_i, traj_i), n in steps_per_traj.items():
+                indices = self._select_image_indices(n)
+                for s in indices:
+                    save_set.add((env_i, traj_i, s))
+
+            for step in worker_traj:
+                env_traj_idx = step.get("env_traj_idx") or []
+                env_step_in_traj = step.get("env_step_in_traj") or []
+                batch_size = len(env_traj_idx)
+                if batch_size == 0:
                     continue
-                n_steps = len(worker_traj)
 
-                # Decide which step indices get images saved.
-                save_indices = self._select_image_indices(n_steps)
+                vlm_inputs = step.get("vlm_inputs") or {}
+                vlm_outputs = step.get("vlm_outputs") or {}
+                obs = step.get("obs") or {}
+                subtasks_field = step.get("subtasks") or []
 
-                for step_idx, step in enumerate(worker_traj):
+                for env_i in range(batch_size):
+                    traj_i = int(env_traj_idx[env_i])
+                    s_in_traj = int(env_step_in_traj[env_i]) if env_i < len(env_step_in_traj) else 0
+
                     # Save observation image if selected.
                     image_path = None
-                    if step_idx in save_indices:
+                    if (env_i, traj_i, s_in_traj) in save_set:
                         saved = self._save_obs_image(
-                            step.get("obs"), img_dir, worker_idx, step_idx
+                            obs, img_dir, worker_idx, env_i, traj_i, s_in_traj
                         )
                         image_path = str(saved) if saved else None
 
-                    # --- VLM inputs / outputs ---
-                    vlm_inputs = step.get("vlm_inputs") or {}
-                    vlm_outputs = step.get("vlm_outputs") or {}
-
                     record = {
-                        "worker": worker_idx,
-                        "step": step_idx,
+                        "worker_idx": worker_idx,
+                        "env_idx": env_i,
+                        "traj_idx": traj_i,
+                        "step_in_traj": s_in_traj,
                         # VLM turn
                         "vlm_inputs": {
-                            "task_descriptions": vlm_inputs.get("task_descriptions"),
-                            "input_memories": vlm_inputs.get("input_memories"),
+                            "task_descriptions": _index_or_none(
+                                vlm_inputs.get("task_descriptions"), env_i
+                            ),
+                            "input_memories": _index_or_none(
+                                vlm_inputs.get("input_memories"), env_i
+                            ),
                             "image_path": image_path,
+                            "skip": bool(vlm_inputs.get("skip", False)),
                         },
                         "vlm_outputs": {
-                            "raw_outputs": vlm_outputs.get("raw_outputs"),
-                            "subtasks": vlm_outputs.get("subtasks"),
-                            "output_memories": vlm_outputs.get("output_memories"),
+                            "raw_outputs": _index_or_none(
+                                vlm_outputs.get("raw_outputs"), env_i
+                            ),
+                            "subtasks": _index_or_none(
+                                vlm_outputs.get("subtasks"), env_i
+                            ),
+                            "output_memories": _index_or_none(
+                                vlm_outputs.get("output_memories"), env_i
+                            ),
+                            "skip": bool(vlm_outputs.get("skip", False)),
                         },
                         # VLA turn
                         "vla_inputs": {
-                            "subtasks": step.get("subtasks"),
+                            "subtasks": _index_or_none(subtasks_field, env_i),
                         },
                         "vla_outputs": {
-                            "actions": "skip now, it's too long" # self._actions_to_list(step.get("actions"))
+                            "actions": "skip now, it's too long",
                         },
                     }
 
-                    f.write(json.dumps(record) + "\n")
+                    all_records.append(record)
+
+        # Sort by (worker_idx, env_idx, traj_idx, step_in_traj) so each
+        # trajectory's steps are contiguous and easy to read.
+        all_records.sort(
+            key=lambda r: (r["worker_idx"], r["env_idx"], r["traj_idx"], r["step_in_traj"])
+        )
+
+        with open(jsonl_path, "a") as f:
+            for record in all_records:
+                f.write(json.dumps(record) + "\n")
 
         self.logger.info(
             "Trajectory logged to %s (%d workers)", jsonl_path, len(trajectory_data)
@@ -177,9 +234,14 @@ class DualSystemEvalRunner(EmbodiedEvalRunner):
         obs: dict | None,
         img_dir: Path,
         worker_idx: int,
-        step_idx: int,
+        env_idx: int,
+        traj_idx: int,
+        step_in_traj: int,
     ) -> Path | None:
-        """Save the main observation image as a .jpg file."""
+        """Save the main observation image for one env as a .jpg file.
+
+        Filename format: ``w{worker}_e{env}_t{traj}_s{step:04d}.jpg``.
+        """
         if obs is None:
             return None
         main_images = obs.get("main_images")
@@ -188,11 +250,15 @@ class DualSystemEvalRunner(EmbodiedEvalRunner):
 
         from PIL import Image
 
-        # Take the first env in the batch: [B, H, W, C] -> [H, W, C]
+        # Slice the env at index ``env_idx`` from a [B, H, W, C] batch.
         if isinstance(main_images, torch.Tensor):
-            img_arr = main_images[0].cpu().numpy()
+            if env_idx >= main_images.shape[0]:
+                return None
+            img_arr = main_images[env_idx].cpu().numpy()
         elif isinstance(main_images, np.ndarray):
-            img_arr = main_images[0]
+            if env_idx >= main_images.shape[0]:
+                return None
+            img_arr = main_images[env_idx]
         else:
             return None
 
@@ -203,7 +269,22 @@ class DualSystemEvalRunner(EmbodiedEvalRunner):
                 img_arr = img_arr.clip(0, 255).astype(np.uint8)
 
         img = Image.fromarray(img_arr)
-        filename = f"w{worker_idx}_s{step_idx:04d}.jpg"
+        filename = f"w{worker_idx}_e{env_idx}_t{traj_idx}_s{step_in_traj:04d}.jpg"
         save_path = img_dir / filename
         img.save(save_path)
         return save_path
+
+
+def _index_or_none(value, idx: int):
+    """Safely extract ``value[idx]`` from a list-like, returning ``None``
+    when ``value`` is ``None`` or the index is out of bounds.
+
+    Used to slice batched VLM I/O fields down to a single env for the JSONL.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        if 0 <= idx < len(value):
+            return value[idx]
+        return None
+    return value

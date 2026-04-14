@@ -69,6 +69,7 @@ class Qwen3_VLPolicy(nn.Module, BasePolicy):
             min_pixels=self.min_pixels,
             max_pixels=self.max_pixels,
         )
+        self.processor.tokenizer.padding_side = "left"
         self.model.eval()
 
     # ------------------------------------------------------------------
