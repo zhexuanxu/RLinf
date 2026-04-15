@@ -320,16 +320,16 @@ A_t = δ_t + (γλ) * (1 - done_{t+1}) * A_{t+1}
 - 这个额外步骤只取 value，**不需要 action、logprob 等**，因为它纯粹是为了计算最后一步的 TD target
 
 最终 trajectory 的 shape（`append_step_result` 累积后，`to_trajectory` stack 后）：
-- `rewards`: `[n_chunk_steps+1, B, num_action_chunks]` = `[94, B, 32]` （**T+1 步**，额外步也记了 reward）
+- `rewards`: `[n_chunk_steps+1, B, num_action_chunks]` = `[93, B, 32]` （**T步**，额外步多了一个reward，但是第一个chunk存的是none）
 - `prev_values`: `[n_chunk_steps+1, B, 1]` = `[94, B, 1]` （T+1 步）
 - `dones`: `[n_chunk_steps+1, B, num_action_chunks]` = `[94, B, 32]` （T+1 步）
 - `prev_logprobs`: `[n_chunk_steps, B, num_action_chunks, action_dim]` = `[93, B, 32, 23]` （T 步，额外步没有 logprob）
 - `actions`: `[n_chunk_steps, B, action_dim * num_action_chunks]` = `[93, B, 736]` （T 步，额外步没有 action）
 - `forward_inputs`: `[n_chunk_steps, B, ...]` = `[93, B, ...]` （T 步）
 
-**T vs T+1 的区别就是这个额外步骤带来的。** rewards、dones、prev_values、terminations、truncations 都是 T+1 步；actions、prev_logprobs、forward_inputs、versions 是 T 步。
+**T vs T+1 的区别就是这个额外步骤带来的。** dones、prev_values、terminations、truncations 都是 T+1 步；actions、prev_logprobs、forward_inputs、versions 是 T 步。
 
-在训练前的 `process_nested_dict_for_train()`（[fsdp_actor_worker.py:112-125](rlinf/workers/actor/fsdp_actor_worker.py#L112-L125)）中，`dones`、`terminations`、`truncations`、`prev_values` 会被 `value[:-1]` 截回 T 步（因为 advantage 已算完，训练时不需要第 T+1 步）。rewards 不在截断列表中，但在 shuffle 展平时与 actions 等 T 步数据一起 reshape，多出的一步 reward 会被 `shuffle_id` 的索引范围自然排除（因为 `rollout_size` 基于 `prev_logprobs` 的 T 步大小计算）。
+在训练前的 `process_nested_dict_for_train()`（[fsdp_actor_worker.py:112-125](rlinf/workers/actor/fsdp_actor_worker.py#L112-L125)）中，`dones`、`terminations`、`truncations`、`prev_values` 会被 `value[:-1]` 截回 T 步（因为 advantage 已算完，训练时不需要第 T+1 步）。
 
 ---
 
@@ -355,15 +355,16 @@ A_t = δ_t + (γλ) * (1 - done_{t+1}) * A_{t+1}
 
 ```python
 # 输入 shape: [rollout_epoch * n_chunk_steps, bsz, num_action_chunks, ...]
-#           = [8 * 93, B, 32, ...] (rewards)
-#           = [8 * 94, B, 32, ...] (dones, 因为 T+1)
+#           = [8 * 93, B, 32 * 23, ...] (rewards)
+#           = [8 * 94, B, 32 * 23, ...] (dones, 因为 T+1)
 
 rollout_batch = process_nested_dict_for_adv(rollout_batch, rollout_epoch)
 
 # 输出 shape: [n_chunk_steps, rollout_epoch * bsz, num_action_chunks, ...]
-#           = [93, 8*B, 32, ...] (rewards)
-#           = [94, 8*B, 32, ...] (dones)
+#           = [93, 8*B, 32 * 23, ...] (rewards)
+#           = [94, 8*B, 32 * 23, ...] (dones)
 ```
+这里B取决于action的DP数目
 
 **作用**: 把 8 个 epoch 的数据从"时间维度拼接"变成"batch 维度拼接"。这样每个 epoch 变成 batch 中的一个独立样本，可以并行训练。
 
@@ -477,6 +478,8 @@ values = flattened_values_full[:n_steps + 1]
 - dones 从末尾切 `[-(n_steps+1):]`：因为第一个 chunk 的 bootstrap dones 是人造的全 False，真正有意义的在后面
 - values 从开头切 `[:n_steps+1]`：value 是策略在每个状态上的估计，第一个 value 对应第一个状态，是有意义的
 
+**重点** 第一个chunk的最后一个action的done位一定是false，它对应S0的done（一定是false）, 但是第一个chunk的第一个value的done位已经是S0的value位了，然后最后一个chunk的最后一个action的done位就是ST+1的done，最后一个chunk的第一个action就是ST+1的value！！
+
 #### GAE 核心算法
 
 [algorithms/advantages.py:24-86](rlinf/algorithms/advantages.py#L24-L86)
@@ -513,6 +516,12 @@ advantages = safe_normalize(advantages, loss_mask=loss_mask)
 
 **代码位置**: [fsdp_actor_worker.py:1305-1489](rlinf/workers/actor/fsdp_actor_worker.py#L1305-L1489)
 
+入口的rollout batch的格式:
+- rollout_batch['actions']: `[Step(4096/32), bsz, action_dim (23)* chunk_size(32)]`
+- rollout_batch['rewards']: `[Step, bsz, chunk_size]`
+- rollout_batch['dones']: `[Step+ 1, bsz, chunk_size]`
+- rollout_batch['prev_logprobs']: `[Step, bsz, chunksize, action_dim]`
+
 #### Step 1: 数据 shuffle
 
 ```python
@@ -537,8 +546,11 @@ for _ in range(update_epoch):  # PPO 的多次更新 epoch
 
 三层循环：
 1. **update_epoch**: PPO 对同一批数据训练多次（通常 1-4 次）
-2. **global_batch**: 把全部数据切成若干 global_batch
+2. **global_batch**: 把全部数据切成若干 global_batch， 对应一次 optimizer.step() 对应的样本数（跨所有 rank 聚合后）
 3. **micro_batch**: 每个 global_batch 再切成更小的 micro_batch 做梯度累积
+4. **batch_size_per_rank**: 每个 DP rank 在一次 step 里处理多少样本
+5. **micro_batch_size**: 单次 forward/backward 的样本数（显存约束）
+6. **gradient_accumulation**: 梯度累积步数
 
 #### Step 3: 前向传播
 
@@ -822,3 +834,538 @@ max_steps_per_rollout_epoch: 4096
    - **必须做 bootstrap**：因为被 truncated 的 env 立即接上了新 episode 的 obs，如果不在 reward 上补偿 `γ * V(s_terminal)`，GAE 会错误地将"新 episode 第一步的 value"当作"旧 episode 结尾的 value"
 
 换言之，`auto_reset=False` 下不需要在 `compute_bootstrap_rewards` 中处理 truncation，是因为 GAE 的 `values[step+1]` 本身就已经提供了正确的 bootstrap（只要 episode 还没 done，`~dones[step+1]` 为 True，`V(s_{t+1})` 正常参与 TD 计算）。而 `auto_reset=True` 下，episode 结束后 obs 被替换成新 episode 的 obs，`values[step+1]` 不再对应旧 episode，所以必须在 reward 层面提前补偿。
+
+---
+
+## 第六部分：PPO 损失粒度配置详解
+
+在 [behavior_ppo_openpi_pi05.yaml:49-51](examples/embodiment/config/behavior_ppo_openpi_pi05.yaml#L49-L51) 中有三个关键配置：
+
+```yaml
+reward_type: chunk_level
+logprob_type: token_level
+entropy_type: token_level
+```
+
+它们分别控制 reward、logprob、entropy 在 PPO 损失计算中的**聚合粒度**，直接决定梯度信号的密集程度。理解它们需要先建立"粒度层级"的概念。
+
+### 6.1 背景：为什么需要"粒度"概念？
+
+在具身 VLA 模型中，一次策略推理产生：
+
+- **1 个 observation** → **num_action_chunks = 32 个动作 chunk** → 每个 chunk 是 **action_dim = 23 维的连续动作** → 每个维度可能对应 **1 个 token**（在 pi05/OpenPI 中 token 就是 action 的一个维度）
+
+这形成了一个嵌套的层级结构：
+
+```
+trajectory (一整条 rollout)
+  └─ chunk step (一次策略前向 = 一个 s_t + 32 个 action chunks)
+     └─ action chunk (一个 23 维动作)
+        └─ token (action_dim 中的每一维，也即 single_action_dim)
+```
+
+PPO 损失中的 reward、logprob、entropy 本质上都是"某个粒度上的值"：你想要每 token 一个梯度信号？还是每 chunk 一个？还是整个样本一个？这就是三个 `*_type` 配置要回答的问题。
+
+### 6.2 `reward_type`：控制 GAE advantage 的计算粒度
+
+**代码位置**：[preprocess_embodied_advantages_inputs](rlinf/algorithms/utils.py#L67-L131) 的 line 79-87，以及 [preprocess_loss_inputs](rlinf/algorithms/utils.py#L295-L306) 的 line 295-306
+
+这个配置控制 rewards/dones/loss_mask 在进入 GAE 计算前 **是否在 num_action_chunks 维度上聚合**。
+
+#### `reward_type == "chunk_level"`（pi05 默认）
+
+```python
+# preprocess_embodied_advantages_inputs, utils.py:79-87
+if kwargs["reward_type"] == "chunk_level":
+    rewards = rewards.sum(dim=-1, keepdim=True)          # [T, B, 32] → [T, B, 1]
+    dones = dones.max(dim=-1, keepdim=True)[0]           # [T, B, 32] → [T, B, 1]
+    if loss_mask is not None:
+        loss_mask = loss_mask.max(dim=-1, keepdim=True)[0]
+    if loss_mask_sum is not None:
+        loss_mask_sum = loss_mask_sum.max(dim=-1, keepdim=True)[0]
+```
+
+- rewards 在 chunk 内 **求和**（32 个子步的 reward 合并成一个 scalar）
+- dones 在 chunk 内 **取 max**（32 个子步只要有一个 done 就算整个 chunk 结束）
+- loss_mask 同理取 max
+
+然后 GAE 在 **chunk 粒度**上反向递推。时间轴长度是 `n_chunk_steps`，每个时间步产出一个 scalar advantage。最终 advantages shape 是 `[n_chunk_steps, bsz, 1]`。
+
+在 `preprocess_loss_inputs` 里还会做第二次处理：
+
+```python
+# utils.py:295-306
+if reward_type == "chunk_level":
+    advantages = advantages.flatten()        # [bsz_flat]
+    if loss_mask is not None:
+        loss_mask = loss_mask.flatten()
+    if values is not None:
+        values = values.flatten()
+    ...
+```
+
+`chunk_level` 下 advantages/loss_mask/values 等被 flatten 成 `[bsz_flat]`（每个样本一个 scalar advantage，后续通过广播扩展到 token 粒度）。
+
+#### `reward_type == "action_level"`
+
+不做任何聚合。rewards/dones/values 保持 `[T, B, 32]`，GAE 在 **action 粒度**（也就是 chunk 内的每个子步）上递推。时间轴长度变成 `n_chunk_steps * 32`，advantage 的粒度变细 32 倍。
+
+#### 选择理由
+
+**什么时候选 chunk_level？**
+- 奖励本身是 **稀疏/稠密但 chunk 级别**的（比如任务成功/失败、距离目标的距离），一个 chunk 内部各子步的 reward 差异不重要
+- 想减少 advantage 估计的方差
+- **pi05 默认用这个**
+
+**什么时候选 action_level？**
+- 奖励在 chunk 内部有显著的时序差异（例如每个子步都有独立的 shaping reward），你希望 agent 在 chunk 内部也能学到时序信用分配
+- 能容忍更高方差的 advantage 估计
+
+---
+
+### 6.3 `logprob_type`：控制 PPO ratio 的计算粒度
+
+**代码位置**：[preprocess_loss_inputs](rlinf/algorithms/utils.py#L310-L344) 的 line 310-344
+
+模型产出的 logprobs 原始 shape 是 `[bsz, num_action_chunks * single_action_dim]` = `[bsz, 32*23]` = `[bsz, 736]`，可以理解成"每个 token 一个 logprob"。`logprob_type` 决定如何把它 reshape/聚合后参与 PPO 的 ratio 计算。
+
+#### `logprob_type == "token_level"`（pi05 默认）
+
+```python
+# utils.py:310-322
+if logprob_type == "token_level":
+    logprobs = logprobs.reshape(bsz, -1, single_action_dim)        # [bsz, 32, 23]
+    old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim) # [bsz, 32, 23]
+    advantages = advantages.unsqueeze(-1)                            # 广播时扩展到 [bsz, 32, 23]
+    if loss_mask is not None:
+        loss_mask = loss_mask.unsqueeze(-1)
+```
+
+- 每个 token（action_dim 的每一维）独立计算一个 ratio = exp(logprob_new - logprob_old)
+- 同一个 chunk 内的 23 个 token **共享同一个 advantage**（通过 broadcast）
+- PPO loss 在 token 粒度上取平均，总梯度样本数 = `bsz × 32 × 23`
+
+#### `logprob_type == "action_level"`
+
+```python
+# utils.py:324-333
+elif logprob_type == "action_level":
+    logprobs = logprobs.reshape(bsz, -1, single_action_dim).sum(dim=-1)   # [bsz, 32]
+    old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim).sum(dim=-1)
+```
+
+- 一个 chunk 内的 23 个 token 的 logprob **相加**（数学上等价于"整个 23 维动作的联合 log 概率"）
+- 每个 chunk 一个 ratio
+- PPO loss 在 chunk 粒度上取平均
+
+#### `logprob_type == "chunk_level"`
+
+```python
+# utils.py:335-344
+elif logprob_type == "chunk_level":
+    logprobs = logprobs.reshape(bsz, -1, single_action_dim).sum(dim=[1, 2])  # [bsz]
+    old_logprobs = old_logprobs.reshape(bsz, -1, single_action_dim).sum(dim=[1, 2])
+```
+
+- 所有 32 × 23 = 736 个 token 的 logprob **全部相加**
+- 整个样本只有一个 ratio（类似 GRPO/DPO 的整序列 ratio）
+
+#### 形状对比表
+
+| logprob_type | logprobs shape | ratio 数量 | PPO 损失聚合粒度 |
+|---|---|---|---|
+| `token_level` | `[bsz, 32, 23]` | `bsz × 736` 个 | 每 token 一个梯度 |
+| `action_level` | `[bsz, 32]` | `bsz × 32` 个 | 每 chunk 一个梯度 |
+| `chunk_level` | `[bsz]` | `bsz` 个 | 每样本一个梯度 |
+
+#### 选择指南
+
+- **token_level**：梯度信号最密集，对每个 token 都有独立的 clip 和梯度。pi0.5 和 OpenPI 类模型推荐
+- **action_level**：把每个 23 维动作看作一个整体来做重要性采样，数学上更"正统"（因为动作是联合采样的），但梯度稀疏 23 倍
+- **chunk_level**：最粗粒度，类似语言模型的整序列重要性采样，适合 GRPO 式训练
+
+**注意**：`token_level` 的 ratio 在数学上并不严格等价于 PPO 原始的"联合动作 ratio"（因为它隐含假设了每个 token 独立），但实践中 token_level 往往收敛更快、信号更稠密。
+
+---
+
+### 6.4 `entropy_type`：控制 entropy bonus 的聚合粒度
+
+**代码位置**：[reshape_entropy](rlinf/utils/utils.py#L186-L210)
+
+```python
+def reshape_entropy(entropy, entropy_type, action_dim=7, batch_size=1):
+    if entropy is not None:
+        if entropy_type == "action_level":
+            entropy = entropy.reshape(batch_size, -1, action_dim).sum(dim=-1)  # 按 action 聚合
+        elif entropy_type == "chunk_level":
+            entropy = entropy.sum(dim=-1)                                        # 全聚合
+    return entropy
+```
+
+模型输出的 entropy 原始 shape 是 `[bsz, num_action_chunks * action_dim]`，每个 token 一个熵值。
+
+- **`token_level`**：保持原样 `[bsz, 736]`，每个 token 的 entropy 都参与 bonus（`reshape_entropy` 里的 token_level 分支什么都不做）
+- **`action_level`**：`[bsz, 32]`，一个 chunk 内 23 个 token 的 entropy 相加
+- **`chunk_level`**：`[bsz]`，整个样本一个标量 entropy
+
+随后在 [fsdp_actor_worker.py:1463](rlinf/workers/actor/fsdp_actor_worker.py#L1463) 用 `masked_mean(entropy, mask=loss_mask)` 聚合成标量，乘以 `entropy_bonus` 系数后从总 loss 中减去（鼓励探索）：
+
+```python
+entropy_loss = masked_mean(entropy, mask=loss_mask)
+loss -= self.cfg.algorithm.entropy_bonus * entropy_loss
+```
+
+**注意**：pi05 配置中 `entropy_bonus: 0`，所以 entropy 实际上不参与 loss，`entropy_type` 对训练没有影响。但如果开启 entropy bonus，建议 `entropy_type` 与 `logprob_type` 保持一致的粒度，因为两者都是对同一分布在相同粒度上的统计量。
+
+---
+
+### 6.5 pi05 配置的完整数据流示例
+
+以 pi05 的 `reward_type="chunk_level"` + `logprob_type="token_level"` + `entropy_type="token_level"` 为例，配置是 `total_num_envs=2`, `num_action_chunks=32`, `action_dim=23`, `n_chunk_steps=16`：
+
+```
+1. Rollout 收集
+   rewards:      [T=16, bsz=2, num_chunks=32]     # 每个子步一个 reward
+   dones:        [T+1=17, bsz=2, num_chunks=32]
+   prev_values:  [T+1=17, bsz=2, 1]               # value 本就是 chunk 粒度
+   prev_logprobs: [T=16, bsz=2, 32, 23]           # 每个 token 一个 logprob
+
+─────────────────────────────────────
+2. preprocess_embodied_advantages_inputs (reward_type=chunk_level)
+   rewards → sum over num_chunks → [16, 2, 1]
+   dones   → max over num_chunks → [17, 2, 1]
+   然后展平到 [n_steps, bsz] 做 GAE
+
+─────────────────────────────────────
+3. GAE 计算
+   advantages: [n_steps, bsz] → 转置回 [bsz, n_steps, 1]
+
+─────────────────────────────────────
+4. process_nested_dict_for_train → 展平 batch 维
+   logprobs / old_logprobs: [bsz_flat, 736]   (bsz_flat = 2 × 16 = 32)
+   advantages:              [bsz_flat, 1]
+
+─────────────────────────────────────
+5. preprocess_loss_inputs (reward_type=chunk_level, logprob_type=token_level)
+   (a) reward_type="chunk_level": advantages.flatten() → [bsz_flat]
+   (b) logprob_type="token_level":
+       logprobs = logprobs.reshape(bsz_flat, 32, 23)     # [bsz_flat, 32, 23]
+       old_logprobs = 同样
+       advantages = advantages.unsqueeze(-1)             # [bsz_flat, 1]
+       # 随后 expand_to_target_dim 广播到 [bsz_flat, 32, 23]
+
+─────────────────────────────────────
+6. compute_ppo_actor_loss
+   ratio = exp(logprobs - old_logprobs)                 # [bsz_flat, 32, 23]
+   clipped_ratio = clamp(ratio, 1-ε_low, 1+ε_high)      # [bsz_flat, 32, 23]
+   policy_loss = -min(ratio * A, clipped_ratio * A)     # [bsz_flat, 32, 23]
+   loss = masked_mean(policy_loss, loss_mask)           # scalar
+```
+
+**总梯度样本数**：`bsz_flat × 32 × 23`。每个 token 都有独立的 clip 判定和梯度贡献，但它们共享同一个 chunk 粒度的 advantage。
+
+这就是"chunk 级 advantage + token 级 ratio"的组合：用较稳定的 chunk 粒度做价值估计（降低 GAE 方差），用细粒度的 token 做策略梯度（提高梯度信号密度）。
+
+---
+
+## 第七部分：PPO Actor / Critic Loss 设计深度剖析
+
+本节结合 [rlinf/algorithms/losses.py](rlinf/algorithms/losses.py) 的具体代码，讲清楚 PPO 损失函数中的每个设计细节：为什么要 clip？为什么要 double clip？为什么要 clip value？为什么用 Huber？
+
+### 7.1 入口：`compute_ppo_actor_critic_loss`
+
+pi05 配置使用 `loss_type: actor_critic`，它注册在 [losses.py:403-431](rlinf/algorithms/losses.py#L403-L431)：
+
+```python
+@register_policy_loss("actor_critic")
+def compute_ppo_actor_critic_loss(**kwargs) -> tuple[torch.Tensor, dict]:
+    metrics_data = {}
+    actor_loss, actor_metrics_data = compute_ppo_actor_loss(**kwargs)
+    critic_loss, critic_metrics_data = compute_ppo_critic_loss(**kwargs)
+
+    loss = actor_loss + critic_loss    # ← 直接相加，无加权
+    metrics_data.update(actor_metrics_data)
+    metrics_data.update(critic_metrics_data)
+    return loss, metrics_data
+```
+
+简单相加是因为 **Critic 和 Actor 用的是同一个 backbone**（value head 和 policy head 共享表征），所以不需要单独权重。如果想平衡两者的梯度贡献，可以通过 `critic_warmup_steps`、`value_lr` 等配置调节。
+
+---
+
+### 7.2 Actor Loss：`compute_ppo_actor_loss`
+
+**代码位置**：[losses.py:167-309](rlinf/algorithms/losses.py#L167-L309)
+
+#### Step 1: Fast path — 全零 loss_mask 提前返回
+
+```python
+# losses.py:201-214
+if fast_path_zero_loss_mask and (loss_mask is not None and loss_mask[0].sum() == 0.0):
+    return torch.tensor(0.0, device=logprobs.device), { ... }
+```
+
+如果整个 batch 都被 mask 掉（比如 `filter_rewards` 把所有样本都过滤了），直接返回 0，避免无效计算。
+
+#### Step 2: 构造 `loss_mask_ratio`（可选）
+
+```python
+# losses.py:216-224
+if max_episode_steps is not None and loss_mask_sum is not None and loss_mask is not None:
+    loss_mask_ratio = (loss_mask_sum * 1.0) / max_episode_steps
+    loss_agg_func = masked_mean_ratio
+```
+
+这段有点 tricky。回忆 `loss_mask_sum` 是 `loss_mask.sum(dim=(0, 2))` expand 回来的，代表每条 episode 的有效步数。
+
+- `loss_mask_ratio = 实际有效步数 / max_episode_steps` ∈ (0, 1]
+- 聚合函数从 `masked_mean` 切到 `masked_mean_ratio`
+
+对比两者（[utils/utils.py:125-158](rlinf/utils/utils.py#L125-L158)）：
+
+```python
+def masked_mean(values, mask, axis=None):
+    return (values * mask).sum(axis=axis) / mask.sum(axis=axis)   # 普通加权平均
+
+def masked_mean_ratio(values, mask, loss_mask_ratio):
+    return (values / loss_mask_ratio * mask).mean()                # 先按 episode 长度归一化
+```
+
+**为什么需要 `masked_mean_ratio`？** 想象 batch 里有两条 episode，一条跑满了 `max_episode_steps=500` 步，另一条只跑了 100 步就 done。如果用普通 `masked_mean`，长的 episode 会因为步数多而主导损失。`masked_mean_ratio` 的思路是：先把每一步的 loss 除以该 episode 的"相对长度"，让每条 episode 对总 loss 的贡献权重相同（类似 token-mean → sequence-mean 的调整）。
+
+**注意**：只有在同时提供了 `max_episode_steps` 和 `loss_mask_sum` 时才启用。pi05 的 `auto_reset=False` 模式下会提供这两个参数。
+
+#### Step 3: 计算 log ratio（数值稳定）
+
+```python
+# losses.py:240-246
+log_ratio = logprobs - old_logprobs
+if clip_log_ratio_min is not None:
+    log_ratio = torch.clamp(log_ratio, min=clip_log_ratio_min)
+if clip_log_ratio_max is not None:
+    log_ratio = torch.clamp(log_ratio, max=clip_log_ratio_max)
+ratio = torch.where(loss_mask, torch.exp(log_ratio), 0)
+approx_kl = torch.where(loss_mask, log_ratio.detach(), 0.0)
+```
+
+**设计细节**：
+- **先算 log_ratio 再 exp**：直接算 `new_prob / old_prob` 会在概率很小的时候溢出，log 空间做差更稳定
+- **`clip_log_ratio_min/max`**：在 log 空间预先 clip，防止 exp 爆炸（如果 `logprob - old_logprob` 太大，exp 后会 inf）。这是比标准 PPO 更严格的防御
+- **`torch.where(loss_mask, ..., 0)`**：mask 掉的位置 ratio 直接置 0，避免后续计算产生 NaN
+- **`approx_kl = -log_ratio.sum() / count`**：用 `-E[log(π_new/π_old)]` 近似 KL，这是 Schulman 提出的 "k1 estimator"，廉价但有偏
+
+#### Step 4: 标准 PPO clip
+
+```python
+# losses.py:249-255
+clipped_ratio = torch.clamp(ratio, 1.0 - clip_ratio_low, 1.0 + clip_ratio_high)
+policy_loss1 = -advantages * ratio           # 未 clip 的目标
+policy_loss2 = -advantages * clipped_ratio   # clip 后的目标
+
+clip_mask = policy_loss1.detach() < policy_loss2.detach()  # 记录哪些位置被 clip 生效
+policy_loss = torch.max(policy_loss1, policy_loss2)        # 取最大（因为是负号）
+```
+
+这是 **PPO 的核心**——clip surrogate objective。注意这里是 `torch.max` 而不是 `torch.min`，因为目标是 `-advantages * ratio`（要最小化的 loss，不是要最大化的 objective）。
+
+**为什么 `clip_ratio_low` 和 `clip_ratio_high` 不对称？** pi05 配置：
+```yaml
+clip_ratio_high: 0.28
+clip_ratio_low: 0.2
+```
+这是 **DAPO** 论文的 trick：允许 ratio 上界稍宽（允许新策略相对旧策略有更大概率提升），但下界保持紧（防止概率骤降）。非对称 clip 能提高梯度多样性，缓解熵塌陷。
+
+#### Step 5: Dual Clip（`clip_ratio_c`）
+
+```python
+# losses.py:256-262
+if clip_ratio_c is not None:
+    assert clip_ratio_c > 1.0
+    policy_loss3 = torch.sign(advantages) * clip_ratio_c * advantages
+    dual_clip_mask = policy_loss3.detach() < policy_loss.detach()
+    policy_loss = torch.min(policy_loss, policy_loss3)
+```
+
+这是 **Dual-Clip PPO**（[Ye et al. 2020](https://arxiv.org/abs/1912.09729)），专门处理 **advantage 为负且 ratio 很大** 的 pathological case。
+
+想象：当 `advantage < 0`（这个 action 不好）且 `ratio >> 1`（新策略还是想选这个 action），标准 PPO clip 变成：
+```
+policy_loss = max(-A*ratio, -A*clipped_ratio) = -A*ratio   # 因为 A<0, -A*ratio 最大
+```
+此时 loss 会变得非常大（因为 ratio 不受限），梯度爆炸。
+
+Dual clip 再加一层保护：`policy_loss3 = sign(A) * c * A = -c * |A|`（当 A<0 时）。对 loss 取 `min`：
+```
+policy_loss = min(policy_loss, -c * |A|)
+```
+这保证了 loss 不会低于一个下界（即梯度幅度不会超过 `c * |A|`）。pi05 用 `clip_ratio_c: 3.0`。
+
+**注意**：Dual clip 只在 `A < 0` 的情况下起作用。对 `A > 0`，`policy_loss3 = c * A > 0 > policy_loss`，`min` 不会生效。
+
+#### Step 6: 聚合成标量
+
+```python
+# losses.py:264-269
+metric_policy_loss_abs = loss_agg_func(policy_loss.abs(), loss_mask, loss_mask_ratio)
+policy_loss = loss_agg_func(policy_loss, loss_mask, loss_mask_ratio)
+```
+
+`loss_agg_func` 根据 Step 2 的判断，可能是 `masked_mean` 或 `masked_mean_ratio`。聚合后 `policy_loss` 变成 **scalar**。
+
+#### Step 7: Critic warmup 处理
+
+```python
+# losses.py:279-280
+if critic_warmup:
+    policy_loss = torch.tensor(0.0, device=policy_loss.device)
+```
+
+在 `optimizer_steps < critic_warmup_steps` 时（pi05 默认 `critic_warmup_steps: 0`），把 actor loss 置 0，只训 critic。这能让 value function 先收敛到合理水平，再开始策略更新，防止早期错误的 advantage 估计把策略带偏。
+
+#### Step 8: 打包 metrics
+
+```python
+# losses.py:289-308
+if len(ratio.shape) > 2 and loss_mask.shape[-1] == 1 and ratio.shape[-1] > 1:
+    loss_mask_for_metrics = loss_mask.expand_as(ratio)    # token_level 下广播
+
+metrics_data = {
+    "actor/policy_loss": policy_loss.detach(),
+    "actor/policy_loss_abs": metric_policy_loss_abs.detach(),
+    "actor/ratio": masked_mean(ratio_for_metrics, loss_mask_for_metrics),
+    "actor/ratio_abs": masked_mean(ratio_abs_for_metrics, loss_mask_for_metrics),
+    "actor/clipped_ratio": masked_mean(...),
+    "actor/dual_cliped_ratio": masked_mean(...),
+    "actor/approx_kl": approx_kl.detach(),
+    "actor/clip_fraction": clip_fraction.detach(),
+}
+```
+
+**关键指标解读**：
+- **`actor/ratio`**：平均 π_new/π_old。健康训练下应接近 1.0，远离 1.0 意味着策略更新太激进
+- **`actor/clip_fraction`**：被 clip 生效的样本比例。经验值 10%-30%；太低说明 clip 没起作用（学习率太小），太高说明策略变化太快
+- **`actor/approx_kl`**：新旧策略的近似 KL 散度。许多实现用它做 early stopping（KL 超阈值就停止本 epoch 的更新）
+- **`actor/dual_cliped_ratio`**：dual clip 触发的样本比例，通常应该很低（<5%）
+
+---
+
+### 7.3 Critic Loss：`compute_ppo_critic_loss`
+
+**代码位置**：[losses.py:312-387](rlinf/algorithms/losses.py#L312-L387)
+
+#### Step 1: Value 的 clipped prediction
+
+```python
+# losses.py:347-349
+value_pred_clipped = prev_values + (values - prev_values).clamp(
+    -value_clip, value_clip
+)
+```
+
+**思想**：像 actor 那样，value 的更新也不能太激进。`prev_values` 是 rollout 时（旧策略下）的 V(s)，`values` 是当前策略下重新前向传播得到的新 V(s)。`value_pred_clipped` 是 "在距 prev_values ±value_clip 范围内的新 value"。pi05 用 `value_clip: 0.2`。
+
+#### Step 2: Huber loss + 取 max
+
+```python
+# losses.py:351-357
+value_loss_original = huber_loss(returns - values, huber_delta)
+value_loss_clipped = huber_loss(returns - value_pred_clipped, huber_delta)
+value_loss = torch.max(value_loss_original, value_loss_clipped)
+```
+
+**Huber loss**（[utils.py:20-23](rlinf/algorithms/utils.py#L20-L23)）：
+
+```python
+def huber_loss(error, delta):
+    return torch.where(
+        error.abs() < delta, 0.5 * error**2, delta * (error.abs() - 0.5 * delta)
+    )
+```
+
+- 当 `|error| < delta` 时用 MSE（对小误差敏感）
+- 当 `|error| >= delta` 时退化成 L1（对大误差鲁棒，避免梯度爆炸）
+
+pi05 用 `huber_delta: 10.0`，比较宽松，大多数情况下等价于 MSE。设置这个是为了防御异常大的 return 值（比如 reward 有 outlier 时）。
+
+**为什么取 max？** 这是 OpenAI baseline PPO 的经典设计，跟 actor 的 clip 对偶：
+- `value_loss_original`：unclipped，使用原始 value 预测的损失
+- `value_loss_clipped`：如果 value 偏离 prev_values 超过 value_clip，用 clamp 后的值计算损失
+- **取 max 是悲观策略**：选损失更大的那个。这会让"想把 value 拉离 prev_values"的梯度得到更强惩罚，防止 value function 剧烈跳变
+
+#### Step 3: 聚合
+
+```python
+# losses.py:358
+value_loss = loss_agg_func(value_loss, loss_mask, loss_mask_ratio)
+```
+
+与 actor 一样用 `masked_mean` 或 `masked_mean_ratio`。
+
+#### Step 4: Explained variance 诊断
+
+```python
+# losses.py:364-379
+masked_returns = returns[loss_mask]
+masked_values = values[loss_mask]
+
+var_returns = torch.var(masked_returns)
+if torch.isnan(var_returns) or var_returns == 0:
+    explained_variance = torch.tensor(float("nan"), ...)
+else:
+    var_diff = torch.var(masked_returns - masked_values)
+    explained_variance = 1 - var_diff / var_returns
+```
+
+**Explained Variance** 是 critic 质量的黄金诊断指标：
+- `EV = 1 - Var(returns - values) / Var(returns)`
+- **EV ≈ 1**：value 完美预测了 returns（critic 过拟合或任务太简单）
+- **EV ≈ 0**：value 等同于输出 returns 的均值（critic 没学到任何信号）
+- **EV < 0**：value 比常数还差（critic 彻底失败，需要调查）
+
+训练过程中 EV 从 0 慢慢上升到 0.5-0.9 是健康的。如果一直是 0 或负数，说明 critic 学不动，可能原因：value_lr 太小、reward scale 异常、或者 advantage 算错了。
+
+---
+
+### 7.4 总损失组合
+
+回到 `compute_ppo_actor_critic_loss`：
+
+```python
+loss = actor_loss + critic_loss
+```
+
+**加上 entropy bonus**（在 [fsdp_actor_worker.py:1449-1465](rlinf/workers/actor/fsdp_actor_worker.py#L1449-L1465) 里）：
+
+```python
+if self.cfg.algorithm.entropy_bonus > 0 and not critic_warmup:
+    entropy = output_dict["entropy"]
+    entropy = reshape_entropy(entropy, entropy_type, action_dim, batch_size)
+    entropy_loss = masked_mean(entropy, mask=loss_mask)
+    loss -= self.cfg.algorithm.entropy_bonus * entropy_loss
+```
+
+最终损失：
+```
+L_total = L_actor + L_critic - β * H(π)
+```
+
+pi05 的 `entropy_bonus: 0`，所以 entropy 项不生效。最终只有 actor + critic 两部分。
+
+---
+
+### 7.5 设计 takeaways：为什么 PPO 这样设计？
+
+| 设计 | 目的 | 代码位置 |
+|------|------|---------|
+| **Log ratio + clamp**（clip_log_ratio_min/max） | 数值稳定，防止 exp 爆炸 | losses.py:241-245 |
+| **`torch.where(mask, ..., 0)`** | mask 位置置零，防 NaN 传播 | losses.py:246-247 |
+| **非对称 clip**（low < high） | DAPO trick：缓解熵塌陷 | losses.py:249 |
+| **`torch.max(pg1, pg2)`** | PPO clip surrogate：限制策略更新幅度 | losses.py:255 |
+| **Dual clip**（clip_ratio_c） | 防御 A<0 且 ratio 大时的梯度爆炸 | losses.py:256-262 |
+| **`masked_mean_ratio`** | 按 episode 长度归一化，避免长 episode 主导 loss | losses.py:223-224 |
+| **`critic_warmup`** | 先训 critic 让 value 收敛，再训 actor | losses.py:279-280 |
+| **Value clip + max**（对偶于 actor） | 防止 value function 剧烈跳变 | losses.py:347-357 |
+| **Huber loss** | 对 return outlier 鲁棒 | losses.py:351-354 |
+| **Explained variance** | 诊断 critic 健康度 | losses.py:363-379 |
+
+**核心哲学**：PPO 的每一层 clip 都是为了 **限制"单次更新的破坏力"**——actor 的 ratio clip 限制策略分布的变化幅度，critic 的 value clip 限制价值估计的变化幅度，dual clip 则处理了 clip 本身在极端情况下失效的边界。所有这些机制合在一起，让 PPO 成为一个**对超参和数据质量容错性很高**的算法，这也是它在实践中广泛应用的原因。
