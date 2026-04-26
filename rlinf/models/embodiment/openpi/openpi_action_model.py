@@ -81,6 +81,15 @@ class OpenPi0Config(Pi0Config):
     # ===== NFT-specific parameters =====
     is_nft: bool = False
 
+    # ===== Full pi0.5 parameters =====
+    full_pi05: bool = False  # Enable full pi0.5 (CoT text generation + action)
+    forward_mode: str = "vla"  # Inference mode: "vla" | "vlm" | "vlm_vla"
+    max_language_len: int = 50  # Max CoT tokens to generate
+    language_temperature: float = 0.0  # 0.0 = greedy decoding
+    language_loss_weight: float = 1.0  # Weight for CE loss (language)
+    action_loss_weight: float = 1.0  # Weight for flow matching loss (action)
+    eos_token_id: int = 1  # PaliGemma default EOS token
+
 
 class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
     """

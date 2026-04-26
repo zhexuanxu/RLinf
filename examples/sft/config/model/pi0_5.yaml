@@ -32,3 +32,11 @@ openpi:
   value_after_vlm: False
   value_vlm_mode: "mean_token"
   detach_critic_input: null
+
+  # Full pi0.5 (CoT + action) - disabled by default
+  full_pi05: False
+  forward_mode: "vla"          # "vla" | "vlm" | "vlm_vla"
+  max_language_len: 50
+  language_temperature: 0.0
+  language_loss_weight: 1.0
+  action_loss_weight: 1.0

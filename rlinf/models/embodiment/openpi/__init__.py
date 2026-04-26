@@ -59,9 +59,16 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         checkpoint_dir, "actor", "model_state_dict", "full_weights.pt"
     )
 
-    model: OpenPi0ForRLActionPrediction = OpenPi0ForRLActionPrediction(
-        actor_model_config
-    )
+    # Select model class based on full_pi05 flag
+    full_pi05 = getattr(actor_model_config, "full_pi05", False)
+    if full_pi05:
+        from rlinf.models.embodiment.openpi.openpi_full_pi05_model import (
+            OpenPi05FullForRLActionPrediction,
+        )
+
+        model = OpenPi05FullForRLActionPrediction(actor_model_config)
+    else:
+        model = OpenPi0ForRLActionPrediction(actor_model_config)
     # train expert only
     if actor_model_config.train_expert_only:
         model.freeze_vlm()
@@ -89,6 +96,14 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
     # fsdp replace
     # model.paligemma_with_expert.replace_gemma_decoder_layers()
+
+    # For VLM-only mode, skip norm_stats loading and wrappers (no actions to normalize)
+    forward_mode = getattr(actor_model_config, "forward_mode", "vla")
+    if full_pi05 and forward_mode == "vlm":
+        # VLM-only: no action normalization needed
+        model.setup_wrappers(transforms=[], output_transforms=[])
+        return model
+
     # load data stats
     data_config = actor_train_config.data.create(
         actor_train_config.assets_dirs, actor_model_config
