@@ -51,10 +51,11 @@ class LeRobotBehaviorDataConfig(DataConfigFactory):
             inputs=[
                 _transforms.RepackTransform(
                     {
-                        "observation/image": "image",
-                        "observation/wrist_image": "wrist_image",
-                        "observation/state": "state",
-                        "actions": "actions",
+                        "observation/image": "observation.images.rgb.head",
+                        "observation/left_wrist_image": "observation.images.rgb.left_wrist",
+                        "observation/right_wrist_image": "observation.images.rgb.right_wrist",
+                        "observation/state": "observation.state",
+                        "actions": "action",
                         "prompt": "prompt",
                     }
                 )
@@ -109,4 +110,5 @@ class LeRobotBehaviorDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             use_quantile_norm=self.use_quantile_norm,
+            action_sequence_keys=("action",),
         )

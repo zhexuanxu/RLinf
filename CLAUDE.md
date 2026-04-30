@@ -60,6 +60,7 @@ openpi:
 - `02-sft-guide.md`：SFT 三种模式启动指南
 - `03-code-walkthrough.md`：代码路径走读
 - `04-sft-eval.md`：VLM-only SFT eval 流程（baseline、accuracy、QA 打印、FSDP 注意事项）
+- `05-behavior-vla-sft.md`：BEHAVIOR 数据集 VLA SFT 实现（数据处理、norm stats、代码改动）
 
 ---
 
@@ -169,11 +170,21 @@ actor:
 
 ### 模式 2：VLA-only SFT（LeRobot 数据集）
 
+**RoboTwin 数据**（残血版或满血版）：
+
 ```bash
 bash examples/sft/run_vla_sft.sh robotwin_sft_openpi_pi05
 ```
 
-使用现有残血版配置即可。如果要用满血版：
+**BEHAVIOR 数据**（满血版，task-0000）：
+
+```bash
+bash examples/sft/run_vla_sft.sh behavior_pi05_vla
+```
+
+> 使用前需先运行数据准备脚本，详见 `pi05_doc/05-behavior-vla-sft.md`。
+
+如果要在其他 LeRobot 数据上用满血版：
 
 ```yaml
 openpi:

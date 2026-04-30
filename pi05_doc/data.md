@@ -119,10 +119,12 @@ Human teleoperation demonstrations recorded in the BEHAVIOR-1K simulator. A huma
 
 The full dataset and a lightweight subset are available:
 
-- **Full**: `2025-challenge-demos` (~10,000 episodes across 50 tasks)
-- **Short**: `2025-challenge-demos-short` (subset of ~2,400 episodes across 12 tasks)
+- **Full**: `2025-challenge-demos` (~10,000 episodes across 50 tasks, 200 per task)
+- **Short**: `2025-challenge-demos-short` (subset of 12 tasks, but metadata 仍保留全部 10,000 episodes 的记录)
 
-Both share the same directory layout.
+两者共享相同的目录结构，数据格式为 LeRobot v2.1。
+
+> **注意**：Short 版本的 `meta/info.json` 中 `total_episodes` 仍为 10000，`meta/episodes.jsonl` 也包含全部 10000 条记录，但实际只有 12 个 task 的 parquet 和视频文件存在。
 
 ### Directory Layout
 
@@ -180,7 +182,22 @@ Both share the same directory layout.
 
 ### `data/` — Trajectory Parquet Files
 
-Each `.parquet` file contains one complete episode with columns matching the features in `info.json`. Video frames are stored separately in `videos/` and referenced by frame index.
+Each `.parquet` file contains one complete episode. Parquet columns include **non-video** features only（action、observation.state、timestamps 等），图像帧存储在 `videos/` 下的 MP4 视频中，通过 LeRobot 的 video backend 按 timestamp 索引解码。
+
+Parquet 中的主要列：
+
+| 列名 | 类型 | 形状 | 说明 |
+|------|------|------|------|
+| `index` | int64 | (1,) | 帧在全数据集中的全局索引 |
+| `episode_index` | int64 | (1,) | episode 编号（跨任务的全局索引，非从 0 开始） |
+| `task_index` | int64 | (1,) | 所属任务编号（task-0000 → 0） |
+| `timestamp` | float64 | (1,) | 时间戳（秒），以 1/30s 递增 |
+| `observation.state` | float32 | (256,) | R1Pro 全 proprioception 向量 |
+| `observation.cam_rel_poses` | float32 | (21,) | 3 个摄像头相对位姿（3 x 7D） |
+| `observation.task_info` | float32 | (46,) | 任务相关状态信息 |
+| `action` | float32 | (23,) | 23 维动作向量 |
+
+> **注意**：Episode 索引不是连续的（如 task-0000 的 episode_index 为 10, 20, 30, ..., 3000），这导致 LeRobot v2.1 的 `_get_query_indices` 索引越界。如需用于训练，应使用 `toolkits/behavior/prepare_behavior_task0000.py` 进行重索引。
 
 ### `annotations/` — Skill Decomposition
 
@@ -221,9 +238,29 @@ The `task-{NNNN}` directory name corresponds to the task index (zero-padded to 4
 
 Not all tasks may be present in the short version. The full dataset contains all 50 tasks.
 
+### Action 维度说明
+
+R1Pro 的 23 维动作向量结构（与 proprioception 中的关节对应）：
+
+| 成分 | 维度 | 说明 |
+|------|------|------|
+| base velocity | 3 | 底盘平移/旋转速度 |
+| trunk joints | 4 | 躯干关节位置 |
+| left arm joints | 7 | 左臂 7 自由度关节 |
+| right arm joints | 7 | 右臂 7 自由度关节 |
+| left gripper | 1 | 左夹爪开合 |
+| right gripper | 1 | 右夹爪开合 |
+| **合计** | **23** | |
+
 ### Scene Instance Used
 
 All demonstration episodes use `activity_instance_id=0` (the default scene template). The 200 episodes per task in the short version differ only in the human operator's execution trajectory, not in the scene initialization.
+
+---
+
+## VLA 训练数据使用
+
+关于如何将 Challenge Demos 数据用于 VLA SFT 训练（包括数据重索引、norm stats 计算、代码适配），详见 `pi05_doc/05-behavior-vla-sft.md`。
 
 ---
 

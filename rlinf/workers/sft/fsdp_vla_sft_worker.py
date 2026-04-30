@@ -47,10 +47,35 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             if self._is_pi05_vlm_only():
                 return self._build_pi05_vlm_dataloader(data_paths, eval_dataset=eval_dataset)
 
+            # Force pyav video backend — torchcodec may be importable but broken
+            # at runtime (missing FFmpeg libs or PyTorch version mismatch).
+            # Also increase video timestamp tolerance for datasets with imprecise
+            # frame alignment (e.g., BEHAVIOR videos at 30fps need >=1/30s tolerance).
+            try:
+                import lerobot.common.datasets.video_utils as _vutils
+                _orig_codec = _vutils.get_safe_default_codec
+                def _pyav_fallback():
+                    try:
+                        from torchcodec.decoders import VideoDecoder  # noqa: F401
+                        return _orig_codec()
+                    except Exception:
+                        return "pyav"
+                _vutils.get_safe_default_codec = _pyav_fallback
+            except ImportError:
+                pass
+            try:
+                import lerobot.common.datasets.lerobot_dataset as _lrd
+                _orig_lrd_init = _lrd.LeRobotDataset.__init__
+                def _init_with_tolerance(self_ds, *args, **kwargs):
+                    kwargs.setdefault("tolerance_s", 1.0)
+                    _orig_lrd_init(self_ds, *args, **kwargs)
+                _lrd.LeRobotDataset.__init__ = _init_with_tolerance
+            except ImportError:
+                pass
+
             import openpi.training.data_loader as openpi_data_loader
 
             from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
-
             config = get_openpi_config(
                 self.cfg.actor.model.openpi.config_name,
                 model_path=self.cfg.actor.model.model_path,

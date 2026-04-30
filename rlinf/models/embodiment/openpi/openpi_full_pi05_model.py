@@ -62,12 +62,19 @@ class OpenPi05FullForRLActionPrediction(OpenPi0ForRLActionPrediction):
     - sample_with_reasoning for think-then-act inference
     """
 
+    @property
+    def lm_head(self):
+        """Access PaliGemma's lm_head without registering a duplicate submodule.
+
+        Assigning ``self.lm_head = module`` in ``__init__`` would cause
+        ``nn.Module.__setattr__`` to register a second reference, breaking
+        FSDP checkpoint save (duplicate FQN mapping).
+        """
+        return self.paligemma_with_expert.paligemma.lm_head
+
     def __init__(self, config: OpenPi0Config):
         super().__init__(config)
         self.logger = get_logger()
-
-        # lm_head already exists in PaliGemma — cache reference
-        self.lm_head = self.paligemma_with_expert.paligemma.lm_head
 
         # EOS token id
         self._eos_token_id = self._detect_eos_token_id()

@@ -92,21 +92,17 @@ class BehaviorInputs(transforms.DataTransformFn):
     use_all_wrist_images: bool = False
 
     def __call__(self, data: dict) -> dict:
-        # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
-        # stores as float32 (C,H,W), gets skipped for policy inference.
-        # Keep this for your own dataset, but if your dataset stores the images
-        # in a different key than "observation/image" or "observation/wrist_image",
-        # you should change it below.
-        # Pi0 models support three image inputs at the moment: one third-person view,
-        # and two wrist views (left and right).
-        # If your dataset does not have a particular type
-        # of image, e.g. wrist images, you can comment it out here and
-        # replace it with zeros like we do for the
-        # right wrist image below.
+        # Parse head camera image to uint8 (H,W,C).
         base_image = _parse_image(data["observation/image"])  # [h, w, c]
-        wrist_image = _parse_image(
-            data["observation/wrist_image"]
-        )  # [num_image, h, w, c]
+
+        # Handle both stacked wrist images (old format) and separate keys (BEHAVIOR v2.1).
+        if "observation/wrist_image" in data:
+            wrist_image = _parse_image(data["observation/wrist_image"])  # [2, h, w, c]
+            left_wrist = wrist_image[0, ...]
+            right_wrist = wrist_image[1, ...]
+        else:
+            left_wrist = _parse_image(data["observation/left_wrist_image"])
+            right_wrist = _parse_image(data["observation/right_wrist_image"])
 
         state = (
             extract_state_from_proprio(data["observation/state"])
@@ -114,18 +110,16 @@ class BehaviorInputs(transforms.DataTransformFn):
             else data["observation/state"]
         )
 
-        # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
             "state": state[:32],
             "image": {
                 "base_0_rgb": base_image,
-                "left_wrist_0_rgb": wrist_image[0, ...],
-                "right_wrist_0_rgb": wrist_image[1, ...],
+                "left_wrist_0_rgb": left_wrist,
+                "right_wrist_0_rgb": right_wrist,
             },
             "image_mask": {
                 "base_0_rgb": np.True_,
                 "left_wrist_0_rgb": np.True_,
-                # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
                 "right_wrist_0_rgb": np.True_
                 if self.model_type == _model.ModelType.PI0_FAST
                 or self.use_all_wrist_images

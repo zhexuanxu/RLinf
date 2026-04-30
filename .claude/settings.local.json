@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -l \"SFTRunner\" /mnt/public/xzxuan/repos/RLinf_pi05/rlinf/runners/*.py)",
+      "Bash(ls *)",
+      "Bash(python3 -c \"import openpi.models_pytorch.pi0_pytorch as m; print\\(m.__file__\\)\")",
+      "Bash(find / -path \"*/openpi/models_pytorch/pi0_pytorch.py\")",
+      "Bash(python3 -c \"import openpi.models.model as m; print\\(m.__file__\\)\")",
+      "Bash(find / -path \"*/openpi/models/model.py\")",
+      "Bash(python3 -c \"import openpi.models_pytorch.preprocessing_pytorch as p; print\\(p.__file__\\)\")",
+      "Read(//mnt/public/xzxuan/.venv_pi_371/**)",
+      "Bash(bash examples/sft/run_vla_sft.sh robotwin_sft_openpi_pi05_vlm)",
+      "Bash(python3 *)",
+      "Bash(grep -E \"\\\\.\\(yaml|py\\)$\")",
+      "Read(//mnt/public/xzxuan/models/pi05_base_pytorch/**)",
+      "Read(//mnt/public/xzxuan/models/**)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(find /mnt/public/xzxuan/repos/RLinf_pi05 -type f -name \"*.py\" -exec grep -l \"LeRobotDataset\\\\|lerobot.common\" {} \\\\;)",
+      "Bash(find /mnt/public/xzxuan/repos/openpi-comet -name \"*.py\" -type f -exec grep -l \"turning_on_radio\\\\|task.*prompt\" {} \\\\;)",
+      "Bash(pkill -f train_vla_sft)",
+      "Bash(pkill -f ray)",
+      "Bash(ffmpeg -version)",
+      "Bash(dpkg -l)",
+      "Bash(conda list *)",
+      "Read(//mnt/public/daibo/datasets/omini_data/2025-challenge-task-instances/**)",
+      "Bash(awk -F'time/' '{print $2}')",
+      "Bash(awk '-F[/=]' '{step=$1; optim=$NF; if\\(optim>1\\) print \"step=\"step, \"t_optim=\"optim}')",
+      "Bash(awk -F'[/,=]' '{printf \"step=%3s  data=%5s  fwd=%5s  bwd=%5s  optim=%5s\\\\n\", $1, $8, $10, $6, $12}')",
+      "Bash(awk -F= '{sum+=$2; n++} END {printf \"t_data avg=%.3f\\\\n\", sum/n}')",
+      "Bash(awk -F= '{sum+=$2; n++} END {printf \"t_optim avg=%.3f\\\\n\", sum/n}')",
+      "Bash(awk -F= '{sum+=$2; n++} END {printf \"step avg=%.3f\\\\n\", sum/n}')",
+      "Bash(/mnt/public/xzxuan/.venv_pi/bin/python *)",
+      "Bash(mount)",
+      "Read(//mnt/public/xzxuan/data/behavior-task0000-reindexed/videos/chunk-000/observation.images.rgb.head/**)"
+    ]
+  }
+}
