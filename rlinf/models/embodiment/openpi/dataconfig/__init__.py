@@ -26,6 +26,9 @@ from openpi.training.config import (
     TrainConfig,
 )
 
+from rlinf.models.embodiment.openpi.dataconfig.behavior_b1k_dataconfig import (
+    LeRobotB1KDataConfig,
+)
 from rlinf.models.embodiment.openpi.dataconfig.behavior_dataconfig import (
     LeRobotBehaviorDataConfig,
 )
@@ -339,6 +342,46 @@ _CONFIGS = [
         ),
         pytorch_weight_path="checkpoints/torch/pi0_base",
         num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_behavior_local",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
+        data=LeRobotBehaviorDataConfig(
+            repo_id="/mnt/public/xzxuan/data/behavior-task0000-reindexed",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir="/mnt/public/xzxuan/models/pi05_base_pytorch",
+                asset_id="physical-intelligence/behavior",
+            ),
+            extra_delta_transform=False,
+            extract_state_from_proprio=True,
+            use_all_wrist_images=True,
+            use_quantile_norm=True,
+        ),
+        pytorch_weight_path="/mnt/public/xzxuan/models/pi05_base_pytorch",
+        num_train_steps=30_000,
+        num_workers=8,
+    ),
+    TrainConfig(
+        name="pi05_behavior_b1k_local",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
+        data=LeRobotB1KDataConfig(
+            base_config=DataConfig(
+                repo_id="behavior-1k/2025-challenge-demos",
+                prompt_from_task=True,
+            ),
+            assets=AssetsConfig(
+                assets_dir="/mnt/public/xzxuan/models/pi05_base_pytorch",
+                asset_id="physical-intelligence/behavior",
+            ),
+            behavior_dataset_root="/mnt/public/xzxuan/data/2025-challenge-demos",
+            tasks=["turning_on_radio"],
+            fine_grained_level=0,
+            tolerance_s=1e-4,
+        ),
+        pytorch_weight_path="/mnt/public/xzxuan/models/pi05_base_pytorch",
+        num_train_steps=30_000,
+        num_workers=8,
     ),
     TrainConfig(
         name="pi05_gsenv",

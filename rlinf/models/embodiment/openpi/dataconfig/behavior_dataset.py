@@ -1,0 +1,1072 @@
+# Copyright 2025 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Ported BehaviorLeRobotDataset and dependencies from openpi-comet.
+
+All omnigibson imports have been replaced with inlined constants and utility
+functions so this module has zero omnigibson dependency.
+"""
+
+import bisect
+from collections import defaultdict
+from collections.abc import Callable, Iterable
+import dataclasses
+import json
+import logging
+import os
+from pathlib import Path
+import random
+from typing import Optional, Tuple
+
+import av
+import datasets
+from datasets import load_dataset
+from huggingface_hub import snapshot_download
+from lerobot.common.constants import HF_LEROBOT_HOME
+from lerobot.common.datasets.lerobot_dataset import CODEBASE_VERSION
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.common.datasets.utils import EPISODES_PATH
+from lerobot.common.datasets.utils import EPISODES_STATS_PATH
+from lerobot.common.datasets.utils import STATS_PATH
+from lerobot.common.datasets.utils import TASKS_PATH
+from lerobot.common.datasets.utils import backward_compatible_episodes_stats
+from lerobot.common.datasets.utils import cast_stats_to_numpy
+from lerobot.common.datasets.utils import check_delta_timestamps
+from lerobot.common.datasets.utils import check_timestamps_sync
+from lerobot.common.datasets.utils import check_version_compatibility
+from lerobot.common.datasets.utils import get_delta_indices
+from lerobot.common.datasets.utils import get_episode_data_index
+from lerobot.common.datasets.utils import get_safe_version
+from lerobot.common.datasets.utils import is_valid_version
+from lerobot.common.datasets.utils import load_info
+from lerobot.common.datasets.utils import load_json
+from lerobot.common.datasets.utils import load_jsonlines
+from lerobot.common.datasets.video_utils import get_safe_default_codec
+import numpy as np
+from openpi import transforms as _transforms
+import packaging.version
+import torch as th
+from torch.utils.data import Dataset
+from torch.utils.data import get_worker_info
+
+logger = logging.getLogger("BehaviorLeRobotDataset")
+
+# ---------------------------------------------------------------------------
+# Inlined constants (from omnigibson.learning.utils.eval_utils)
+# ---------------------------------------------------------------------------
+
+ROBOT_CAMERA_NAMES = {
+    "R1Pro": {
+        "left_wrist": "robot_r1::robot_r1:left_realsense_link:Camera:0",
+        "right_wrist": "robot_r1::robot_r1:right_realsense_link:Camera:0",
+        "head": "robot_r1::robot_r1:zed_link:Camera:0",
+    },
+}
+
+TASK_NAMES_TO_INDICES = {
+    # B10
+    "turning_on_radio": 0,
+    "picking_up_trash": 1,
+    "putting_away_Halloween_decorations": 2,
+    "cleaning_up_plates_and_food": 3,
+    "can_meat": 4,
+    "setting_mousetraps": 5,
+    "hiding_Easter_eggs": 6,
+    "picking_up_toys": 7,
+    "rearranging_kitchen_furniture": 8,
+    "putting_up_Christmas_decorations_inside": 9,
+    # B20
+    "set_up_a_coffee_station_in_your_kitchen": 10,
+    "putting_dishes_away_after_cleaning": 11,
+    "preparing_lunch_box": 12,
+    "loading_the_car": 13,
+    "carrying_in_groceries": 14,
+    "bringing_in_wood": 15,
+    "moving_boxes_to_storage": 16,
+    "bringing_water": 17,
+    "tidying_bedroom": 18,
+    "outfit_a_basic_toolbox": 19,
+    # B30
+    "sorting_vegetables": 20,
+    "collecting_childrens_toys": 21,
+    "putting_shoes_on_rack": 22,
+    "boxing_books_up_for_storage": 23,
+    "storing_food": 24,
+    "clearing_food_from_table_into_fridge": 25,
+    "assembling_gift_baskets": 26,
+    "sorting_household_items": 27,
+    "getting_organized_for_work": 28,
+    "clean_up_your_desk": 29,
+    # B40
+    "setting_the_fire": 30,
+    "clean_boxing_gloves": 31,
+    "wash_a_baseball_cap": 32,
+    "wash_dog_toys": 33,
+    "hanging_pictures": 34,
+    "attach_a_camera_to_a_tripod": 35,
+    "clean_a_patio": 36,
+    "clean_a_trumpet": 37,
+    "spraying_for_bugs": 38,
+    "spraying_fruit_trees": 39,
+    # B50
+    "make_microwave_popcorn": 40,
+    "cook_cabbage": 41,
+    "chop_an_onion": 42,
+    "slicing_vegetables": 43,
+    "chopping_wood": 44,
+    "cook_hot_dogs": 45,
+    "cook_bacon": 46,
+    "freeze_pies": 47,
+    "canning_food": 48,
+    "make_pizza": 49,
+}
+TASK_INDICES_TO_NAMES = {v: k for k, v in TASK_NAMES_TO_INDICES.items()}
+
+ANNOTATIONS_PATH = "annotations"
+ORCHESTRATORS_PATH = "orchestrators"
+
+
+# ---------------------------------------------------------------------------
+# Inlined utility functions
+# ---------------------------------------------------------------------------
+
+
+def hf_transform_to_torch(items_dict: dict):
+    """Convert HuggingFace dataset items to torch tensors.
+
+    Preserves float64 for timestamps to avoid precision issues.
+    Ported from omnigibson.learning.utils.lerobot_utils.
+    """
+    from PIL import Image as PILImage
+    from torchvision import transforms as tv_transforms
+
+    for key in items_dict:
+        if key == "timestamp":
+            items_dict[key] = [
+                x if isinstance(x, str) else th.tensor(x, dtype=th.float64)
+                for x in items_dict[key]
+            ]
+        else:
+            first_item = items_dict[key][0]
+            if isinstance(first_item, PILImage.Image):
+                to_tensor = tv_transforms.ToTensor()
+                items_dict[key] = [to_tensor(img) for img in items_dict[key]]
+            elif first_item is None:
+                pass
+            else:
+                items_dict[key] = [
+                    x if isinstance(x, str) else th.tensor(x) for x in items_dict[key]
+                ]
+    return items_dict
+
+
+def aggregate_feature_stats(stats_ft_list):
+    """Aggregate stats for a single feature across multiple episodes."""
+    means = np.stack([s["mean"] for s in stats_ft_list])
+    variances = np.stack([s["std"] ** 2 for s in stats_ft_list])
+    counts = np.stack([s["count"] for s in stats_ft_list])
+    q01 = np.stack([s["q01"] for s in stats_ft_list])
+    q99 = np.stack([s["q99"] for s in stats_ft_list])
+    total_count = counts.sum(axis=0)
+
+    while counts.ndim < means.ndim:
+        counts = np.expand_dims(counts, axis=-1)
+
+    weighted_means = means * counts
+    total_mean = weighted_means.sum(axis=0) / total_count
+
+    delta_means = means - total_mean
+    weighted_variances = (variances + delta_means**2) * counts
+    total_variance = weighted_variances.sum(axis=0) / total_count
+
+    weighted_q01 = np.percentile(q01, 1, axis=0)
+    weighted_q99 = np.percentile(q99, 99, axis=0)
+
+    return {
+        "min": np.min(np.stack([s["min"] for s in stats_ft_list]), axis=0),
+        "max": np.max(np.stack([s["max"] for s in stats_ft_list]), axis=0),
+        "mean": total_mean,
+        "std": np.sqrt(total_variance),
+        "q01": weighted_q01,
+        "q99": weighted_q99,
+        "count": total_count,
+    }
+
+
+def aggregate_stats(stats_list):
+    """Aggregate stats from multiple per-episode stat dicts."""
+    data_keys = {key for stats in stats_list for key in stats}
+    aggregated_stats = {key: {} for key in data_keys}
+    for key in data_keys:
+        stats_with_key = [stats[key] for stats in stats_list if key in stats]
+        aggregated_stats[key] = aggregate_feature_stats(stats_with_key)
+    return aggregated_stats
+
+
+def decode_video_frames(video_path, timestamps, tolerance_s, backend=None):
+    """Decode specific frames from a video file.
+
+    Ported from omnigibson.learning.utils.lerobot_utils.
+    """
+    import torchvision
+
+    video_path = str(video_path)
+    keyframes_only = False
+    if "depth" in video_path:
+        backend = "pyav"
+    torchvision.set_video_backend(backend or "pyav")
+    if backend == "pyav":
+        keyframes_only = True
+
+    reader = torchvision.io.VideoReader(video_path, "video")
+    first_ts = min(timestamps) - 5
+    last_ts = max(timestamps)
+    reader.seek(first_ts, keyframes_only=keyframes_only)
+
+    loaded_frames = []
+    loaded_ts = []
+    for frame in reader:
+        current_ts = frame["pts"]
+        loaded_frames.append(frame["data"])
+        loaded_ts.append(current_ts)
+        if current_ts >= last_ts:
+            break
+
+    reader.container.close()
+    reader = None
+
+    query_ts = th.tensor(timestamps)
+    loaded_ts = th.tensor(loaded_ts)
+    dist = th.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
+    min_, argmin_ = dist.min(1)
+
+    is_within_tol = min_ < tolerance_s
+    assert is_within_tol.all(), (
+        f"Timestamp tolerance violated ({min_[~is_within_tol]} > {tolerance_s=}). "
+        f"video: {video_path}"
+    )
+
+    closest_frames = th.stack([loaded_frames[idx] for idx in argmin_])
+    closest_frames = closest_frames.type(th.float32)
+    if "depth" not in video_path:
+        closest_frames = closest_frames / 255
+    return closest_frames
+
+
+# ---------------------------------------------------------------------------
+# VideoLoader + RGBVideoLoader (from omnigibson.learning.utils.obs_utils)
+# ---------------------------------------------------------------------------
+
+
+class VideoLoader:
+    """Sequential video frame loader using PyAV."""
+
+    def __init__(
+        self,
+        *args,
+        path: str,
+        batch_size: Optional[int] = None,
+        stride: int = 1,
+        output_size: Tuple[int, int] = None,
+        start_idx: int = 0,
+        end_idx: Optional[int] = None,
+        start_idx_is_keyframe: bool = False,
+        fps: int = 30,
+        downsample_factor: int = 1,
+        **kwargs,
+    ):
+        self.container = av.open(path.replace(":", "+"))
+        self.stream = self.container.streams.video[0]
+        self._frames = []
+        self.batch_size = batch_size
+        self.stride = stride
+        self._frame_iter = None
+        self._done = False
+        self.output_size = output_size
+        self._start_frame = start_idx
+        self._end_frame = end_idx if end_idx is not None else self.stream.frames
+        self._start_idx_is_keyframe = start_idx_is_keyframe
+        self._current_frame = start_idx
+        self._time_base = self.stream.time_base
+        self._fps = fps
+        self._downsample_factor = downsample_factor
+        start_frame = (
+            self._start_frame
+            if self._start_idx_is_keyframe
+            else max(0, self._start_frame - 5)
+        )
+        self._start_pts = int(start_frame / self._fps / self._time_base)
+        self.reset()
+
+    def __iter__(self):
+        self.reset()
+        self._frames = []
+        self._done = False
+        return self
+
+    def __next__(self):
+        if self._done:
+            raise StopIteration
+        try:
+            while True:
+                for _ in range(self._downsample_factor - 1):
+                    next(self._frame_iter)
+                frame = next(self._frame_iter)
+                processed_frame = self._process_single_frame(frame)
+                self._current_frame += 1
+                if self._current_frame == self._end_frame:
+                    self._done = True
+                self._frames.append(processed_frame)
+                if (
+                    self.batch_size and len(self._frames) == self.batch_size
+                ) or self._done:
+                    batch = th.cat(self._frames, dim=0)
+                    self._frames = self._frames[self.stride :]
+                    return batch
+        except StopIteration:
+            self._done = True
+            if len(self._frames) > 0:
+                batch = th.cat(self._frames, dim=0)
+                self._frames = []
+                return batch
+            else:
+                raise
+        except Exception as e:
+            self._done = True
+            raise e
+
+    def _process_single_frame(self, frame):
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def reset(self):
+        self._current_frame = self._start_frame
+        self.container.seek(
+            self._start_pts,
+            stream=self.stream,
+            backward=True,
+            any_frame=False,
+        )
+        self._frame_iter = self.container.decode(self.stream)
+        if self._start_frame > 0 and not self._start_idx_is_keyframe:
+            for frame in self._frame_iter:
+                if frame.pts is None:
+                    continue
+                cur_frame = round(frame.pts * self._time_base * self._fps)
+                if cur_frame == self._start_frame - 1:
+                    return
+                elif cur_frame > self._start_frame - 1:
+                    raise ValueError(
+                        f"Start frame {self._start_frame} beyond video length. "
+                        f"Current: {cur_frame}"
+                    )
+
+    def close(self):
+        self.container.close()
+
+
+class RGBVideoLoader(VideoLoader):
+    def __init__(
+        self, data_path: str, task_id: int, camera_id: str, demo_id: str, *args, **kwargs
+    ):
+        super().__init__(
+            path=f"{data_path}/videos/task-{task_id:04d}/observation.images.rgb.{camera_id}/episode_{demo_id}.mp4",
+            *args,
+            **kwargs,
+        )
+
+    def _process_single_frame(self, frame):
+        rgb = frame.to_ndarray(format="rgb24")  # (H, W, 3)
+        return th.from_numpy(rgb).movedim(-1, -3).unsqueeze(0)  # (1, 3, H, W)
+
+
+OBS_LOADER_MAP = {
+    "rgb": RGBVideoLoader,
+}
+
+
+# ---------------------------------------------------------------------------
+# PromptFromLeRobotItem transform
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class PromptFromLeRobotItem(_transforms.DataTransformFn):
+    """Extracts a prompt from the current LeRobot dataset item's 'task' field."""
+
+    def __call__(self, data: dict) -> dict:
+        return {**data, "prompt": data.pop("task")}
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator helpers
+# ---------------------------------------------------------------------------
+
+
+def load_orchestrators_data(episode_path_or_level_0_task, episode_len):
+    output_data = defaultdict(list)
+    if type(episode_path_or_level_0_task) == str:
+        for i in range(4):
+            output_data[i] = [
+                {
+                    "task": episode_path_or_level_0_task,
+                    "start_frame": 0,
+                    "end_frame": episode_len - 1,
+                }
+            ]
+        return output_data
+    episode_path = episode_path_or_level_0_task
+    task_annotated_data = load_json(episode_path / "task_annotated.json")
+    level_0_task = task_annotated_data["cot_task_description"]
+    output_data[0].append(
+        {
+            "task": level_0_task,
+            "start_frame": 0,
+            "end_frame": episode_len - 1,
+        }
+    )
+    try:
+        num_level1_tasks = len(task_annotated_data["cot_subtask_description_list"])
+        for i in range(num_level1_tasks):
+            subtask_data = load_json(episode_path / f"subtask_{i}_annotated.json")
+            subtask = subtask_data["cot_subtask_description"]
+            start_frame, end_frame = (
+                subtask_data["start_frame"],
+                subtask_data["end_frame"] - 1,
+            )
+            skill = subtask_data["skill_description"]
+            output_data[1].append(
+                {"task": skill, "start_frame": start_frame, "end_frame": end_frame}
+            )
+            output_data[2].append(
+                {"task": subtask, "start_frame": start_frame, "end_frame": end_frame}
+            )
+            for event_data_path in sorted(
+                episode_path.glob(f"event_{i}_*_annotated.json")
+            ):
+                event_data = load_json(event_data_path)
+                event_task = event_data["subtask_answer_detailed"]
+                start_frame, end_frame = (
+                    event_data["start_frame"],
+                    event_data["end_frame"] - 1,
+                )
+                output_data[3].append(
+                    {
+                        "task": event_task,
+                        "start_frame": start_frame,
+                        "end_frame": end_frame,
+                    }
+                )
+    except Exception as e:
+        print(
+            f"[warn] {episode_path} failed to load orchestrators data: {e}, "
+            "falling back to default task."
+        )
+        for i in range(len(output_data)):
+            output_data[i] = output_data[0]
+    return output_data
+
+
+def skill_weight(cur_skill, skill_list: list[str]) -> float:
+    if "all" in skill_list:
+        skill_list = [skill for skill in skill_list if skill != "all"]
+        for skill_item in skill_list:
+            skill, weight = skill_item.split(":")
+            if skill == cur_skill:
+                return float(weight)
+        return 1.0
+    for skill_item in skill_list:
+        skill, weight = skill_item.split(":")
+        if skill == cur_skill:
+            return float(weight)
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# BehaviorLerobotDatasetMetadata
+# ---------------------------------------------------------------------------
+
+
+class BehaviorLerobotDatasetMetadata(LeRobotDatasetMetadata):
+    def __init__(
+        self,
+        repo_id: str,
+        root: str | Path | None = None,
+        revision: str | None = None,
+        force_cache_sync: bool = False,
+        tasks: Iterable[str] = None,
+        modalities: Iterable[str] = None,
+        cameras: Iterable[str] = None,
+    ):
+        self.task_name_candidates = (
+            set(tasks) if tasks is not None else set(TASK_NAMES_TO_INDICES.keys())
+        )
+        self.modalities = set(modalities) if modalities else {"rgb"}
+        self.camera_names = set(cameras) if cameras else {"head", "left_wrist", "right_wrist"}
+        assert self.modalities.issubset({"rgb", "depth", "seg_instance_id"})
+        assert self.camera_names.issubset(ROBOT_CAMERA_NAMES["R1Pro"])
+
+        self.repo_id = repo_id
+        self.revision = revision or CODEBASE_VERSION
+        self.root = Path(root) if root is not None else HF_LEROBOT_HOME / repo_id
+
+        try:
+            if force_cache_sync:
+                raise FileNotFoundError
+            self.load_metadata()
+        except (FileNotFoundError, NotADirectoryError):
+            if is_valid_version(self.revision):
+                self.revision = get_safe_version(self.repo_id, self.revision)
+            (self.root / "meta").mkdir(exist_ok=True, parents=True)
+            self.pull_from_repo(allow_patterns="meta/**", ignore_patterns="meta/episodes/**")
+            self.load_metadata()
+
+    def load_metadata(self):
+        self.info = load_info(self.root)
+        check_version_compatibility(self.repo_id, self._version, CODEBASE_VERSION)
+        self.tasks, self.task_to_task_index, self.task_names = self.load_tasks(self.root)
+        valid_task_indices = [
+            idx for idx, name in self.task_names.items() if name in self.task_name_candidates
+        ]
+        self.task_names = set([self.task_names[idx] for idx in valid_task_indices])
+        self.tasks = {idx: self.tasks[idx] for idx in valid_task_indices}
+        self.task_to_task_index = {v: k for k, v in self.tasks.items()}
+
+        self.episodes = self.load_episodes(self.root)
+        self.annotations = self.load_annotations(self.root)
+        self.orchestrators = self.load_orchestrators(self.root)
+        if self._version < packaging.version.parse("v2.1"):
+            self.stats = self.load_stats(self.root)
+            self.episodes_stats = backward_compatible_episodes_stats(self.stats, self.episodes)
+        else:
+            self.episodes_stats = self.load_episodes_stats(self.root)
+            self.stats = aggregate_stats(list(self.episodes_stats.values()))
+
+    def load_tasks(self, local_dir: Path):
+        tasks = load_jsonlines(local_dir / TASKS_PATH)
+        task_names = {
+            item["task_index"]: item["task_name"]
+            for item in sorted(tasks, key=lambda x: x["task_index"])
+        }
+        tasks_dict = {
+            item["task_index"]: item["task"]
+            for item in sorted(tasks, key=lambda x: x["task_index"])
+        }
+        task_to_task_index = {task: idx for idx, task in tasks_dict.items()}
+        return tasks_dict, task_to_task_index, task_names
+
+    def load_episodes(self, local_dir: Path):
+        episodes = load_jsonlines(local_dir / EPISODES_PATH)
+        return {
+            item["episode_index"]: item
+            for item in sorted(episodes, key=lambda x: x["episode_index"])
+            if item["episode_index"] // 1e4 in self.tasks
+        }
+
+    def load_stats(self, local_dir: Path):
+        if not (local_dir / STATS_PATH).exists():
+            return None
+        stats = load_json(local_dir / STATS_PATH)
+        return cast_stats_to_numpy(stats)
+
+    def load_episodes_stats(self, local_dir: Path):
+        episodes_stats = load_jsonlines(local_dir / EPISODES_STATS_PATH)
+        return {
+            item["episode_index"]: cast_stats_to_numpy(item["stats"])
+            for item in sorted(episodes_stats, key=lambda x: x["episode_index"])
+            if item["episode_index"] in self.episodes
+        }
+
+    def load_annotations(self, local_dir: Path):
+        annotations_dir = local_dir / ANNOTATIONS_PATH
+        if not annotations_dir.exists():
+            return {}
+        task_list = [task_id for task_id in annotations_dir.iterdir() if task_id.is_dir()]
+        return {
+            int(episode.stem[8:]): load_json(episode)
+            for task_id in task_list
+            if int(task_id.name[5:]) in self.tasks
+            for episode in sorted(task_id.iterdir())
+        }
+
+    def load_orchestrators(self, local_dir: Path):
+        orchestrators_path = local_dir / ORCHESTRATORS_PATH
+        orchestrators = {
+            episode_key: load_orchestrators_data(
+                episode_data["tasks"][0], episode_data["length"]
+            )
+            for episode_key, episode_data in sorted(self.episodes.items())
+        }
+        if orchestrators_path.exists():
+            for task in self.tasks:
+                task_dir = orchestrators_path / f"task-{task:04d}"
+                if task_dir.exists():
+                    orchestrators.update(
+                        {
+                            int(episode.stem[8:]): load_orchestrators_data(
+                                episode, self.episodes[int(episode.stem[8:])]["length"]
+                            )
+                            for episode in sorted(task_dir.iterdir())
+                        }
+                    )
+        return orchestrators
+
+    def get_annotation_path(self, ep_index: int) -> Path:
+        ep_chunk = self.get_episode_chunk(ep_index)
+        fpath = self.annotation_path.format(
+            episode_chunk=ep_chunk, episode_index=ep_index
+        )
+        return Path(fpath)
+
+    def get_metainfo_path(self, ep_index: int) -> Path:
+        ep_chunk = self.get_episode_chunk(ep_index)
+        fpath = self.metainfo_path.format(
+            episode_chunk=ep_chunk, episode_index=ep_index
+        )
+        return Path(fpath)
+
+    @property
+    def annotation_path(self) -> str | None:
+        return self.info.get("annotation_path")
+
+    @property
+    def metainfo_path(self) -> str | None:
+        return self.info.get("metainfo_path")
+
+    @property
+    def features(self) -> dict[str, dict]:
+        features = dict()
+        for name in self.info["features"].keys():
+            if (
+                name.startswith("observation.images.")
+                and name.split(".")[-1] in self.camera_names
+                and name.split(".")[-2] in self.modalities
+            ):
+                features[name] = self.info["features"][name]
+        return features
+
+
+# ---------------------------------------------------------------------------
+# BehaviorLeRobotDataset
+# ---------------------------------------------------------------------------
+
+
+class BehaviorLeRobotDataset(LeRobotDataset):
+    """Customized dataset for BEHAVIOR-1K with task filtering, chunk streaming, etc.
+
+    Ported from openpi-comet with omnigibson dependencies inlined.
+    """
+
+    def __init__(
+        self,
+        repo_id: str,
+        root: str | Path | None = None,
+        episodes: list[int] | None = None,
+        image_transforms: Callable | None = None,
+        delta_timestamps: dict | None = None,
+        tolerance_s: float = 1e-4,
+        revision: str | None = None,
+        force_cache_sync: bool = False,
+        download_videos: bool = True,
+        video_backend: str | None = "pyav",
+        batch_encoding_size: int = 1,
+        # Custom arguments
+        tasks: Iterable[str] = None,
+        modalities: Iterable[str] = None,
+        cameras: Iterable[str] = None,
+        local_only: bool = False,
+        check_timestamp_sync: bool = True,
+        chunk_streaming_using_keyframe: bool = True,
+        shuffle: bool = True,
+        seed: int = 42,
+        fine_grained_level: int = 0,
+        train_rgb_type: str = "regular",
+        return_seg_instance: bool = False,
+        skill_list: list[str] = None,
+    ):
+        if skill_list is None:
+            skill_list = ["all"]
+
+        Dataset.__init__(self)
+        self.repo_id = repo_id
+        self.root = (
+            Path(os.path.expanduser(str(root))) if root else HF_LEROBOT_HOME / repo_id
+        )
+        self.image_transforms = image_transforms
+        self.delta_timestamps = delta_timestamps
+        self.tolerance_s = tolerance_s
+        self.revision = revision or CODEBASE_VERSION
+        self.video_backend = video_backend or get_safe_default_codec()
+        self.delta_indices = None
+        self.batch_encoding_size = batch_encoding_size
+        self.episodes_since_last_encoding = 0
+        self.return_seg_instance = return_seg_instance
+        self.train_rgb_type = train_rgb_type
+        self.skill_list = skill_list
+
+        self.image_writer = None
+        self.episode_buffer = None
+
+        self.root.mkdir(exist_ok=True, parents=True)
+
+        self.seed = seed
+        if modalities is None:
+            modalities = ["rgb"]
+        if cameras is None:
+            cameras = ["head", "left_wrist", "right_wrist"]
+        self.task_names = (
+            set(tasks) if tasks is not None else set(TASK_NAMES_TO_INDICES.keys())
+        )
+        self.task_indices = [TASK_NAMES_TO_INDICES[task] for task in self.task_names]
+
+        self.meta = BehaviorLerobotDatasetMetadata(
+            repo_id=self.repo_id,
+            root=self.root,
+            revision=self.revision,
+            force_cache_sync=force_cache_sync,
+            tasks=self.task_names,
+            modalities=modalities,
+            cameras=cameras,
+        )
+
+        all_episodes = load_jsonlines(self.root / EPISODES_PATH)
+        epi_by_task = defaultdict(list)
+        for item in all_episodes:
+            if item["episode_index"] // 1e4 in self.meta.tasks:
+                epi_by_task[item["episode_index"] // 1e4].append(item["episode_index"])
+        for task_id, ep_indices in epi_by_task.items():
+            epi_by_task[task_id] = sorted(ep_indices)
+            if episodes is not None:
+                epi_by_task[task_id] = [
+                    epi_by_task[task_id][i]
+                    for i in episodes
+                    if i < len(epi_by_task[task_id])
+                ]
+        self.episodes = sorted([ep for eps in epi_by_task.values() for ep in eps])
+
+        self._chunk_streaming_using_keyframe = chunk_streaming_using_keyframe
+        if self._chunk_streaming_using_keyframe:
+            self.chunks = self._get_keyframe_chunk_indices()
+            if shuffle:
+                self.current_streaming_chunk_idx = None
+                self.current_streaming_frame_idx = None
+            else:
+                self.current_streaming_chunk_idx = 0
+                self.current_streaming_frame_idx = self.chunks[
+                    self.current_streaming_chunk_idx
+                ][0]
+            self.obs_loaders = dict()
+            self._should_obs_loaders_reload = True
+
+        self.episode_data_index_pos = {
+            ep_idx: i for i, ep_idx in enumerate(self.episodes)
+        }
+        logger.info(f"Total episodes: {len(self.episodes)}")
+
+        if (
+            self.episodes is not None
+            and self.meta._version >= packaging.version.parse("v2.1")
+        ):
+            episodes_stats = [
+                self.meta.episodes_stats[ep_idx] for ep_idx in self.episodes
+            ]
+            self.stats = aggregate_stats(episodes_stats)
+
+        try:
+            if force_cache_sync:
+                raise FileNotFoundError
+            for fpath in self.get_episodes_file_paths():
+                assert (self.root / fpath).is_file(), f"Missing file: {self.root / fpath}"
+            self.hf_dataset = self.load_hf_dataset()
+        except (AssertionError, FileNotFoundError, NotADirectoryError) as e:
+            if local_only:
+                raise e
+            self.revision = get_safe_version(self.repo_id, self.revision)
+            self.download_episodes(download_videos)
+            self.hf_dataset = self.load_hf_dataset()
+
+        self.episode_data_index = get_episode_data_index(
+            self.meta.episodes, self.episodes
+        )
+
+        if check_timestamp_sync:
+            timestamps = th.stack(self.hf_dataset["timestamp"]).numpy()
+            episode_indices = th.stack(self.hf_dataset["episode_index"]).numpy()
+            ep_data_index_np = {
+                k: t.numpy() for k, t in self.episode_data_index.items()
+            }
+            check_timestamps_sync(
+                timestamps,
+                episode_indices,
+                ep_data_index_np,
+                self.fps,
+                self.tolerance_s,
+            )
+
+        if self.delta_timestamps is not None:
+            check_delta_timestamps(self.delta_timestamps, self.fps, self.tolerance_s)
+            self.delta_indices = get_delta_indices(self.delta_timestamps, self.fps)
+
+        self.prepare_task(fine_grained_level)
+        self.omnigibson_mapping = {ep_idx: defaultdict(dict) for ep_idx in self.episodes}
+
+    def prepare_task(self, fine_grained_level: int):
+        self.fine_grained_level = fine_grained_level
+        self.task_sizes = {}
+        try:
+            for ep_id, ep_orch in self.meta.orchestrators.items():
+                self.task_sizes[ep_id] = [
+                    task_info["end_frame"] for task_info in ep_orch[fine_grained_level]
+                ]
+        except Exception as e:
+            print(f"[warn] {self.repo_id} failed to calculate episode subtask cumulate: {e}")
+
+    def get_episodes_file_paths(self) -> list[str]:
+        episodes = (
+            self.episodes
+            if self.episodes is not None
+            else list(self.meta.episodes.keys())
+        )
+        fpaths = [str(self.meta.get_data_file_path(ep_idx)) for ep_idx in episodes]
+        metainfo_path = getattr(self.meta, "metainfo_path", None)
+        if metainfo_path:
+            fpaths += [
+                str(self.meta.get_metainfo_path(ep_idx)) for ep_idx in episodes
+            ]
+        if len(self.meta.video_keys) > 0:
+            video_files = [
+                str(self.meta.get_video_file_path(ep_idx, vid_key))
+                for vid_key in self.meta.video_keys
+                for ep_idx in episodes
+            ]
+            fpaths += video_files
+        return fpaths
+
+    def download_episodes(self, download_videos: bool = True) -> None:
+        allow_patterns = []
+        if set(self.task_indices) != set(TASK_NAMES_TO_INDICES.values()):
+            for task in self.task_indices:
+                allow_patterns.append(f"**/task-{task:04d}/**")
+        ignore_patterns = []
+        if not download_videos:
+            ignore_patterns.append("videos/")
+        if set(self.task_indices) != set(TASK_NAMES_TO_INDICES.values()):
+            for task in set(TASK_NAMES_TO_INDICES.values()).difference(self.task_indices):
+                ignore_patterns.append(f"**/task-{task:04d}/**")
+        allow_patterns = None if allow_patterns == [] else allow_patterns
+        ignore_patterns = None if ignore_patterns == [] else ignore_patterns
+        self.pull_from_repo(
+            allow_patterns=allow_patterns, ignore_patterns=ignore_patterns
+        )
+
+    def pull_from_repo(self, allow_patterns=None, ignore_patterns=None):
+        snapshot_download(
+            self.repo_id,
+            repo_type="dataset",
+            revision=self.revision,
+            local_dir=self.root,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+            max_workers=max(1, os.cpu_count() - 2),
+        )
+
+    def load_hf_dataset(self):
+        if self.episodes is None:
+            path = str(self.root / "data")
+            hf_dataset = load_dataset("parquet", data_dir=path, split="train")
+        else:
+            files = [
+                str(self.root / self.meta.get_data_file_path(ep_idx))
+                for ep_idx in self.episodes
+            ]
+            hf_dataset = load_dataset("parquet", data_files=files, split="train")
+        hf_dataset.set_transform(hf_transform_to_torch)
+        return hf_dataset
+
+    def __getitem__(self, idx) -> dict:
+        if not self._chunk_streaming_using_keyframe:
+            item = super().__getitem__(idx)
+            item["task"] = self._get_fine_grained_task(item)
+            return item
+
+        # Streaming mode
+        if self.current_streaming_chunk_idx is None:
+            worker_info = get_worker_info()
+            worker_id = 0 if worker_info is None else worker_info.id
+            num_workers = 1 if worker_info is None else worker_info.num_workers
+            if not hasattr(self, "_active_chunks") or self._active_chunks is None:
+                indices = list(range(worker_id, len(self.chunks), num_workers))
+                worker_chunks = [self.chunks[i] for i in indices]
+                rng = np.random.default_rng(self.seed + worker_id)
+                rng.shuffle(worker_chunks)
+                self._active_chunks = worker_chunks
+            rng = np.random.default_rng(self.seed + worker_id)
+            self.current_streaming_chunk_idx = rng.integers(
+                0, len(self._active_chunks)
+            ).item()
+            self.current_streaming_frame_idx = self._active_chunks[
+                self.current_streaming_chunk_idx
+            ][0]
+
+        if (
+            self.current_streaming_frame_idx
+            >= self._active_chunks[self.current_streaming_chunk_idx][1]
+        ):
+            self.current_streaming_chunk_idx += 1
+            if self.current_streaming_chunk_idx >= len(self._active_chunks):
+                self.current_streaming_chunk_idx = 0
+            self.current_streaming_frame_idx = self._active_chunks[
+                self.current_streaming_chunk_idx
+            ][0]
+            self._should_obs_loaders_reload = True
+
+        item = self.hf_dataset[self.current_streaming_frame_idx]
+        if "observation.task_info" in item:
+            item.pop("observation.task_info")
+        ep_idx = item["episode_index"].item()
+
+        if self._should_obs_loaders_reload:
+            for loader in self.obs_loaders.values():
+                loader.close()
+            self.obs_loaders = dict()
+            self.current_streaming_episode_idx = ep_idx
+            for vid_key in self.meta.video_keys:
+                kwargs = {}
+                task_id = item["task_index"].item()
+                if "rgb" in vid_key:
+                    kwargs["train_rgb_type"] = self.train_rgb_type
+                loader_cls = OBS_LOADER_MAP.get(vid_key.split(".")[2])
+                if loader_cls is None:
+                    continue
+                self.obs_loaders[vid_key] = iter(
+                    loader_cls(
+                        data_path=self.root,
+                        task_id=task_id,
+                        camera_id=vid_key.split(".")[-1],
+                        demo_id=f"{ep_idx:08d}",
+                        start_idx=self._active_chunks[
+                            self.current_streaming_chunk_idx
+                        ][2],
+                        start_idx_is_keyframe=False,
+                        batch_size=1,
+                        stride=1,
+                        **kwargs,
+                    )
+                )
+            self._should_obs_loaders_reload = False
+
+        query_indices = None
+        if self.delta_indices is not None:
+            query_indices, padding = self._get_query_indices(
+                self.current_streaming_frame_idx, ep_idx
+            )
+            query_result = self._query_hf_dataset(query_indices)
+            item = {**item, **padding}
+            for key, val in query_result.items():
+                item[key] = val
+
+        task_skill = self._get_current_task_skill(item)
+        weight = skill_weight(task_skill, self.skill_list)
+        if not random.choices([True, False], weights=[weight, 1 - weight])[0]:
+            self.current_streaming_frame_idx += 1
+            for key in self.obs_loaders:
+                next(self.obs_loaders[key])[0]
+            return self.__getitem__(idx)
+
+        for key in self.obs_loaders:
+            item[key] = next(self.obs_loaders[key])[0]
+
+        if self.image_transforms is not None:
+            image_keys = self.meta.camera_keys
+            for cam in image_keys:
+                item[cam] = self.image_transforms(item[cam])
+
+        item["task"] = self._get_fine_grained_task(item)
+        self.current_streaming_frame_idx += 1
+        return item
+
+    def _get_current_task_skill(self, item: dict) -> str:
+        ep_idx = item["episode_index"].item()
+        frame_index = round(item["timestamp"].item() * self.fps)
+        sub_idx = bisect.bisect_right(
+            self.task_sizes[ep_idx], frame_index, hi=len(self.task_sizes[ep_idx]) - 1
+        )
+        task_skill = self.meta.orchestrators[ep_idx][1][sub_idx]["task"]
+        return task_skill
+
+    def _get_fine_grained_task(self, item: dict) -> str:
+        ep_idx = item["episode_index"].item()
+        task_idx = item["task_index"].item()
+        frame_index = round(item["timestamp"].item() * self.fps)
+        try:
+            sub_idx = bisect.bisect_right(
+                self.task_sizes[ep_idx],
+                frame_index,
+                hi=len(self.task_sizes[ep_idx]) - 1,
+            )
+            task_text = self.meta.orchestrators[ep_idx][self.fine_grained_level][
+                sub_idx
+            ]["task"]
+        except Exception as e:
+            print(f"[warn] {self.repo_id} failed to get subtask {item}: {e}")
+            task_text = self.meta.tasks[task_idx]
+        return task_text
+
+    def _get_query_indices(self, idx: int, ep_idx: int):
+        ep_idx_pos = self.episode_data_index_pos[ep_idx]
+        ep_start = self.episode_data_index["from"][ep_idx_pos]
+        ep_end = self.episode_data_index["to"][ep_idx_pos]
+        query_indices = {
+            key: [
+                max(ep_start.item(), min(ep_end.item() - 1, idx + delta))
+                for delta in delta_idx
+            ]
+            for key, delta_idx in self.delta_indices.items()
+        }
+        padding = {
+            f"{key}_is_pad": th.BoolTensor(
+                [
+                    (idx + delta < ep_start.item()) | (idx + delta >= ep_end.item())
+                    for delta in delta_idx
+                ]
+            )
+            for key, delta_idx in self.delta_indices.items()
+        }
+        return query_indices, padding
+
+    def _query_videos(self, query_timestamps, ep_idx):
+        item = {}
+        for vid_key, query_ts in query_timestamps.items():
+            video_path = self.root / self.meta.get_video_file_path(ep_idx, vid_key)
+            frames = decode_video_frames(
+                video_path, query_ts, self.tolerance_s, self.video_backend
+            )
+            item[vid_key] = frames.squeeze(0)
+        return item
+
+    def _get_keyframe_chunk_indices(self, chunk_size=250):
+        episode_lengths = {
+            ep_idx: ep_dict["length"]
+            for ep_idx, ep_dict in self.meta.episodes.items()
+        }
+        episode_lengths = [episode_lengths[ep_idx] for ep_idx in self.episodes]
+        chunks = []
+        offset = 0
+        for L in episode_lengths:
+            local_starts = list(range(0, L, chunk_size))
+            local_ends = local_starts[1:] + [L]
+            for ls, le in zip(local_starts, local_ends):
+                chunks.append((offset + ls, offset + le, ls))
+            offset += L
+        return chunks

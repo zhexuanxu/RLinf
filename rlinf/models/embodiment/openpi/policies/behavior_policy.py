@@ -92,21 +92,17 @@ class BehaviorInputs(transforms.DataTransformFn):
     use_all_wrist_images: bool = False
 
     def __call__(self, data: dict) -> dict:
-        # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
-        # stores as float32 (C,H,W), gets skipped for policy inference.
-        # Keep this for your own dataset, but if your dataset stores the images
-        # in a different key than "observation/image" or "observation/wrist_image",
-        # you should change it below.
-        # Pi0 models support three image inputs at the moment: one third-person view,
-        # and two wrist views (left and right).
-        # If your dataset does not have a particular type
-        # of image, e.g. wrist images, you can comment it out here and
-        # replace it with zeros like we do for the
-        # right wrist image below.
+        # Parse head camera image to uint8 (H,W,C).
         base_image = _parse_image(data["observation/image"])  # [h, w, c]
-        wrist_image = _parse_image(
-            data["observation/wrist_image"]
-        )  # [num_image, h, w, c]
+
+        # Handle both stacked wrist images (old format) and separate keys (BEHAVIOR v2.1).
+        if "observation/wrist_image" in data:
+            wrist_image = _parse_image(data["observation/wrist_image"])  # [2, h, w, c]
+            left_wrist = wrist_image[0, ...]
+            right_wrist = wrist_image[1, ...]
+        else:
+            left_wrist = _parse_image(data["observation/left_wrist_image"])
+            right_wrist = _parse_image(data["observation/right_wrist_image"])
 
         state = (
             extract_state_from_proprio(data["observation/state"])
@@ -114,18 +110,16 @@ class BehaviorInputs(transforms.DataTransformFn):
             else data["observation/state"]
         )
 
-        # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
             "state": state[:32],
             "image": {
                 "base_0_rgb": base_image,
-                "left_wrist_0_rgb": wrist_image[0, ...],
-                "right_wrist_0_rgb": wrist_image[1, ...],
+                "left_wrist_0_rgb": left_wrist,
+                "right_wrist_0_rgb": right_wrist,
             },
             "image_mask": {
                 "base_0_rgb": np.True_,
                 "left_wrist_0_rgb": np.True_,
-                # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
                 "right_wrist_0_rgb": np.True_
                 if self.model_type == _model.ModelType.PI0_FAST
                 or self.use_all_wrist_images
@@ -162,4 +156,62 @@ class BehaviorOutputs(transforms.DataTransformFn):
         # dimension, we need to now parse out the correct number of actions in the return dict.
         # For Behavior, we only return the first 7 actions (since the rest is padding).
         # For your own dataset, replace `7` with the action dimension of your dataset.
+        return {"actions": np.asarray(data["actions"][:, : self.action_dim])}
+
+
+# ---------------------------------------------------------------------------
+# B1kInputs / B1kOutputs — matching openpi-comet's b1k_policy.py key names
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class B1kInputs(transforms.DataTransformFn):
+    """Input transform that matches openpi-comet's B1kInputs.
+
+    Uses openpi-comet repack key names (observation/egocentric_camera, etc.)
+    and always extracts state from full proprioception.
+    """
+
+    action_dim: int = 32
+    model_type: _model.ModelType = _model.ModelType.PI0
+
+    def __call__(self, data: dict) -> dict:
+        state = extract_state_from_proprio(data["observation/state"])
+
+        base_image = _parse_image(data["observation/egocentric_camera"])
+        wrist_image_left = _parse_image(data["observation/wrist_image_left"])
+        wrist_image_right = _parse_image(data["observation/wrist_image_right"])
+
+        match self.model_type:
+            case _model.ModelType.PI0 | _model.ModelType.PI05:
+                names = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+                images = (base_image, wrist_image_left, wrist_image_right)
+                image_masks = (np.True_, np.True_, np.True_)
+            case _model.ModelType.PI0_FAST:
+                names = ("base_0_rgb", "base_1_rgb", "wrist_0_rgb")
+                images = (base_image, wrist_image_left, wrist_image_right)
+                image_masks = (np.True_, np.True_, np.True_)
+            case _:
+                raise ValueError(f"Unsupported model type: {self.model_type}")
+
+        inputs = {
+            "state": state,
+            "image": dict(zip(names, images, strict=True)),
+            "image_mask": dict(zip(names, image_masks, strict=True)),
+        }
+
+        if "actions" in data:
+            inputs["actions"] = data["actions"]
+        if "prompt" in data:
+            inputs["prompt"] = data["prompt"]
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class B1kOutputs(transforms.DataTransformFn):
+    """Output transform matching openpi-comet's B1kOutputs."""
+
+    action_dim: int = 23
+
+    def __call__(self, data: dict) -> dict:
         return {"actions": np.asarray(data["actions"][:, : self.action_dim])}
