@@ -13,7 +13,7 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor,env,rollout: 0-3
+    actor,env,rollout: all
 
 runner:
   task_type: sft
@@ -23,13 +23,13 @@ runner:
     experiment_name: "sft_behavior_pi05_vla"
     logger_backends: ["tensorboard"]
 
-  max_epochs: 20000
-  max_steps: -1
+  max_epochs: 20
+  max_steps: 30000
   val_check_interval: -1
   save_interval: 1000
 
 data:
-  train_data_paths: "/mnt/public/xzxuan/data/behavior-task0000-reindexed"
+  train_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
 
 algorithm:
   adv_type: gae
@@ -37,9 +37,9 @@ algorithm:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 4
-  global_batch_size: 128
-  seed: 0
+  micro_batch_size: 32
+  global_batch_size: 256
+  seed: 42
 
   model:
     precision: null
@@ -48,7 +48,7 @@ actor:
     action_dim: 23
     add_value_head: False
     openpi:
-      config_name: "pi05_behavior_local"
+      config_name: "pi05_behavior_b1k_local"
       detach_critic_input: True
       num_images_in_input: 3
       train_expert_only: False
@@ -67,12 +67,12 @@ actor:
     lr_warmup_steps: 1000
     lr_scheduler: "cosine"
     num_cycles: 0.5
-    min_lr: 2.5e-6
+    min_lr: 0.0
 
   fsdp_config:
     strategy: "fsdp"
     sharding_strategy: "no_shard"
-    use_orig_params: False
+    use_orig_params: True
     gradient_checkpointing: False
     mixed_precision:
       param_dtype: ${actor.model.precision}

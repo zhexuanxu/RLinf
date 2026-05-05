@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Convert FSDP SFT checkpoint to base-model-compatible safetensors format.
 
-Handles two issues with FSDP full_state_dict:
-1. FSDP unties embed_tokens/lm_head shared weights, saving an extra copy.
-   We drop the extra key to match base model format.
+Handles three issues with FSDP full_state_dict:
+1. FSDP unties embed_tokens/lm_head shared weights, saving separate copies.
+   The TRAINED copy (embed_tokens, which receives gradients through prompt
+   embedding) must be remapped to the base model's key name (lm_head),
+   not dropped.  See WEIGHT_TIE_ALIASES below.
 2. FSDP may promote LayerNorm/VisionEmbedding params to float32 during training.
    We cast all params to bfloat16 to match base model dtype.
+3. Any remaining truly-extra keys (not weight-tie aliases) are dropped.
 
 Usage:
     python toolkits/behavior/convert_sft_checkpoint.py \
-        --ckpt /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260429-08:26:43/sft_behavior_pi05_vla_comet/checkpoints/global_step_3000/actor/model_state_dict/full_weights.pt \
+        --ckpt /mnt/public/xzxuan/repos/RLinf_pi05/logs/.../full_weights.pt \
         --base-model /mnt/public/xzxuan/models/pi05_base_pytorch \
-        --output /mnt/public/xzxuan/models/pi05_behavior_sft_step3000
+        --output /mnt/public/xzxuan/models/ckpt/behavior/pytorch_sft_30000_align_comet
 """
 
 import argparse
@@ -45,11 +48,25 @@ def main():
     state_dict = torch.load(args.ckpt, map_location="cpu", weights_only=True)
     print(f"  Checkpoint: {len(state_dict)} keys")
 
-    # Drop keys not in base model (untied embed_tokens, etc.)
+    # FSDP unties weight-tied parameters (embed_tokens / lm_head).  During
+    # VLA-only training only embed_tokens receives gradients (through prompt
+    # embedding), while lm_head receives none (no CE loss).  We must remap
+    # the trained embed_tokens to the base model's lm_head key so that the
+    # trained values are preserved.  Any other extra keys are dropped.
+    WEIGHT_TIE_ALIASES = {
+        "paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight":
+            "paligemma_with_expert.paligemma.lm_head.weight",
+    }
+
     extra_keys = set(state_dict.keys()) - base_keys
-    for k in extra_keys:
-        del state_dict[k]
-        print(f"  Dropped extra key: {k}")
+    for k in sorted(extra_keys):
+        if k in WEIGHT_TIE_ALIASES:
+            target = WEIGHT_TIE_ALIASES[k]
+            print(f"  Remapping tied weight: {k} → {target}")
+            state_dict[target] = state_dict.pop(k)
+        else:
+            del state_dict[k]
+            print(f"  Dropped extra key: {k}")
 
     # Warn about missing keys
     missing_keys = base_keys - set(state_dict.keys())

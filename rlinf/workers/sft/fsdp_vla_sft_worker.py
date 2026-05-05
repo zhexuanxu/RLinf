@@ -49,6 +49,29 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             if self._is_pi05_vlm_only():
                 return self._build_pi05_vlm_dataloader(data_paths, eval_dataset=eval_dataset)
 
+            from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
+            config = get_openpi_config(
+                self.cfg.actor.model.openpi.config_name,
+                model_path=self.cfg.actor.model.model_path,
+                batch_size=self.cfg.actor.micro_batch_size * self._world_size,
+                data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
+            )
+
+            # Use behavior-specific data loader for B1K configs (BehaviorLeRobotDataset
+            # with chunk streaming), matching openpi-comet's data pipeline exactly.
+            from rlinf.models.embodiment.openpi.dataconfig.behavior_b1k_dataconfig import (
+                LeRobotB1KDataConfig,
+            )
+            if isinstance(config.data, LeRobotB1KDataConfig):
+                from rlinf.models.embodiment.openpi.dataconfig.behavior_data_loader import (
+                    create_behavior_data_loader,
+                )
+                data_loader = create_behavior_data_loader(
+                    config, shuffle=True, seed=self.cfg.actor.get("seed", 42),
+                )
+                return data_loader, data_loader.data_config()
+
+            # Standard openpi data loader path (non-behavior datasets)
             # Force pyav video backend — torchcodec may be importable but broken
             # at runtime (missing FFmpeg libs or PyTorch version mismatch).
             # Also increase video timestamp tolerance for datasets with imprecise
@@ -76,14 +99,6 @@ class FSDPVlaSftWorker(FSDPSftWorker):
                 pass
 
             import openpi.training.data_loader as openpi_data_loader
-
-            from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
-            config = get_openpi_config(
-                self.cfg.actor.model.openpi.config_name,
-                model_path=self.cfg.actor.model.model_path,
-                batch_size=self.cfg.actor.micro_batch_size * self._world_size,
-                data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
-            )
             data_loader = openpi_data_loader.create_data_loader(
                 config, framework="pytorch", shuffle=True
             )

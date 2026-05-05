@@ -213,6 +213,45 @@ bash examples/embodiment/run_embodiment.sh behavior_ppo_openpi_pi05_full
 
 ---
 
+## BEHAVIOR B1K 对齐（openpi-comet 参考实现）
+
+本仓库的 BEHAVIOR task-0000 SFT 管线已与 `openpi-comet` JAX 实现严格对齐。详见 `pi05_doc/06-behavior-b1k-alignment.md`。
+
+### 关键改动总结
+
+| 项目 | 旧值 | 对齐后 |
+|------|------|--------|
+| 训练步数 | ~16,790 (被 max_epochs=10 截断) | 30,000 |
+| LR 衰减终值 | 2.5e-6 | 0.0 |
+| Norm stats | 标准 LeRobot 聚合 | openpi-comet 聚合（percentile of percentiles） |
+| 数据集类 | 标准 `LeRobotDataset` | `BehaviorLeRobotDataset`（chunk streaming） |
+| 数据路径 | `behavior-task0000-reindexed` | `2025-challenge-demos` |
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `dataconfig/behavior_dataset.py` | 移植的 `BehaviorLeRobotDataset`，内联所有 omnigibson 依赖 |
+| `dataconfig/behavior_b1k_dataconfig.py` | `LeRobotB1KDataConfig` 工厂（匹配 openpi-comet 的 repack keys） |
+| `dataconfig/behavior_data_loader.py` | `create_behavior_data_loader()`（chunk streaming + DistributedSampler） |
+| `policies/behavior_policy.py` | 新增 `B1kInputs` / `B1kOutputs`（匹配 openpi-comet key 名） |
+
+### 启动命令
+
+```bash
+bash examples/sft/run_vla_sft.sh behavior_pi05_vla
+```
+
+### Norm Stats 生成
+
+详见 `pi05_doc/07-norm-stats.md`。使用以下命令独立生成（无需 openpi-comet）：
+
+```bash
+.venv_pi/bin/python toolkits/behavior/compute_behavior_norm_stats.py
+```
+
+---
+
 ## 向后兼容性
 
 | 场景 | 行为 |
