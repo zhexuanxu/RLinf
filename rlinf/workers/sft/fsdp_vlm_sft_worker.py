@@ -91,16 +91,52 @@ class FSDPVlmSftWorker(FSDPSftWorker):
             SupportedModel.QWEN3_VL_SFT,
             SupportedModel.QWEN3_VL_MOE_SFT,
         ]:
-            from torch.utils.data import DataLoader, DistributedSampler
-
-            from rlinf.data.datasets import sft_collate_fn
-            from rlinf.data.datasets.vlm import VLMDatasetRegistry
-
             # vlm sft before load dataloader should build the tokenizer
             if not hasattr(self, "tokenizer"):
                 self.tokenizer = self.build_tokenizer()
 
             dataset_name = self.cfg.data.get("dataset_name", "robo2vlmsft")
+
+            # --- Behavior skill VLM SFT: reuses BehaviorLeRobotDataset ---
+            if dataset_name == "behavior_skill_sft":
+                from transformers import AutoProcessor
+
+                from rlinf.models.embodiment.openpi.dataconfig.behavior_vlm_data_loader import (
+                    create_behavior_vlm_data_loader_qwen,
+                )
+
+                data_dir = data_paths[0] if isinstance(data_paths, list) else data_paths
+                processor = AutoProcessor.from_pretrained(
+                    self.cfg.actor.model.model_path
+                )
+                batch_size = (
+                    self.micro_batch_size
+                    if not eval_dataset
+                    else self.cfg.actor.get("eval_batch_size", 1)
+                )
+                data_loader = create_behavior_vlm_data_loader_qwen(
+                    data_root=data_dir,
+                    tasks=["turning_on_radio"],
+                    processor=processor,
+                    tokenizer=self.tokenizer,
+                    eval_mode=eval_dataset,
+                    batch_size=batch_size,
+                    num_workers=self.cfg.data.get("num_workers", 4),
+                    seed=self.cfg.data.get("seed", 42),
+                    system_prompt=self.cfg.data.get("system_prompt", None),
+                )
+                data_config = {
+                    "dataset_name": dataset_name,
+                    "num_samples": len(data_loader.dataset),
+                }
+                return data_loader, data_config
+
+            # --- Standard VLM SFT: uses VLMDatasetRegistry ---
+            from torch.utils.data import DataLoader, DistributedSampler
+
+            from rlinf.data.datasets import sft_collate_fn
+            from rlinf.data.datasets.vlm import VLMDatasetRegistry
+
             train_dataset = VLMDatasetRegistry.create(
                 dataset_name,
                 data_paths=data_paths,
@@ -246,8 +282,16 @@ class FSDPVlmSftWorker(FSDPSftWorker):
         body = body.rstrip(".").rstrip("/")
         return body
 
+    def run_eval(self):
+        # Reset per-eval-pass print counter on rank 0.
+        self._eval_print_remaining = (
+            int(self.cfg.runner.get("print_eval_samples", 0) or 0)
+            if self._rank == 0
+            else 0
+        )
+        return super().run_eval()
+
     def get_eval_model_output(self, batch: dict[str, Any]):
-        # hundle the input batch
         correct = 0
         input_ids = batch["prompt"].to(self.device)
         answers = batch["answer"]
@@ -264,8 +308,6 @@ class FSDPVlmSftWorker(FSDPSftWorker):
         )
 
         with torch.no_grad():
-            # use kv cache to generate the text
-            # the generate_with_kv_cache() is more efficient than the generate() in utils.py
             generate_ids = generate_with_kv_cache(
                 model=self.model,
                 eos_token_id=eos_token_id,
@@ -276,7 +318,6 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                 multi_modal_inputs=multi_modal_inputs,
             )
 
-        # encode the generated text
         for i in range(len(answers)):
             new_token_ids = generate_ids[i, input_ids.shape[1] :]
             full_pred_text = self.tokenizer.decode(
@@ -286,10 +327,22 @@ class FSDPVlmSftWorker(FSDPSftWorker):
             pred_text = self._extract_answer(full_pred_text)
             gold_text = answers[i]
 
-            if self._normalize_text(pred_text) == self._normalize_text(gold_text):
+            is_correct = self._normalize_text(pred_text) == self._normalize_text(gold_text)
+            if is_correct:
                 correct += 1
 
-        # eval model return the correct number of answers
+            if self._rank == 0 and getattr(self, "_eval_print_remaining", 0) > 0:
+                verdict = "CORRECT" if is_correct else "WRONG"
+                print(
+                    f"\n==== EVAL SKILL ({verdict}) ====\n"
+                    f"Gold:  {gold_text!r}\n"
+                    f"Pred:  {pred_text!r}\n"
+                    f"Raw:   {full_pred_text[:100]!r}\n"
+                    "================================",
+                    flush=True,
+                )
+                self._eval_print_remaining -= 1
+
         return correct
 
     def get_train_model_output(self, batch: dict[str, Any]):

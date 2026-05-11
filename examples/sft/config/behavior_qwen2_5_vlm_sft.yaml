@@ -17,34 +17,34 @@ runner:
     log_path: ${runner.output_dir}/${runner.experiment_name}
     project_name: rlinf
     experiment_name: ${runner.experiment_name}
-    logger_backends: ["tensorboard"] # wandb, swanlab
+    logger_backends: ["tensorboard"]
 
-  # sft runner use the len(dataset) as one epoch
-  max_epochs: -1
-  max_steps: 6000
-  # eval the model intenval
-  val_check_interval: 1000
-  # save the model interval
+  max_epochs: 5
+  max_steps: 30000
+  val_check_interval: 500
   save_interval: 1000
-  experiment_name: qwen2_5_vl_sft
+  max_eval_samples: 50
+  val_at_step_0: True
+  print_eval_samples: 5
+  experiment_name: behavior_qwen2_5_vlm_sft
   output_dir: ../results
   resume_dir: null
 
 data:
   type: vlm
-  dataset_name: "robo2vlmsft"
+  dataset_name: "behavior_skill_sft"
   apply_chat_template: True
   use_chat_template: True
-  # if train_data_paths is not None, the sft code will just eval the model
-  train_data_paths: /mnt/public/xzxuan/data/Robo2VLM/data
-  val_data_paths: /mnt/public/xzxuan/data/Robo2VLM/eval_data
-  prompt_key: "question"
-  choice_key: "choices"
-  answer_key: "correct_answer"
+  train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
+  val_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
+  prompt_key: "task_instruction"
+  answer_key: "skill_label"
   image_keys: ["image"]
-  max_prompt_length: 1024
+  max_prompt_length: 512
+  frame_stride: 10
+  eval_episode_count: 20
   lazy_loading: false
-  num_workers: 16
+  num_workers: 4
 
 algorithm:
   adv_type: gae
@@ -60,7 +60,7 @@ actor:
   model:
     model_type: "qwen2.5_vl"
     precision: fp32
-    model_path: /mnt/public/xzxuan/models/Qwen2.5-VL-3B-Instruct # https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct
+    model_path: /mnt/public/xzxuan/models/Qwen2.5-VL-3B-Instruct
     is_lora: False
 
   optim:
@@ -72,7 +72,7 @@ actor:
     clip_grad: 1.0
     lr_scheduler: "cosine"
     total_training_steps: ${runner.max_steps}
-    lr_warmup_steps: 200 
+    lr_warmup_steps: 200
 
   fsdp_config:
     strategy: "fsdp"

@@ -130,7 +130,11 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             )
 
     def _build_pi05_vlm_dataloader(self, data_paths, eval_dataset: bool = False):
-        """Build dataloader for pi0.5 VLM-only SFT with Robo2VLM data.
+        """Build dataloader for pi0.5 VLM-only SFT.
+
+        Supports two dataset backends controlled by ``cfg.data.dataset_name``:
+        - ``"behavior_skill_pi05"``: BEHAVIOR skill prediction from video frames.
+        - anything else (default): Robo2VLM parquet MCQ dataset.
 
         ``eval_dataset=True`` builds a prompt-only loader for accuracy
         evaluation (no answer concatenated; raw text returned in meta).
@@ -138,35 +142,61 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         import torch.distributed as dist
         from torch.utils.data import DataLoader, DistributedSampler
 
-        from rlinf.data.datasets.pi05_vlm_dataset import (
-            Pi05VLMDataset,
-            pi05_vlm_collate_fn,
-        )
+        from rlinf.data.datasets.pi05_vlm_dataset import pi05_vlm_collate_fn
+
         data_dir = data_paths[0] if isinstance(data_paths, list) else data_paths
         data_cfg = self.cfg.data
-        # Prefer cfg.data.max_token_len; fall back to openpi.max_token_len for
-        # back-compat with configs that placed it under the model block.
+        dataset_name = data_cfg.get("dataset_name", "pi05_robo2vlm")
         max_token_len = data_cfg.get(
             "max_token_len",
             getattr(self.cfg.actor.model.openpi, "max_token_len", 200),
         )
         num_images = getattr(self.cfg.actor.model.openpi, "num_images_in_input", 1)
-        image_keys = data_cfg.get("image_keys", ["image"])
-        image_key = image_keys[0] if image_keys else "image"
 
-        dataset = Pi05VLMDataset(
-            data_dir=data_dir,
-            max_token_len=max_token_len,
-            num_images=num_images,
-            prompt_key=data_cfg.get("prompt_key", "question"),
-            choice_key=data_cfg.get("choice_key", "choices"),
-            answer_key=data_cfg.get("answer_key", "correct_answer"),
-            image_key=image_key,
-            eval_mode=eval_dataset,
-        )
+        if dataset_name == "behavior_skill_pi05":
+            from rlinf.models.embodiment.openpi.dataconfig.behavior_vlm_data_loader import (
+                create_behavior_vlm_data_loader,
+            )
 
-        if self._pi05_tokenizer is None:
-            self._pi05_tokenizer = dataset.tokenizer
+            batch_size = (
+                self.eval_batch_size if eval_dataset else self.micro_batch_size
+            )
+            num_workers = data_cfg.get("num_workers", 4)
+            data_loader, tokenizer = create_behavior_vlm_data_loader(
+                data_root=data_dir,
+                tasks=["turning_on_radio"],
+                max_token_len=max_token_len,
+                num_images=num_images,
+                eval_mode=eval_dataset,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                seed=self.cfg.actor.get("seed", 42),
+            )
+            if self._pi05_tokenizer is None:
+                self._pi05_tokenizer = tokenizer
+            split = "eval" if eval_dataset else "train"
+            return data_loader, {
+                "dataset": "behavior_skill_pi05",
+                "split": split,
+                "num_samples": len(data_loader.dataset),
+            }
+        else:
+            from rlinf.data.datasets.pi05_vlm_dataset import Pi05VLMDataset
+
+            image_keys = data_cfg.get("image_keys", ["image"])
+            image_key = image_keys[0] if image_keys else "image"
+            dataset = Pi05VLMDataset(
+                data_dir=data_dir,
+                max_token_len=max_token_len,
+                num_images=num_images,
+                prompt_key=data_cfg.get("prompt_key", "question"),
+                choice_key=data_cfg.get("choice_key", "choices"),
+                answer_key=data_cfg.get("answer_key", "correct_answer"),
+                image_key=image_key,
+                eval_mode=eval_dataset,
+            )
+            if self._pi05_tokenizer is None:
+                self._pi05_tokenizer = dataset.tokenizer
 
         if dist.is_available() and dist.is_initialized():
             sampler = DistributedSampler(
@@ -194,13 +224,14 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         )
         split = "eval" if eval_dataset else "train"
         logging.info(
-            "Built pi0.5 VLM-only %s dataloader with %d samples from %s",
+            "Built pi0.5 VLM-only %s dataloader (%s) with %d samples from %s",
             split,
+            dataset_name,
             len(dataset),
             data_dir,
         )
         return data_loader, {
-            "dataset": "pi05_vlm",
+            "dataset": dataset_name,
             "split": split,
             "num_samples": len(dataset),
         }
@@ -253,9 +284,9 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             )
 
         eos_id = self._pi05_tokenizer.eos_id() if self._pi05_tokenizer is not None else 1
+        is_behavior_skill = self.cfg.data.get("dataset_name", "") == "behavior_skill_pi05"
         correct = 0
         for i, meta in enumerate(meta_list):
-            # 每个meta就是一个问题
             gen_ids = out_tokens[i].tolist()
             if eos_id in gen_ids:
                 gen_ids = gen_ids[: gen_ids.index(eos_id)]
@@ -264,14 +295,34 @@ class FSDPVlaSftWorker(FSDPSftWorker):
                 if self._pi05_tokenizer is not None
                 else ""
             )
-            pred_letter = self._extract_first_letter(pred_text)
-            gold_letter = meta.get("correct_answer_letter", "")
-            if pred_letter and pred_letter == gold_letter:
-                correct += 1
 
-            if self._rank == 0 and self._eval_print_remaining > 0:
-                self._print_qa_sample(meta, pred_text, pred_letter)
-                self._eval_print_remaining -= 1
+            if is_behavior_skill:
+                # Skill-based accuracy: exact string match (normalised)
+                gold_skill = meta.get("skill_label", "")
+                pred_norm = " ".join(pred_text.lower().split())
+                gold_norm = " ".join(gold_skill.lower().split())
+                if pred_norm and pred_norm == gold_norm:
+                    correct += 1
+                if self._rank == 0 and self._eval_print_remaining > 0:
+                    verdict = "CORRECT" if pred_norm == gold_norm else "WRONG"
+                    print(
+                        f"\n==== EVAL SKILL ({verdict}) ====\n"
+                        f"Gold:  {gold_skill!r}\n"
+                        f"Pred:  {pred_text!r}\n"
+                        f"Ep={meta.get('episode_id','?')} Frame={meta.get('frame_idx','?')}\n"
+                        "================================",
+                        flush=True,
+                    )
+                    self._eval_print_remaining -= 1
+            else:
+                # MCQ letter-based accuracy (original path)
+                pred_letter = self._extract_first_letter(pred_text)
+                gold_letter = meta.get("correct_answer_letter", "")
+                if pred_letter and pred_letter == gold_letter:
+                    correct += 1
+                if self._rank == 0 and self._eval_print_remaining > 0:
+                    self._print_qa_sample(meta, pred_text, pred_letter)
+                    self._eval_print_remaining -= 1
 
         return correct
 
@@ -421,6 +472,18 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         if self.data_loader is None:
             return 0
         if SupportedModel(self.cfg.actor.model.model_type) == SupportedModel.OPENPI:
+            # VLM-only datasets return a plain PyTorch DataLoader, not an
+            # openpi DataLoaderImpl.  Fall back to len(data_loader) directly.
+            if self._is_pi05_vlm_only():
+                import torch.utils.data
+
+                dl = self.data_loader
+                if isinstance(dl, torch.utils.data.DataLoader):
+                    return max(1, len(dl) // self.gradient_accumulation)
+                # Try unwrapping tuple if still stored as (loader, config)
+                if isinstance(dl, tuple):
+                    dl = dl[0]
+                return max(1, len(dl) // self.gradient_accumulation)
             num_batches = len(self._openpi_pytorch_dataloader(self.data_loader))
             return max(1, num_batches // self.gradient_accumulation)
         return super().get_max_steps_per_epoch()

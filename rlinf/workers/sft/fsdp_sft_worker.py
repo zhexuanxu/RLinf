@@ -111,6 +111,11 @@ class FSDPSftWorker(FSDPModelManager, Worker):
 
         with self.worker_timer():
             eval_step = len(eval_data_iter)
+            # Cap eval steps if max_eval_samples is configured
+            max_eval_samples = getattr(self.cfg.runner, "max_eval_samples", 0)
+            if max_eval_samples and max_eval_samples > 0:
+                max_eval_steps = max(1, max_eval_samples // self.eval_batch_size)
+                eval_step = min(eval_step, max_eval_steps)
             eval_pbar = tqdm(
                 initial=0,
                 total=eval_step,

@@ -31,7 +31,20 @@
       "Bash(awk -F= '{sum+=$2; n++} END {printf \"step avg=%.3f\\\\n\", sum/n}')",
       "Bash(/mnt/public/xzxuan/.venv_pi/bin/python *)",
       "Bash(mount)",
-      "Read(//mnt/public/xzxuan/data/behavior-task0000-reindexed/videos/chunk-000/observation.images.rgb.head/**)"
+      "Read(//mnt/public/xzxuan/data/behavior-task0000-reindexed/videos/chunk-000/observation.images.rgb.head/**)",
+      "Bash(find *)",
+      "Bash(git -C /mnt/public/xzxuan/repos/RLinf_pi05 status --short)",
+      "Bash(git *)",
+      "Bash(CUDA_VISIBLE_DEVICES=0,1,2,3 bash examples/sft/run_vla_sft.sh behavior_pi05_vlm_sft)",
+      "Bash(CUDA_VISIBLE_DEVICES=4,5,6,7 bash examples/sft/run_vlm_sft.sh behavior_qwen2_5_vlm_sft)",
+      "Bash(bash examples/sft/run_vla_sft.sh behavior_pi05_vlm_sft)",
+      "Bash(ray stop *)",
+      "Bash(pkill -f \"train_vla_sft\\\\|train_vlm_sft\")",
+      "Bash(bash *)",
+      "Bash(RAY_NAMESPACE=rlinf_qwen bash *)",
+      "Bash(pkill -f \"train_vlm_sft\")",
+      "Read(//mnt/public/xzxuan/repos/openpi-comet/**)",
+      "Bash(grep -n \"_get_fine_grained_task\\\\|skill_label\\\\|item\\\\[.task.\\\\]\" src/behavior/learning/datas/dataset.py)"
     ]
   }
 }

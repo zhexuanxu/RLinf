@@ -694,6 +694,7 @@ class BehaviorLeRobotDataset(LeRobotDataset):
         train_rgb_type: str = "regular",
         return_seg_instance: bool = False,
         skill_list: list[str] = None,
+        skill_labels: dict[int, str] | None = None,
     ):
         if skill_list is None:
             skill_list = ["all"]
@@ -714,6 +715,7 @@ class BehaviorLeRobotDataset(LeRobotDataset):
         self.return_seg_instance = return_seg_instance
         self.train_rgb_type = train_rgb_type
         self.skill_list = skill_list
+        self.skill_labels = skill_labels
 
         self.image_writer = None
         self.episode_buffer = None
@@ -819,6 +821,10 @@ class BehaviorLeRobotDataset(LeRobotDataset):
             self.delta_indices = get_delta_indices(self.delta_timestamps, self.fps)
 
         self.prepare_task(fine_grained_level)
+
+        if self.skill_labels is not None:
+            self._build_skill_boundaries()
+
         self.omnigibson_mapping = {ep_idx: defaultdict(dict) for ep_idx in self.episodes}
 
     def prepare_task(self, fine_grained_level: int):
@@ -831,6 +837,51 @@ class BehaviorLeRobotDataset(LeRobotDataset):
                 ]
         except Exception as e:
             print(f"[warn] {self.repo_id} failed to calculate episode subtask cumulate: {e}")
+
+    # --- Skill label support (for VLM SFT) ---------------------------------
+    # Aligned with openpi-comet's BehaviorLeRobotDataset.
+
+    def _build_skill_boundaries(self):
+        """Build per-episode skill boundary lookup from annotations.
+
+        Stores ``skill_start_frames`` and ``skill_end_frames`` per episode so
+        that ``_is_gap_frame`` and ``_get_skill_label`` can use bisect to map
+        any frame index to a skill (or identify it as a gap).
+        """
+        self.skill_start_frames: dict[int, list[int]] = {}
+        self.skill_end_frames: dict[int, list[int]] = {}
+        for ep_id in self.episodes:
+            if ep_id not in self.meta.annotations:
+                continue
+            skills = sorted(
+                self.meta.annotations[ep_id]["skill_annotation"],
+                key=lambda s: s["skill_idx"],
+            )
+            self.skill_start_frames[ep_id] = [s["frame_duration"][0] for s in skills]
+            self.skill_end_frames[ep_id] = [s["frame_duration"][1] for s in skills]
+
+    def _is_gap_frame(self, ep_idx: int, frame_index: int) -> bool:
+        """Return True if frame_index falls in a gap between skill ranges."""
+        start_frames = self.skill_start_frames.get(ep_idx)
+        end_frames = self.skill_end_frames.get(ep_idx)
+        if start_frames is None or end_frames is None:
+            return False
+        skill_idx = bisect.bisect_right(start_frames, frame_index) - 1
+        if skill_idx < 0:
+            return True
+        skill_idx = min(skill_idx, len(start_frames) - 1)
+        return frame_index >= end_frames[skill_idx]
+
+    def _get_skill_label(self, item: dict) -> str:
+        """Resolve the current frame to a skill-level label using annotations."""
+        ep_idx = item["episode_index"].item()
+        frame_index = round(item["timestamp"].item() * self.fps)
+        start_frames = self.skill_start_frames[ep_idx]
+        skill_idx = bisect.bisect_right(start_frames, frame_index) - 1
+        skill_idx = max(0, min(skill_idx, len(start_frames) - 1))
+        return self.skill_labels[skill_idx]
+
+    # -------------------------------------------------------------------------
 
     def get_episodes_file_paths(self) -> list[str]:
         episodes = (
@@ -898,6 +949,8 @@ class BehaviorLeRobotDataset(LeRobotDataset):
         if not self._chunk_streaming_using_keyframe:
             item = super().__getitem__(idx)
             item["task"] = self._get_fine_grained_task(item)
+            if self.skill_labels is not None:
+                item["skill_label"] = self._get_skill_label(item)
             return item
 
         # Streaming mode
@@ -984,6 +1037,16 @@ class BehaviorLeRobotDataset(LeRobotDataset):
                 next(self.obs_loaders[key])[0]
             return self.__getitem__(idx)
 
+        # Skip frames that fall in gaps between skill ranges
+        if self.skill_labels is not None:
+            ep_idx_val = item["episode_index"].item()
+            frame_index_val = round(item["timestamp"].item() * self.fps)
+            if self._is_gap_frame(ep_idx_val, frame_index_val):
+                self.current_streaming_frame_idx += 1
+                for key in self.obs_loaders:
+                    next(self.obs_loaders[key])[0]
+                return self.__getitem__(idx)
+
         for key in self.obs_loaders:
             item[key] = next(self.obs_loaders[key])[0]
 
@@ -993,6 +1056,8 @@ class BehaviorLeRobotDataset(LeRobotDataset):
                 item[cam] = self.image_transforms(item[cam])
 
         item["task"] = self._get_fine_grained_task(item)
+        if self.skill_labels is not None:
+            item["skill_label"] = self._get_skill_label(item)
         self.current_streaming_frame_idx += 1
         return item
 

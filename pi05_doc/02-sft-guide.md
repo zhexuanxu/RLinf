@@ -49,109 +49,143 @@ observation = {
 | `actions` 有值 + `loss_mask` 全 False | VLA-only | `_forward_vla_full(ce=False)` | Flow matching |
 | `actions` 有值 + `loss_mask` 有 True | VLM+VLA | `_forward_vla_full(ce=True)` | CE + flow matching |
 
-## 模式 1：VLM-only SFT
+## 模式 1：VLM-only SFT（BEHAVIOR 技能预测）
 
 ### 用途
 
-训练 pi0.5 的 VLM 部分学习视觉问答，用于后续 CoT 推理能力。
+训练 VLM 根据当前画面预测正在执行的技能（skill）。目前支持两个模型：
+
+| 方案 | 模型 | 启动脚本 | 数据格式 |
+|------|------|---------|---------|
+| pi0.5 VLM | PaliGemma (pi0.5 内置) | `run_vla_sft.sh` | openpi Observation |
+| Qwen2.5-VL | Qwen2.5-VL-3B-Instruct | `run_vlm_sft.sh` | SftDatasetItem + chat template |
 
 ### 数据集
 
-Robo2VLM（parquet 格式）：
+BEHAVIOR-1K task-0000（200 个 episode），通过 head camera MP4 视频 + annotation JSON 构建。
+
+**数据来源**：`/mnt/public/xzxuan/data/2025-challenge-demos/`
+
+**4 个固定技能标签**（所有 episode 共享）：
+
+| skill_idx | 标签 | 典型帧范围 |
+|-----------|------|-----------|
+| 0 | `move to radio` | 0~265 |
+| 1 | `pick up radio from coffee table` | 265~1162 |
+| 2 | `press radio` | 1162~1434 |
+| 3 | `place radio on coffee table` | 1434~1776 |
+
+**帧→标签映射**：每个 annotation JSON 的 `skill_annotation[i].frame_duration = [start, end]`，用 `bisect` 将帧索引映射到对应的 skill_idx。
+
+**采样策略**：每 10 帧采样 1 帧（`frame_stride=10`），~36K 样本。Episode 划分：180 train / 20 eval。
+
+### 数据处理流程（两种路径共享 `_BehaviorSkillIndex`）
 
 ```
-data/Robo2VLM/data/
-├── train-00000-of-00262.parquet
-├── train-00001-of-00262.parquet
-└── ...
+annotations/task-0000/episode_*.json
+    ↓ _BehaviorSkillIndex._build_index()
+    ├── 解析 skill_annotation → frame_duration
+    ├── 对每个 skill，每隔 10 帧采样一个 (episode_id, frame_idx, skill_idx)
+    └── 生成 flat sample 列表
 
-字段：question(str), choices(str), correct_answer(int), image(bytes)
+videos/task-0000/observation.images.rgb.head/episode_*.mp4
+    ↓ _BehaviorSkillIndex.load_frame(episode_id, frame_idx)
+    ├── cv2.VideoCapture → seek → read → BGR→RGB → PIL.Image
+    └── 1-video LRU 缓存
 ```
 
-### 数据处理流程
-
+**pi0.5 路径**（`BehaviorSkillPi05Dataset`）：
 ```
-Robo2VLM parquet
-    ↓ Pi05VLMDataset.__getitem__()
-    ├── image → resize 224x224, normalize to [-1,1]
-    ├── question+answer → PaliGemma tokenize
-    ├── token_ar_mask: prompt=0(双向), answer+EOS=1(因果)
-    ├── token_loss_mask: answer+EOS=True
-    └── token_kv_cache_mask: all True except EOS
-    ↓ pi05_vlm_collate_fn
-    ↓ (observation_dict, None)
-    ↓ fsdp_vla_sft_worker.get_train_model_output()
-    ├── 提取 token_kv_cache_mask（不在 Observation 中）
-    ├── observation → GPU tensors
-    └── model(ForwardType.SFT, data={obs, actions=None, kv_mask})
-    ↓ sft_forward()
-    ├── Observation.from_dict(observation)
-    ├── _preprocess_observation_full() → 8-tuple
-    ├── has_actions=False → _forward_vlm()
-    │   ├── embed_prefix_with_ar_mask (因果注意力)
-    │   ├── PaliGemma forward (无 action expert)
-    │   └── _compute_ce_loss (next-token prediction)
-    └── return {"loss": ..., "language_loss": ..., "language_token_acc": ...}
+PIL.Image → resize 224×224, normalize [-1,1]
+prompt = "Task: Turn on the radio...\nSkill: "
+answer = "pick up radio from coffee table"
+→ PaliGemma tokenize → observation_dict
+→ pi05_vlm_collate_fn → (observation, None, meta)
+→ sft_forward() → _forward_vlm() → CE loss
+```
+
+**Qwen2.5-VL 路径**（`BehaviorSkillQwenDataset`）：
+```
+PIL.Image (原始分辨率)
+→ Qwen processor + chat template:
+  System: (可选)
+  User: [image] "Task: Turn on the radio... What skill is being performed?"
+  Assistant: "pick up radio from coffee table"
+→ SftDatasetItem (input_ids, attention_mask, label_mask, pixel_values)
+→ sft_collate_fn → CE loss on answer tokens
 ```
 
 ### 启动命令
 
+**pi0.5 VLM-only**（4 GPU）：
+
 ```bash
-bash examples/sft/run_vla_sft.sh robotwin_sft_openpi_pi05_vlm
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash examples/sft/run_vla_sft.sh behavior_pi05_vlm_sft
+```
+
+**Qwen2.5-VL**（4 GPU）：
+
+```bash
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash examples/sft/run_vlm_sft.sh behavior_qwen2_5_vlm_sft
 ```
 
 ### 关键配置
 
-```yaml
-# examples/sft/config/robotwin_sft_openpi_pi05_vlm.yaml
-runner:
-  val_check_interval: 200       # 每 N 步 eval 一次（>0 启用）
-  save_interval: 2000
-  val_at_step_0: True           # 训练前 baseline eval
-  print_eval_samples: 5         # rank 0 每次 eval 打印 K 条 QA
+**pi0.5**（`examples/sft/config/behavior_pi05_vlm_sft.yaml`）：
 
+```yaml
 data:
-  type: vlm
-  dataset_name: "pi05_robo2vlm"
-  train_data_paths: "/mnt/public/xzxuan/data/Robo2VLM/data"
-  val_data_paths: "/mnt/public/xzxuan/data/Robo2VLM/eval_data"
-  prompt_key: "question"
-  choice_key: "choices"
-  answer_key: "correct_answer"
-  image_keys: ["image"]
+  dataset_name: "behavior_skill_pi05"
+  train_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
+  val_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
   max_token_len: 200
-  num_workers: 4
+  frame_stride: 10
+  eval_episode_count: 20
 
 actor:
-  micro_batch_size: 4
-  eval_batch_size: 4
-  global_batch_size: 256
   model:
     precision: null
     model_path: "/mnt/public/xzxuan/models/pi05_base_pytorch"
     openpi:
       full_pi05: True
       forward_mode: "vlm"
-      num_images_in_input: 1   # Robo2VLM 1 张图（默认 2）
+      num_images_in_input: 1
   fsdp_config:
     sharding_strategy: "no_shard"
-    use_orig_params: True       # 满血版必须 True，见 CLAUDE.md
+    use_orig_params: True
     gradient_checkpointing: False
 ```
 
-### Eval 流程
+**Qwen2.5-VL**（`examples/sft/config/behavior_qwen2_5_vlm_sft.yaml`）：
 
-每 `val_check_interval` 步触发一次 eval（`val_at_step_0: True` 时训练前也跑一次 baseline）。
+```yaml
+data:
+  dataset_name: "behavior_skill_sft"
+  train_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
+  val_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
+  max_prompt_length: 512
+  frame_stride: 10
+  eval_episode_count: 20
 
-- **指标**：MCQ 字母准确率（`generate_language` 自回归生成 → 解码 → 提取 `[A-F]` → 与 gold 比较）
-- **打印**：rank 0 在终端打印 `print_eval_samples` 条 QA 对（question / choices / gold / pred / raw）
+actor:
+  model:
+    model_type: "qwen2.5_vl"
+    model_path: "/mnt/public/xzxuan/models/Qwen2.5-VL-3B-Instruct"
+  fsdp_config:
+    sharding_strategy: "full_shard"
+    mixed_precision:
+      param_dtype: bf16
+```
+
+### Eval 指标
+
+- **pi0.5**：技能标签精确匹配率（`generate_language` 生成 → 与 gold skill label 比较）
+- **Qwen2.5-VL**：生成文本与 gold skill label 匹配
 - **TensorBoard**：`eval/eval_accuracy`
-
-详细流程见 [04-sft-eval.md](./04-sft-eval.md)。
 
 ### 不需要 asset/norm_stats
 
-VLM-only 模式不涉及 action 归一化。`get_model()` 检测到 `full_pi05=True, forward_mode="vlm"` 时自动跳过 norm_stats 加载。因此可以使用不带 asset 的 base 模型。
+VLM-only 模式不涉及 action 归一化。两种路径都不加载 norm_stats。
 
 ## 模式 2：VLA-only SFT
 
