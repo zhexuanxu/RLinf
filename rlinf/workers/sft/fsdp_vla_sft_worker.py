@@ -18,7 +18,7 @@ from typing import Any
 
 import torch
 from omegaconf import DictConfig
-from torch.utils import _pytree
+from torch.utils._pytree import tree_map
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from rlinf.config import SupportedModel
@@ -386,7 +386,7 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             token_kv_cache_mask = observation.pop("token_kv_cache_mask")
 
         register_pytree_dataclasses(observation)
-        observation = _pytree.tree_map(
+        observation = tree_map(
             lambda x: (
                 torch.as_tensor(x, device=self.device).contiguous().clone()
                 if x is not None
