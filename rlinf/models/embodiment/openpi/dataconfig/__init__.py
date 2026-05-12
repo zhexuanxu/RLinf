@@ -344,25 +344,6 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
-        name="pi05_behavior_local",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
-        data=LeRobotBehaviorDataConfig(
-            repo_id="/mnt/public/xzxuan/data/behavior-task0000-reindexed",
-            base_config=DataConfig(prompt_from_task=True),
-            assets=AssetsConfig(
-                assets_dir="/mnt/public/xzxuan/models/pi05_base_pytorch",
-                asset_id="physical-intelligence/behavior",
-            ),
-            extra_delta_transform=False,
-            extract_state_from_proprio=True,
-            use_all_wrist_images=True,
-            use_quantile_norm=True,
-        ),
-        pytorch_weight_path="/mnt/public/xzxuan/models/pi05_base_pytorch",
-        num_train_steps=30_000,
-        num_workers=8,
-    ),
-    TrainConfig(
         name="pi05_behavior_b1k_local",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
         data=LeRobotB1KDataConfig(

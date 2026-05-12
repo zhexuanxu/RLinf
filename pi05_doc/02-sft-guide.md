@@ -219,10 +219,10 @@ LeRobot dataset
 ### 启动命令
 
 ```bash
-# 残血版（原有配置不变）
-bash run_vla_sft.sh robotwin_sft_openpi_pi05
+# BEHAVIOR task-0000（满血版）
+bash examples/sft/run_vla_sft.sh behavior_pi05_vla
 
-# 满血版（forward_mode=vla 时行为一致）
+# 满血版（forward_mode=vla 时行为与残血版一致）
 # 在 yaml 中加 full_pi05: True, forward_mode: "vla"
 ```
 
@@ -232,10 +232,11 @@ VLA 模式需要 action 归一化参数。使用带 asset 的模型路径（如 
 
 ## 模式 3：VLM+VLA SFT（未来）
 
-同时训练文本推理和 action 预测。需要带有 `cot_text` 标注的数据集。
+同时训练文本推理和 action 预测。需要带有 `cot_text` 标注的 LeRobot 数据集。
 
 ```bash
-bash run_vla_sft.sh robotwin_sft_openpi_pi05_vlm_vla
+# 需要对应的 vlm_vla 配置文件
+bash examples/sft/run_vla_sft.sh <config_name>
 ```
 
 Loss = `language_loss_weight * CE_loss + action_loss_weight * flow_loss`

@@ -8,9 +8,9 @@
 rlinf/models/embodiment/openpi/openpi_full_pi05_model.py   # 核心模型子类 (~530 行)
 rlinf/models/embodiment/openpi/static_kv_cache.py          # KV cache (~170 行)
 rlinf/models/embodiment/openpi/dataconfig/cot_transform.py  # CoT 数据变换 (~120 行)
-rlinf/data/datasets/pi05_vlm_dataset.py                     # Robo2VLM 数据集 (~200 行)
-examples/sft/config/robotwin_sft_openpi_pi05_vlm.yaml       # VLM-only SFT 配置
-examples/sft/config/robotwin_sft_openpi_pi05_vlm_vla.yaml   # VLM+VLA SFT 配置
+rlinf/models/embodiment/openpi/dataconfig/behavior_vlm_data_loader.py  # BEHAVIOR 技能数据加载器
+examples/sft/config/behavior_pi05_vlm_sft.yaml              # VLM-only SFT 配置（BEHAVIOR 技能预测）
+examples/sft/config/behavior_pi05_vla.yaml                  # VLA-only SFT 配置（BEHAVIOR）
 examples/embodiment/config/behavior_ppo_openpi_pi05_full.yaml  # PPO 配置
 pi05_doc/                                                    # 文档目录
 ```
@@ -22,8 +22,7 @@ rlinf/models/embodiment/openpi/openpi_action_model.py  # OpenPi0Config 增加 7 
 rlinf/models/embodiment/openpi/__init__.py             # get_model() 路由 + VLM skip norm_stats
 rlinf/models/embodiment/openpi/openpi_full_pi05_model.py  # forward() 增加 GENERATE_LANGUAGE dispatch
 rlinf/models/embodiment/base_policy.py                 # ForwardType 增加 GENERATE_LANGUAGE
-rlinf/workers/sft/fsdp_vla_sft_worker.py               # 训练 + eval 实现（含 generate_language 调用）
-rlinf/data/datasets/pi05_vlm_dataset.py                # eval_mode + 3-tuple + 配置驱动列名
+rlinf/workers/sft/fsdp_vla_sft_worker.py               # 训练实现（VLA + VLM-only BEHAVIOR 技能预测）
 rlinf/runners/sft_runner.py                            # val_at_step_0 训练前 baseline eval 钩子
 examples/embodiment/config/model/pi0_5.yaml            # 增加 full_pi05 配置字段
 examples/sft/config/model/pi0_5.yaml                   # 增加 full_pi05 配置字段
@@ -31,13 +30,13 @@ examples/sft/config/model/pi0_5.yaml                   # 增加 full_pi05 配置
 
 ## 关键代码路径
 
-### SFT VLM-only 完整代码路径
+### SFT VLM-only 完整代码路径（BEHAVIOR 技能预测）
 
 ```
-run_vla_sft.sh robotwin_sft_openpi_pi05_vlm
+run_vla_sft.sh behavior_pi05_vlm_sft
     ↓
 examples/sft/train_vla_sft.py
-    ├─ Hydra loads robotwin_sft_openpi_pi05_vlm.yaml
+    ├─ Hydra loads behavior_pi05_vlm_sft.yaml
     ├─ Creates FSDPVlaSftWorker
     └─ Creates SFTRunner → runner.run()
     
@@ -49,12 +48,12 @@ FSDPVlaSftWorker.__init__()
     │
     └─ build_dataloader(train_data_paths)
         ├─ full_pi05=True, forward_mode="vlm" → _build_pi05_vlm_dataloader()
-        │   ├─ Pi05VLMDataset(data_dir, max_token_len=200, num_images=1)
-        │   │   └─ 加载 Robo2VLM parquet，每条数据生成:
-        │   │       image → 224x224 float32 [-1,1]
-        │   │       question+answer → PaliGemma tokenized
+        │   ├─ dataset_name="behavior_skill_pi05"
+        │   │   └─ create_behavior_vlm_data_loader():
+        │   │       video frame → 224x224 float32 [-1,1]
+        │   │       skill prompt+answer → PaliGemma tokenized
         │   │       token_ar_mask, token_loss_mask, token_kv_cache_mask
-        │   └─ DataLoader(collate_fn=pi05_vlm_collate_fn)
+        │   └─ 返回 (data_loader, tokenizer)
         └─ 返回 (data_loader, config)
 
 Training loop (SFTRunner.run + FSDPSftWorker.run_training):
@@ -88,50 +87,11 @@ Training loop (SFTRunner.run + FSDPSftWorker.run_training):
             actor.run_eval()  # 见下方 Eval 路径
 ```
 
-### SFT VLM-only Eval 路径（`val_check_interval > 0`）
+### SFT Eval 说明
 
-```
-SFTRunner.run() → actor.run_eval()
-    ↓
-FSDPVlaSftWorker.run_eval()
-    ├── 重置 _eval_print_remaining = print_eval_samples (rank 0)
-    └── super().run_eval()  # FSDPSftWorker
-          ├── self.model.eval()
-          └── for batch in eval_data_loader:
-                correct += self.get_eval_model_output(batch)
-                ↓
-                # 1) 解包 3-tuple，pop kv_cache_mask, tensors → GPU
-                observation, _, meta_list = batch
-                obs_obj = _model.Observation.from_dict(observation)
-                
-                # 2) 通过外层 forward 分发 GENERATE_LANGUAGE（避免 FSDP 子模块 _is_root 冲突）
-                with no_grad(), self.amp_context:
-                    out_tokens, *_ = self.model(
-                        forward_type=ForwardType.GENERATE_LANGUAGE,
-                        observation=obs_obj,
-                        max_new_tokens=cfg.openpi.max_language_len,
-                        temperature=0.0,
-                    )
-                # → forward() 路由到 generate_language() → StaticKVCache 自回归
-                
-                # 3) 解码并对比
-                for i, meta in enumerate(meta_list):
-                    gen_ids = out_tokens[i].tolist()
-                    if EOS in gen_ids: gen_ids = gen_ids[:gen_ids.index(EOS)]
-                    pred_text = sentencepiece.decode(gen_ids)
-                    pred_letter = re.search(r"[A-F]", pred_text)
-                    if pred_letter == meta["correct_answer_letter"]:
-                        correct += 1
-                    if rank==0 and _eval_print_remaining > 0:
-                        _print_qa_sample(meta, pred_text, pred_letter)
-                        _eval_print_remaining -= 1
-                
-                return correct
-          ↓
-          metrics = {"eval_accuracy": correct/total} → all_reduce(AVG)
-```
-
-详细见 [04-sft-eval.md](./04-sft-eval.md)。
+VLA SFT 阶段的 eval 目前为 `NotImplementedError`，仅通过训练 loss 监控训练效果。
+VLM-only 模式的 eval 机制（`ForwardType.GENERATE_LANGUAGE` 路由）已移除。
+如需评估 VLM 能力，使用双系统评估流程（见 `dual_system/vlm_vla_eval.md`）。
 
 ### StaticKVCache 工作原理
 
@@ -210,11 +170,10 @@ ce_loss = cross_entropy(logits, targets) * loss_mask / sum(loss_mask)
   Worker 用 `model(forward_type=GENERATE_LANGUAGE, ...)` 调用
 - 经验法则：FSDP 模型上的 inference 都通过 forward 入口分发，不要直调子模块
 
-### 6. Pi05VLMDataset 3-tuple + meta dict
-- 原因：eval 需要原始问题/答案文本用于打印和字符串比较；又不能在 Observation 里塞字符串
+### 6. VLM 数据集 3-tuple + meta dict
+- 原因：VLM-only 数据集需要在 eval 时携带原始标签用于比较；不能在 Observation 里塞字符串
   字段（`Observation.from_dict()` 会丢弃未识别字段，且 collate 时无法 stack）
-- 实现：返回 `(observation, actions, meta)` 3-tuple。训练模式 `meta={}`；eval 模式
-  `meta={"question", "choices", "correct_answer_letter", "prompt_text"}`
+- 实现：BEHAVIOR 技能数据集返回 `(observation, actions, meta)` 3-tuple
 - Worker 兼容：`get_train_model_output` 同时支持 2-tuple（openpi 数据加载器）和 3-tuple
 
 ### 7. val_at_step_0 在 SFTRunner 实现

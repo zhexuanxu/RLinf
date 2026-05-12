@@ -11,8 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import logging
-import re
 import os
 from typing import Any
 
@@ -34,7 +32,6 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         self._pi05_tokenizer = None
         super().__init__(cfg)
         self._full_pi05_loss = None
-        self._eval_print_remaining = 0
 
     def _is_pi05_vlm_only(self) -> bool:
         if SupportedModel(self.cfg.actor.model.model_type) != SupportedModel.OPENPI:
@@ -130,23 +127,10 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             )
 
     def _build_pi05_vlm_dataloader(self, data_paths, eval_dataset: bool = False):
-        """Build dataloader for pi0.5 VLM-only SFT.
-
-        Supports two dataset backends controlled by ``cfg.data.dataset_name``:
-        - ``"behavior_skill_pi05"``: BEHAVIOR skill prediction from video frames.
-        - anything else (default): Robo2VLM parquet MCQ dataset.
-
-        ``eval_dataset=True`` builds a prompt-only loader for accuracy
-        evaluation (no answer concatenated; raw text returned in meta).
-        """
-        import torch.distributed as dist
-        from torch.utils.data import DataLoader, DistributedSampler
-
-        from rlinf.data.datasets.pi05_vlm_dataset import pi05_vlm_collate_fn
-
+        """Build dataloader for pi0.5 VLM-only SFT (BEHAVIOR skill prediction)."""
         data_dir = data_paths[0] if isinstance(data_paths, list) else data_paths
         data_cfg = self.cfg.data
-        dataset_name = data_cfg.get("dataset_name", "pi05_robo2vlm")
+        dataset_name = data_cfg.get("dataset_name", "behavior_skill_pi05")
         max_token_len = data_cfg.get(
             "max_token_len",
             getattr(self.cfg.actor.model.openpi, "max_token_len", 200),
@@ -181,182 +165,11 @@ class FSDPVlaSftWorker(FSDPSftWorker):
                 "num_samples": len(data_loader.dataset),
             }
         else:
-            from rlinf.data.datasets.pi05_vlm_dataset import Pi05VLMDataset
-
-            image_keys = data_cfg.get("image_keys", ["image"])
-            image_key = image_keys[0] if image_keys else "image"
-            dataset = Pi05VLMDataset(
-                data_dir=data_dir,
-                max_token_len=max_token_len,
-                num_images=num_images,
-                prompt_key=data_cfg.get("prompt_key", "question"),
-                choice_key=data_cfg.get("choice_key", "choices"),
-                answer_key=data_cfg.get("answer_key", "correct_answer"),
-                image_key=image_key,
-                eval_mode=eval_dataset,
-            )
-            if self._pi05_tokenizer is None:
-                self._pi05_tokenizer = dataset.tokenizer
-
-        if dist.is_available() and dist.is_initialized():
-            sampler = DistributedSampler(
-                dataset,
-                num_replicas=dist.get_world_size(),
-                rank=dist.get_rank(),
-                shuffle=not eval_dataset,
-                drop_last=True,
-            )
-        else:
-            sampler = None
-
-        batch_size = (
-            self.eval_batch_size if eval_dataset else self.micro_batch_size
-        )
-        num_workers = data_cfg.get("num_workers", 4)
-        data_loader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            sampler=sampler,
-            shuffle=(sampler is None and not eval_dataset),
-            num_workers=num_workers,
-            drop_last=True,
-            collate_fn=pi05_vlm_collate_fn,
-        )
-        split = "eval" if eval_dataset else "train"
-        logging.info(
-            "Built pi0.5 VLM-only %s dataloader (%s) with %d samples from %s",
-            split,
-            dataset_name,
-            len(dataset),
-            data_dir,
-        )
-        return data_loader, {
-            "dataset": dataset_name,
-            "split": split,
-            "num_samples": len(dataset),
-        }
-
-    def run_eval(self):
-        # Reset the per-eval-pass print counter on rank 0 only.
-        self._eval_print_remaining = (
-            int(self.cfg.runner.get("print_eval_samples", 0) or 0)
-            if self._rank == 0
-            else 0
-        )
-        return super().run_eval()
+            raise ValueError(f"Unknown dataset_name: {dataset_name}")
 
     def get_eval_model_output(self, batch: dict[str, Any]):
-        if not self._is_pi05_vlm_only():
-            raise NotImplementedError(
-                "eval is only implemented for pi0.5 full_pi05 + forward_mode='vlm'"
-            )
-
-        from openpi.models import model as _model
-
-        observation, _actions, meta_list = batch
-
-        observation.pop("token_kv_cache_mask", None)
-        register_pytree_dataclasses(observation)
-        observation = _pytree.tree_map(
-            lambda x: (
-                torch.as_tensor(x, device=self.device).contiguous().clone()
-                if x is not None
-                else x
-            ),
-            observation,
-        )
-
-        obs_obj = _model.Observation.from_dict(observation)
-
-        max_new_tokens = int(
-            getattr(self.cfg.actor.model.openpi, "max_language_len", 10) or 10
-        )
-        with torch.no_grad(), self.amp_context:
-            # Route through outer forward so FSDP's lazy_init runs at the
-            # top level — calling self.model.generate_language() directly
-            # ends up invoking a sub-FSDP's forward and breaks subsequent
-            # training with the "_is_root should not have been set" assert.
-            out_tokens, *_ = self.model(
-                forward_type=ForwardType.GENERATE_LANGUAGE,
-                observation=obs_obj,
-                max_new_tokens=max_new_tokens,
-                temperature=0.0,
-            )
-
-        eos_id = self._pi05_tokenizer.eos_id() if self._pi05_tokenizer is not None else 1
-        is_behavior_skill = self.cfg.data.get("dataset_name", "") == "behavior_skill_pi05"
-        correct = 0
-        for i, meta in enumerate(meta_list):
-            gen_ids = out_tokens[i].tolist()
-            if eos_id in gen_ids:
-                gen_ids = gen_ids[: gen_ids.index(eos_id)]
-            pred_text = (
-                self._pi05_tokenizer.decode(gen_ids).strip()
-                if self._pi05_tokenizer is not None
-                else ""
-            )
-
-            if is_behavior_skill:
-                # Skill-based accuracy: exact string match (normalised)
-                gold_skill = meta.get("skill_label", "")
-                pred_norm = " ".join(pred_text.lower().split())
-                gold_norm = " ".join(gold_skill.lower().split())
-                if pred_norm and pred_norm == gold_norm:
-                    correct += 1
-                if self._rank == 0 and self._eval_print_remaining > 0:
-                    verdict = "CORRECT" if pred_norm == gold_norm else "WRONG"
-                    print(
-                        f"\n==== EVAL SKILL ({verdict}) ====\n"
-                        f"Gold:  {gold_skill!r}\n"
-                        f"Pred:  {pred_text!r}\n"
-                        f"Ep={meta.get('episode_id','?')} Frame={meta.get('frame_idx','?')}\n"
-                        "================================",
-                        flush=True,
-                    )
-                    self._eval_print_remaining -= 1
-            else:
-                # MCQ letter-based accuracy (original path)
-                pred_letter = self._extract_first_letter(pred_text)
-                gold_letter = meta.get("correct_answer_letter", "")
-                if pred_letter and pred_letter == gold_letter:
-                    correct += 1
-                if self._rank == 0 and self._eval_print_remaining > 0:
-                    self._print_qa_sample(meta, pred_text, pred_letter)
-                    self._eval_print_remaining -= 1
-
-        return correct
-
-    @staticmethod
-    def _extract_first_letter(text: str) -> str:
-        if not text:
-            return ""
-        m = re.search(r"[A-F]", text)
-        return m.group(0) if m else ""
-
-    def _print_qa_sample(self, meta: dict, pred_text: str, pred_letter: str):
-        question = meta.get("question", "")
-        choices = meta.get("choices", "")
-        gold = meta.get("correct_answer_letter", "")
-        verdict = "CORRECT" if pred_letter and pred_letter == gold else "WRONG"
-        # Single block, single print() call so it doesn't interleave across ranks.
-        print(
-            "\n================ EVAL SAMPLE ({} | gold={} | pred={}) ================\n"
-            "Q:       {}\n"
-            "Choices: {}\n"
-            "Gold:    {}\n"
-            "Pred:    {}    (raw: {!r})\n"
-            "============================================================".format(
-                verdict,
-                gold or "?",
-                pred_letter or "?",
-                question,
-                choices,
-                gold,
-                pred_letter,
-                pred_text,
-            ),
-            flush=True,
-        )
+        # now the eval is not supported for embodied sft
+        raise NotImplementedError("eval is not supported for embodied sft right now.")
 
     def get_train_model_output(self, batch: dict[str, Any]):
         if SupportedModel(self.cfg.actor.model.model_type) in [

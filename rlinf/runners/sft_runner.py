@@ -76,25 +76,6 @@ class SFTRunner:
 
     def run(self) -> None:
         start_step = self.global_step
-
-        # Optional baseline eval at step 0 (untrained / freshly resumed model)
-        if (
-            start_step == 0
-            and self.cfg.runner.get("val_at_step_0", False)
-            and self.cfg.runner.val_check_interval > 0
-        ):
-            with self.timer("evaluate"):
-                eval_handle: Handle = self.actor.run_eval()
-                eval_metrics = eval_handle.wait()
-            time_metrics = self.timer.consume_durations()
-            time_metrics["evaluate"] = eval_handle.consume_duration()
-            evaluate_metrics = {f"eval/{k}": v for k, v in eval_metrics[0].items()}
-            self.metric_logger.log(
-                {f"time/{k}": v for k, v in time_metrics.items()}, 0
-            )
-            self.metric_logger.log(evaluate_metrics, 0)
-            logger.info(f"[step 0 baseline eval] {evaluate_metrics}")
-
         global_pbar = tqdm(
             initial=start_step,
             total=self.max_steps,

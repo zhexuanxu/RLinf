@@ -503,6 +503,7 @@ class EnvWorker(Worker):
         env_output = EnvOutput(
             obs=extracted_obs,
             final_obs=final_obs,
+            dones=chunk_dones,
         )
         return env_output, env_info
 
@@ -1179,6 +1180,7 @@ class EnvWorker(Worker):
                         {
                             "obs": env_batch["obs"],
                             "final_obs": env_batch["final_obs"],
+                            "dones": env_batch["dones"],
                         },
                         mode="eval",
                     )
