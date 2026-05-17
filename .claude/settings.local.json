@@ -61,7 +61,8 @@
       "Bash(python -m py_compile rlinf/models/embodiment/VLM/__init__.py)",
       "Bash(wc -l /mnt/public/xzxuan/repos/RLinf_pi05/dual_system/*.md)",
       "Bash(python -m py_compile rlinf/models/embodiment/VLM/qwen2_5_vl_policy.py)",
-      "Bash(python -m py_compile rlinf/models/embodiment/VLM/qwen3_vl_policy.py)"
+      "Bash(python -m py_compile rlinf/models/embodiment/VLM/qwen3_vl_policy.py)",
+      "Bash(grep *)"
     ]
   }
 }

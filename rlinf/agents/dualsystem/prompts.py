@@ -14,15 +14,16 @@
 
 """Prompt templates and output parsers for the dual-system embodied agentloop.
 
+These templates are the **single source of truth** for both SFT training
+(``behavior_vlm_data_loader``) and dual-system eval
+(``dual_system_agent_loop``).
+
 Two modes are supported:
 
-1. **Memoryless** (default): The VLM outputs only a subtask string.
-2. **Memory-enabled**: Inspired by the MEM paper
-   (pi_HL(l_{t+1}, m_{t+1} | o_t, m_t, g)), the VLM outputs a JSON object
-   containing both the next ``subtask`` and an updated ``memory`` summary.
-   The memory is a compressed natural-language summary of all semantically
-   relevant events so far, allowing the VLM to leverage long-horizon context
-   without an ever-growing prompt.
+1. **Memoryless** (``enable_memory=False``): The VLM outputs only a subtask
+   string.
+2. **Memory-enabled** (``enable_memory=True``): The VLM receives old memory
+   (Progress + World state) and outputs reasoning, new memory, and subtask.
 """
 
 import json
@@ -32,7 +33,7 @@ import re
 logger = logging.getLogger(__name__)
 
 # ======================================================================
-# Prompt templates
+# Prompt templates (user message text, paired with an image)
 # ======================================================================
 
 # --- Memoryless prompt ---
@@ -41,62 +42,46 @@ DEFAULT_VLM_PROMPT = (
 )
 
 # --- Memory-enabled prompt ---
-# Follows the MEM formulation: pi_HL(l_{t+1}, m_{t+1} | o_t, m_t, g).
-# The VLM receives the task goal (g), previous memory (m_t), and current
-# observation (o_t via the image), and jointly produces the next subtask
-# (l_{t+1}) and updated memory (m_{t+1}).
-MEMORY_VLM_PROMPT = """\
-You are a robot task planner with a persistent memory. At every step you \
-receive the overall goal, your memory of what has happened so far, and the \
-current image observation. You must output (a) the next subtask and (b) an \
-updated memory string.
+MEMORY_VLM_PROMPT = (
+    "Main Task: {task_description}\n"
+    "Old Memory:\n"
+    "- Progress: {progress}\n"
+    "- World State: {world_state}"
+)
 
-Memory should be a compact natural-language summary of completed milestones \
-— not the full action history. Drop details that are no longer relevant to \
-the remaining goal.
+# ======================================================================
+# Answer formatting (for SFT label construction)
+# ======================================================================
 
---- Example ---
-Main task: turn on the radio.
 
-Turn 1
-  Memory in: (empty)
-  Reasoning: I cannot see the radio, so I should locate it first.
-  Output: {{"subtask": "find the radio", "memory": "(empty)"}}
+def format_agentic_answer(
+    reasoning: str,
+    new_progress: str,
+    new_world_state: str,
+    subtask: str,
+) -> str:
+    """Build the expected assistant answer for agentic SFT training.
 
-Turn 2
-  Memory in: found the radio
-  Reasoning: The radio is visible but out of reach. I should move closer.
-  Output: {{"subtask": "approach the radio", "memory": "found the radio"}}
+    Format::
 
-Turn 3
-  Memory in: found the radio, approached the radio
-  Reasoning: I am next to the radio. I should grasp it.
-  Output: {{"subtask": "pick up the radio with one hand", "memory": "found the radio, approached the radio"}}
+        <think>
+        {reasoning}
+        </think>
+        {
+            "Progress": "...",
+            "World state": "...",
+            "subtask": "..."
+        }
+    """
+    return (
+        f"<think>\n{reasoning}\n</think>\n"
+        f'{{\n'
+        f'    "Progress": "{new_progress}",\n'
+        f'    "World state": "{new_world_state}",\n'
+        f'    "subtask": "{subtask}"\n'
+        f'}}'
+    )
 
-Turn 4
-  Memory in: found the radio, approached the radio, picked up the radio
-  Reasoning: I am holding the radio. I now need to press the power button \
-with my other hand.
-  Output: {{"subtask": "press the power button on the radio with the other hand", "memory": "found the radio, approached the radio, picked up the radio"}}
-
-Turn 5 (after the radio is on)
-  Memory out: found the radio, approached the radio, picked up the radio, turned it on
---- End of example ---
-
-Now it is your turn.
-
-Goal: {task_description}
-
-Previous memory:
-{memory}
-
-Based on the current image and the memory above:
-1. Decide the immediate next subtask (one concise sentence).
-2. Update the memory to reflect what you now believe has been completed. \
-Keep the memory short and focused on milestones, not on individual actions.
-
-Respond with ONLY a JSON object in this exact format (no other text):
-{{"subtask": "<next subtask>", "memory": "<updated memory>"}}"""
 
 # ======================================================================
 # Output parsers
@@ -112,57 +97,96 @@ def parse_subtask_only(text: str) -> tuple[str, None]:
     return text.strip(), None
 
 
-def parse_subtask_and_memory(text: str) -> tuple[str, str]:
-    """Parse VLM JSON output in memory-enabled mode.
+def parse_agentic_output(text: str) -> tuple[str, dict]:
+    """Parse agentic VLM output: optional ``<think>`` block + JSON.
 
     Expected format::
 
-        {"subtask": "...", "memory": "..."}
-
-    Handles common LLM quirks: markdown code fences, trailing commas, extra
-    whitespace.  Falls back gracefully: if parsing fails entirely, the raw
-    text is used as the subtask and the memory is left unchanged (returned
-    as empty string so the caller can keep the previous memory).
+        <think>
+        ...reasoning...
+        </think>
+        {
+            "Progress": "...",
+            "World state": "...",
+            "subtask": "..."
+        }
 
     Returns:
-        ``(subtask, memory)`` extracted from the JSON.
+        ``(subtask, memory_dict)`` where ``memory_dict`` has keys
+        ``"Progress"`` and ``"World state"``.  On parse failure the raw text
+        is used as subtask and an empty memory dict is returned.
     """
     cleaned = text.strip()
 
-    # Strip markdown code fences if present.
+    # Strip <think>...</think> block if present.
+    cleaned = re.sub(
+        r"<think>.*?</think>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
+    ).strip()
+
+    # Strip markdown code fences.
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     cleaned = cleaned.strip()
 
-    # Try to extract a JSON object from the text.
+    empty_mem = {"Progress": "", "World state": ""}
+
+    # Try to extract a JSON object.
     json_match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
     if json_match:
         json_str = json_match.group(0)
         try:
             data = json.loads(json_str)
             subtask = str(data.get("subtask", "")).strip()
-            memory = str(data.get("memory", "")).strip()
+            memory = {
+                "Progress": str(data.get("Progress", "")).strip(),
+                "World state": str(data.get("World state", "")).strip(),
+            }
             if subtask:
                 return subtask, memory
         except json.JSONDecodeError:
             pass
 
-    # Fallback: try to find subtask/memory with regex patterns.
+    # Fallback: regex extraction.
     subtask_match = re.search(
         r'"subtask"\s*:\s*"([^"]*)"', cleaned, flags=re.DOTALL
     )
-    memory_match = re.search(
-        r'"memory"\s*:\s*"([^"]*)"', cleaned, flags=re.DOTALL
-    )
     if subtask_match:
         subtask = subtask_match.group(1).strip()
-        memory = memory_match.group(1).strip() if memory_match else ""
+        progress_match = re.search(
+            r'"Progress"\s*:\s*"([^"]*)"', cleaned, flags=re.DOTALL
+        )
+        world_match = re.search(
+            r'"World state"\s*:\s*"([^"]*)"', cleaned, flags=re.DOTALL
+        )
+        memory = {
+            "Progress": progress_match.group(1).strip() if progress_match else "",
+            "World state": world_match.group(1).strip() if world_match else "",
+        }
         return subtask, memory
 
-    # Last resort: treat the whole text as subtask, signal empty memory.
+    # Last resort.
     logger.warning(
-        "Failed to parse VLM JSON output; using raw text as subtask. "
+        "Failed to parse agentic VLM output; using raw text as subtask. "
         "Output: %s",
         text[:200],
     )
-    return cleaned if cleaned else "continue current action", ""
+    return cleaned if cleaned else "continue current action", empty_mem
+
+
+def extract_reasoning(text: str) -> str:
+    """Extract the content of ``<think>...</think>`` from VLM output."""
+    match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+# ---- Legacy alias kept for backward compatibility ----
+def parse_subtask_and_memory(text: str) -> tuple[str, str]:
+    """Legacy parser (returns flat memory string). Prefer ``parse_agentic_output``."""
+    subtask, mem_dict = parse_agentic_output(text)
+    # Flatten to a single string for old callers.
+    parts = []
+    if mem_dict.get("Progress"):
+        parts.append(mem_dict["Progress"])
+    if mem_dict.get("World state"):
+        parts.append(mem_dict["World state"])
+    return subtask, "; ".join(parts) if parts else ""

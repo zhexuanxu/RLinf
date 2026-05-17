@@ -28,6 +28,7 @@ from rlinf.workers.sft.fsdp_sft_worker import FSDPSftWorker
 
 class FSDPVlmSftWorker(FSDPSftWorker):
     def __init__(self, cfg: DictConfig):
+        self._is_agentic = cfg.data.get("dataset_name", "") == "behavior_agentic_sft"
         super().__init__(cfg)
 
     def _save_data_state(self, save_path: str):
@@ -97,8 +98,8 @@ class FSDPVlmSftWorker(FSDPSftWorker):
 
             dataset_name = self.cfg.data.get("dataset_name", "robo2vlmsft")
 
-            # --- Behavior skill VLM SFT: reuses BehaviorLeRobotDataset ---
-            if dataset_name == "behavior_skill_sft":
+            # --- Behavior VLM SFT (skill or agentic) ---
+            if dataset_name in ("behavior_skill_sft", "behavior_agentic_sft"):
                 from transformers import AutoProcessor
 
                 from rlinf.models.embodiment.openpi.dataconfig.behavior_vlm_data_loader import (
@@ -114,6 +115,7 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                     if not eval_dataset
                     else self.cfg.actor.get("eval_batch_size", 1)
                 )
+                enable_memory = dataset_name == "behavior_agentic_sft"
                 data_loader = create_behavior_vlm_data_loader_qwen(
                     data_root=data_dir,
                     tasks=["turning_on_radio"],
@@ -124,6 +126,9 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                     num_workers=self.cfg.data.get("num_workers", 4),
                     seed=self.cfg.data.get("seed", 42),
                     system_prompt=self.cfg.data.get("system_prompt", None),
+                    enable_memory=enable_memory,
+                    sft_data_dir=self.cfg.data.get("sft_data_dir", None),
+                    use_simple_skill=self.cfg.data.get("use_simple_skill", False),
                 )
                 data_config = {
                     "dataset_name": dataset_name,
@@ -289,7 +294,40 @@ class FSDPVlmSftWorker(FSDPSftWorker):
             if self._rank == 0
             else 0
         )
+
+        if self._is_agentic:
+            self._eval_loss_sum = 0.0
+            self._eval_loss_count = 0
+            result = super().run_eval()
+            # Add eval_loss metric
+            if self._eval_loss_count > 0:
+                result["eval_loss"] = self._eval_loss_sum / self._eval_loss_count
+            else:
+                result["eval_loss"] = 0.0
+            return result
+
         return super().run_eval()
+
+    def _compute_eval_loss(self, batch: dict[str, Any]) -> float:
+        """Compute eval loss with the same masking as training (no grad, model.eval)."""
+        input_ids = batch["prompt"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device, dtype=torch.bool)
+        multi_modal_inputs = {
+            k: v.to(device=self.device) for k, v in batch["multi_modal_inputs"].items()
+        }
+        label_mask = batch["label_mask"].to(device=self.device, dtype=torch.bool)
+
+        labels = input_ids.detach().clone().masked_fill(~attention_mask, -100)
+        labels = labels.masked_fill(label_mask, -100)
+
+        with torch.no_grad(), self.amp_context:
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                **multi_modal_inputs,
+            )
+        return outputs.loss.item()
 
     def get_eval_model_output(self, batch: dict[str, Any]):
         correct = 0
@@ -300,6 +338,71 @@ class FSDPVlmSftWorker(FSDPSftWorker):
         for k, v in multi_modal_inputs.items():
             multi_modal_inputs[k] = v.to(device=self.device)
 
+        if self._is_agentic:
+            # 1) Compute eval loss (same masking as training)
+            # input_ids contains full sequence (prompt + answer) because
+            # agentic transform always uses eval_mode=False
+            eval_loss = self._compute_eval_loss(batch)
+            self._eval_loss_sum += eval_loss
+            self._eval_loss_count += 1
+
+            # 2) Generate model output for logging
+            # Extract prompt-only tokens using label_mask.
+            # After left-padding + collation, layout is:
+            #   [False(pad), True(prompt), False(answer)]
+            # Find the position right after the last True = start of answer.
+            label_mask = batch["label_mask"].to(self.device, dtype=torch.bool)
+            # Flip and find first True from the right → gives answer start position
+            prompt_end_positions = (
+                label_mask.shape[1] - label_mask.flip(1).long().argmax(1)
+            )  # [B], each is the position right after the last True
+            max_prompt_end = prompt_end_positions.max().item()
+            gen_input_ids = input_ids[:, :max_prompt_end]
+            gen_attention_mask = attention_mask[:, :max_prompt_end]
+            gen_multi_modal = multi_modal_inputs
+
+            eos_token_id = self.tokenizer.eos_token_id
+            pad_token_id = (
+                self.tokenizer.pad_token_id
+                if self.tokenizer.pad_token_id is not None
+                else (eos_token_id if eos_token_id is not None else 0)
+            )
+            with torch.no_grad():
+                generate_ids = generate_with_kv_cache(
+                    model=self.model,
+                    eos_token_id=eos_token_id,
+                    pad_token_id=pad_token_id,
+                    amp_context=self.amp_context,
+                    input_ids=gen_input_ids,
+                    attention_mask=gen_attention_mask,
+                    multi_modal_inputs=gen_multi_modal,
+                )
+
+            # 3) Print samples
+            for i in range(len(answers)):
+                new_token_ids = generate_ids[i, gen_input_ids.shape[1]:]
+                full_pred_text = self.tokenizer.decode(
+                    new_token_ids.tolist(), skip_special_tokens=False
+                )
+                gold_text = answers[i]
+                prompt_text = batch.get("prompt_text", [""] * len(answers))[i]
+
+                if self._rank == 0 and getattr(self, "_eval_print_remaining", 0) > 0:
+                    print(
+                        f"\n==== EVAL AGENTIC (loss={eval_loss:.4f}) ====\n"
+                        f"Input:\n{prompt_text}\n"
+                        f"---\n"
+                        f"Gold:\n{gold_text[:500]}\n"
+                        f"---\n"
+                        f"Pred:\n{full_pred_text[:500]}\n"
+                        "======================",
+                        flush=True,
+                    )
+                    self._eval_print_remaining -= 1
+
+            return 0  # no accuracy for agentic
+
+        # --- Original skill-based eval ---
         eos_token_id = self.tokenizer.eos_token_id
         pad_token_id = (
             self.tokenizer.pad_token_id
@@ -319,7 +422,7 @@ class FSDPVlmSftWorker(FSDPSftWorker):
             )
 
         for i in range(len(answers)):
-            new_token_ids = generate_ids[i, input_ids.shape[1] :]
+            new_token_ids = generate_ids[i, input_ids.shape[1]:]
             full_pred_text = self.tokenizer.decode(
                 new_token_ids.tolist(), skip_special_tokens=False
             )

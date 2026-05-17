@@ -9,7 +9,7 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor: all
+    actor: 4-7
 
 runner:
   task_type: sft
@@ -20,30 +20,23 @@ runner:
     logger_backends: ["tensorboard"]
 
   max_epochs: 5
-  max_steps: 30000
-  val_check_interval: 500
-  save_interval: 1000
-  max_eval_samples: 50
+  max_steps: 500
+  val_check_interval: 50
+  save_interval: 100
+  max_eval_samples: 20
   print_eval_samples: 5
-  experiment_name: behavior_qwen2_5_vlm_sft
+  experiment_name: behavior_qwen2_5_vlm_sft_agentic
   output_dir: ../results
   resume_dir: null
 
 data:
   type: vlm
-  dataset_name: "behavior_skill_sft"
-  apply_chat_template: True
-  use_chat_template: True
+  dataset_name: "behavior_agentic_sft"
+  sft_data_dir: /mnt/public/wph/datasets/turn_on_radio_fix_path
   train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   val_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
-  prompt_key: "task_instruction"
-  answer_key: "skill_label"
-  image_keys: ["image"]
-  max_prompt_length: 512
-  frame_stride: 10
-  eval_episode_count: 20
-  lazy_loading: false
   num_workers: 4
+  use_simple_skill: true
 
 algorithm:
   adv_type: gae
@@ -51,9 +44,9 @@ algorithm:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 4
-  eval_batch_size: 4
-  global_batch_size: 256
+  micro_batch_size: 2
+  eval_batch_size: 2
+  global_batch_size: 32
   seed: 42
 
   model:
@@ -63,7 +56,7 @@ actor:
     is_lora: False
 
   optim:
-    lr: 1e-5
+    lr: 2e-5
     adam_beta1: 0.9
     adam_beta2: 0.999
     adam_eps: 1.0e-08
@@ -71,7 +64,7 @@ actor:
     clip_grad: 1.0
     lr_scheduler: "cosine"
     total_training_steps: ${runner.max_steps}
-    lr_warmup_steps: 200
+    lr_warmup_steps: 40
 
   fsdp_config:
     strategy: "fsdp"

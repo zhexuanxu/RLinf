@@ -21,9 +21,9 @@ FSDP worker fallback path, so they need a dedicated converter.
 
 Usage:
     python -m rlinf.utils.ckpt_convertor.fsdp_convertor.convert_qwenvl_pt_to_hf \
-        --ckpt_path /path/to/full_weights.pt \
-        --model_path /path/to/Qwen2.5-VL-3B-Instruct \
-        --save_path /path/to/output
+        --ckpt_path /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260517-12:14:02/behavior_qwen2_5_vlm_sft_agentic/checkpoints/global_step_475/actor/model_state_dict/full_weights.pt \
+        --model_path /mnt/public/xzxuan/models/Qwen2.5-VL-3B-Instruct \
+        --save_path /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260517-12:14:02/behavior_qwen2_5_vlm_sft_agentic/checkpoints/global_step_475/actor/model_state_dict/full_weights.pt
 """
 
 import argparse

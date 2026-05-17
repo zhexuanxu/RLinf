@@ -181,6 +181,9 @@ class DualSystemEvalRunner(EmbodiedEvalRunner):
                             "output_memories": _index_or_none(
                                 vlm_outputs.get("output_memories"), env_i
                             ),
+                            "reasoning": _index_or_none(
+                                vlm_outputs.get("reasonings"), env_i
+                            ),
                             "skip": bool(vlm_outputs.get("skip", False)),
                         },
                         # VLA turn
