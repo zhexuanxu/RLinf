@@ -9,7 +9,7 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor: 4-7
+    actor: all
 
 runner:
   task_type: sft
@@ -32,7 +32,7 @@ runner:
 data:
   type: vlm
   dataset_name: "behavior_agentic_sft"
-  sft_data_dir: /mnt/public/wph/datasets/turn_on_radio_fix_path
+  sft_data_dir: /mnt/public/xzxuan/data/turn_on_radio_fix_path
   train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   val_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   num_workers: 4
@@ -44,8 +44,8 @@ algorithm:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 2
-  eval_batch_size: 2
+  micro_batch_size: 4
+  eval_batch_size: 4
   global_batch_size: 32
   seed: 42
 
