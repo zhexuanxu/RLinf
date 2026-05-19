@@ -114,7 +114,7 @@ omni_config:
     activity_name: turning_on_radio
     activity_definition_id: 0
     # activity_instance_id is only used when online object sampling is False.
-    activity_instance_id: 0
+    activity_instance_id: [242, 295, 211, 203, 109, 181, 197, 187, 214, 139, 185, 102, 246, 105, 271, 119, 220, 224, 212, 298]
     predefined_problem: null
     # activity_instance_dir should point to a directory of cached task instance JSON files.
     # RLinf scans filenames directly and supports official *_template.json and
@@ -122,7 +122,8 @@ omni_config:
     # Use rlinf/envs/behavior/instance_generator.py to generate compatible files.
     # If set and instance_resample_mode is disabled, RLinf loads activity_instance_id from this directory.
     # This directory must match scene.scene_model.
-    activity_instance_dir: null
+    activity_instance_dir: ${oc.env:OMNIGIBSON_DATA_PATH}/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances
+    # /mnt/public/xzxuan/data/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances/
     # Cached instance file format: template | tro_state.
     # template reloads the full cached template; tro_state applies task-relevant object states and,
     # when present, cached robot poses. Official tro_state files without robot_poses are supported;
@@ -132,7 +133,7 @@ omni_config:
     # offline: sample cached instances from activity_instance_dir before each reset.
     # template files are reloaded as full scene templates; tro_state files are applied in-place.
     # online: use BDDL online object sampling during reset.
-    instance_resample_mode: disabled
+    instance_resample_mode: offline
     online_object_sampling: False
     debug_object_sampling: null
     highlight_task_relevant_objects: False
