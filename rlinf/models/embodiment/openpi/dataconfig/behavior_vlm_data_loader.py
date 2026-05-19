@@ -37,9 +37,8 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from rlinf.agents.dualsystem.prompts import (
-    DEFAULT_VLM_PROMPT,
-    MEMORY_VLM_PROMPT,
-    format_agentic_answer,
+    build_vlm_answer,
+    build_vlm_user_text,
 )
 from rlinf.models.embodiment.openpi.dataconfig.behavior_dataset import (
     BehaviorLeRobotDataset,
@@ -189,18 +188,9 @@ class BehaviorSkillVLMTransform:
 class BehaviorQwenTransform:
     """Convert BehaviorLeRobotDataset item → Qwen ``SftDatasetItem``.
 
-    When ``enable_memory=False`` (default): uses ``DEFAULT_VLM_PROMPT`` and
-    predicts a skill label.
-
-    When ``enable_memory=True``: uses ``MEMORY_VLM_PROMPT`` and predicts
-    reasoning + new memory + subtask.
-
-    When ``enable_memory=True`` and ``use_simple_skill=True``: uses
-    ``MEMORY_VLM_PROMPT`` for input (with old memory) but the answer is
-    the simple skill label (one of the 4 skills), not the full agentic output.
-
-    Prompt templates are imported from ``rlinf.agents.dualsystem.prompts``
-    (the single source of truth shared with dual-system eval).
+    Controlled by 3 independent flags: ``enable_reasoning``,
+    ``enable_memory``, ``simple_skill``.  Prompt/answer format uses
+    ``build_vlm_user_text`` / ``build_vlm_answer`` from ``prompts.py``.
     """
 
     def __init__(
@@ -209,15 +199,17 @@ class BehaviorQwenTransform:
         tokenizer,
         eval_mode: bool = False,
         system_prompt: str | None = None,
+        enable_reasoning: bool = False,
         enable_memory: bool = False,
-        use_simple_skill: bool = False,
+        simple_skill: bool = True,
     ):
         self.processor = processor
         self.tokenizer = tokenizer
         self.eval_mode = eval_mode
         self.system_prompt = system_prompt
+        self.enable_reasoning = enable_reasoning
         self.enable_memory = enable_memory
-        self.use_simple_skill = use_simple_skill
+        self.simple_skill = simple_skill
 
     def _extract_image(self, data: dict) -> Image.Image:
         """Extract image tensor from data and convert to PIL RGB."""
@@ -241,33 +233,26 @@ class BehaviorQwenTransform:
         pil_img = self._extract_image(data)
         prompt_text = data.get("prompt", "")
 
-        # --- Build user text and answer text ---
-        if self.enable_memory:
-            old_memory = data.get("old_memory", {})
-            progress = old_memory.get("Progress", "") if old_memory else ""
-            world_state = old_memory.get("World state", "") if old_memory else ""
-            user_text = MEMORY_VLM_PROMPT.format(
-                task_description=prompt_text,
-                progress=progress,
-                world_state=world_state,
-            )
-            new_memory = data.get("new_memory", {})
-            # use_simple_skill: subtask comes from the 4 skill labels;
-            # otherwise from the agentic dataset's detailed subtask.
-            subtask = (
-                data.get("skill_label", "")
-                if self.use_simple_skill
-                else data.get("subtask", "")
-            )
-            answer_text = format_agentic_answer(
-                reasoning=data.get("reasoning", ""),
-                new_progress=new_memory.get("Progress", ""),
-                new_world_state=new_memory.get("World state", ""),
-                subtask=subtask,
-            )
-        else:
-            user_text = DEFAULT_VLM_PROMPT.format(task_description=prompt_text)
-            answer_text = data.get("skill_label", "")
+        # --- Build user text (from prompts.py) ---
+        old_memory = data.get("old_memory", {})
+        old_memory_str = old_memory.get("Progress", "") if old_memory else ""
+        user_text = build_vlm_user_text(
+            task_description=prompt_text,
+            memory=old_memory_str,
+            enable_memory=self.enable_memory,
+        )
+
+        # --- Build answer text (from prompts.py) ---
+        subtask = data.get("skill_label", "") if self.simple_skill else data.get("subtask", "")
+        new_memory = data.get("new_memory", {})
+        new_memory_str = new_memory.get("Progress", "") if new_memory else ""
+        answer_text = build_vlm_answer(
+            reasoning=data.get("reasoning", ""),
+            memory=new_memory_str,
+            subtask=subtask,
+            enable_reasoning=self.enable_reasoning,
+            enable_memory=self.enable_memory,
+        )
 
         # --- Build chat messages ---
         image_context = [{"type": "image", "image": pil_img}, {"type": "text", "text": user_text}]
@@ -649,26 +634,35 @@ def create_behavior_vlm_data_loader_qwen(
     num_workers: int = 4,
     seed: int = 42,
     system_prompt: str | None = None,
+    enable_reasoning: bool = False,
     enable_memory: bool = False,
+    simple_skill: bool = True,
     sft_data_dir: str | None = None,
-    use_simple_skill: bool = False,
 ):
     """Create a PyTorch DataLoader for Qwen2.5-VL SFT on BEHAVIOR data.
 
     Args:
-        enable_memory: When False (default), trains on skill labels using
-            ``DEFAULT_VLM_PROMPT``.  When True, trains on agentic data
-            (memory + reasoning + subtask) using ``MEMORY_VLM_PROMPT``.
-        sft_data_dir: Required when ``enable_memory=True``.  Path to the
-            pre-annotated SFT JSON files.
-        use_simple_skill: When True (and enable_memory=True), uses the
-            memory prompt as input but predicts simple skill labels instead
-            of the full agentic output.
+        enable_reasoning: Include ``<think>`` block in the answer.
+        enable_memory: Include Old Memory in input and ``<memory>`` block
+            in output.
+        simple_skill: Use 4-option skill labels for subtask vs. detailed
+            sentences from the SFT JSON.
+        sft_data_dir: Path to agentic SFT JSON files.  Required when any
+            of ``enable_reasoning``, ``enable_memory``, or
+            ``simple_skill=False`` is set.
     """
     from rlinf.data.datasets import sft_collate_fn
 
-    if enable_memory:
-        assert sft_data_dir is not None, "sft_data_dir is required when enable_memory=True"
+    # Decide data source: only the simplest case (no reasoning, no memory,
+    # simple skill) can use the regular all-frames dataset.  Everything else
+    # needs the agentic SFT JSON for reasoning/memory/detailed subtask.
+    needs_sft_json = enable_reasoning or enable_memory or not simple_skill
+
+    if needs_sft_json:
+        assert sft_data_dir is not None, (
+            "sft_data_dir is required when enable_reasoning, enable_memory, "
+            "or simple_skill=False"
+        )
 
         train_positions, eval_positions = _get_agentic_episode_split(
             sft_data_dir, data_root, eval_ratio=eval_ratio, seed=seed,
@@ -680,10 +674,10 @@ def create_behavior_vlm_data_loader_qwen(
             "eval" if eval_mode else "train", len(ep_positions),
         )
 
-        # When use_simple_skill=True, we need skill_labels on the base
-        # dataset so that each frame gets a skill_label field.
+        # When simple_skill=True, add skill_labels to base dataset so each
+        # frame gets a skill_label field for the 4-option subtask.
         skill_labels_for_base = None
-        if use_simple_skill:
+        if simple_skill:
             skill_labels_for_base = {
                 0: "move to radio",
                 1: "pick up radio from coffee table",
@@ -707,22 +701,23 @@ def create_behavior_vlm_data_loader_qwen(
             skill_labels=skill_labels_for_base,
         )
 
-        # Always use eval_mode=False for agentic transform so input_ids
-        # contain the full sequence (prompt + answer), enabling eval loss
-        # computation with the same masking as training.
+        # Always use eval_mode=False for the transform so input_ids contain
+        # the full sequence (prompt + answer), enabling eval loss computation.
         qwen_transform = BehaviorQwenTransform(
             processor=processor,
             tokenizer=tokenizer,
             eval_mode=False,
             system_prompt=system_prompt,
-            enable_memory=True,
-            use_simple_skill=use_simple_skill,
+            enable_reasoning=enable_reasoning,
+            enable_memory=enable_memory,
+            simple_skill=simple_skill,
         )
 
         dataset = _AgenticVLMDataset(
             base_dataset, sft_data_dir, [PromptFromLeRobotItem(), qwen_transform]
         )
     else:
+        # Simplest case: no reasoning, no memory, simple skill labels only.
         train_indices, eval_indices = _get_train_eval_episode_indices(
             data_root, tasks, eval_ratio=eval_ratio, seed=seed,
         )
@@ -744,7 +739,9 @@ def create_behavior_vlm_data_loader_qwen(
             tokenizer=tokenizer,
             eval_mode=eval_mode,
             system_prompt=system_prompt,
+            enable_reasoning=False,
             enable_memory=False,
+            simple_skill=True,
         )
 
         dataset = _TransformedVLMDataset(

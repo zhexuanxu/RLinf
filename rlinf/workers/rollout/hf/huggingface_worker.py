@@ -181,6 +181,7 @@ class MultiStepRolloutWorker(Worker):
 
         vlm_cfg = self.cfg.vlm
         log_subtasks = vlm_cfg.get("log_subtasks", False)
+        enable_reasoning = vlm_cfg.get("enable_reasoning", False)
         enable_memory = vlm_cfg.get("enable_memory", False)
         frequency = int(vlm_cfg.get("frequency", 1))
 
@@ -188,13 +189,15 @@ class MultiStepRolloutWorker(Worker):
             vlm_model=vlm_model,
             vla_model=self.hf_model,
             log_subtasks=log_subtasks,
+            enable_reasoning=enable_reasoning,
             enable_memory=enable_memory,
             vlm_sampling_params=self._vlm_sampling_params,
             frequency=frequency,
         )
         self.log_info(
             f"DualSystemAgentLoop initialized (VLM + VLA on rollout GPU, "
-            f"memory={enable_memory}, frequency={frequency})."
+            f"reasoning={enable_reasoning}, memory={enable_memory}, "
+            f"frequency={frequency})."
         )
 
     def setup_sample_params(self):

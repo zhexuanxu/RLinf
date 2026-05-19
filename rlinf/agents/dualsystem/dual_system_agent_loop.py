@@ -43,11 +43,8 @@ import numpy as np
 import torch
 import copy
 from rlinf.agents.dualsystem.prompts import (
-    DEFAULT_VLM_PROMPT,
-    MEMORY_VLM_PROMPT,
-    extract_reasoning,
-    parse_agentic_output,
-    parse_subtask_only,
+    build_vlm_user_text,
+    parse_vlm_output,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,9 +57,10 @@ class DualSystemAgentLoop:
         vlm_model: VLM exposing ``generate_subtask(obs, prompt, **kwargs)``.
         vla_model: VLA exposing ``predict_action_batch(env_obs, **kwargs)``.
         log_subtasks: Log the first subtask at each step.
-        enable_memory: Enable the MEM-style language memory module.
-        vlm_sampling_params: Generation kwargs forwarded to the VLM
-            (``temperature``, ``top_p``, ``top_k``, ``max_new_tokens``, etc.).
+        enable_reasoning: Expect ``<think>`` block in VLM output.
+        enable_memory: Include Old Memory in prompt and expect ``<memory>``
+            block in VLM output.
+        vlm_sampling_params: Generation kwargs forwarded to the VLM.
     """
 
     def __init__(
@@ -70,6 +68,7 @@ class DualSystemAgentLoop:
         vlm_model,
         vla_model,
         log_subtasks: bool = False,
+        enable_reasoning: bool = False,
         enable_memory: bool = False,
         vlm_sampling_params: dict | None = None,
         frequency: int = 1,
@@ -77,6 +76,7 @@ class DualSystemAgentLoop:
         self.vlm_model = vlm_model
         self.vla_model = vla_model
         self.log_subtasks = log_subtasks
+        self.enable_reasoning = enable_reasoning
         self.enable_memory = enable_memory
         self.vlm_sampling_params = vlm_sampling_params or {}
         # How many run_step() calls between successive VLM invocations.
@@ -85,10 +85,9 @@ class DualSystemAgentLoop:
         # cached subtask for the remaining (N-1) steps.
         self.frequency = max(1, int(frequency))
 
-        # Per-environment memory dicts.  Each entry is
-        # ``{"Progress": "...", "World state": "..."}`` (or empty dict).
-        # Initialised lazily on the first call to run_step or via reset_memory().
-        self._memories: list[dict] | None = None
+        # Per-environment memory strings.  Initialised lazily on the first
+        # call to run_step (when batch size is known) or via reset_memory().
+        self._memories: list[str] | None = None
 
         # Counter and per-env caches for VLM-frequency control.
         self._vlm_step_counter: int = 0
@@ -123,11 +122,10 @@ class DualSystemAgentLoop:
         bumped by 1 and ``step_in_traj`` is zeroed. This is how an
         ``auto_reset=False`` epoch boundary is recorded as a new trajectory.
         """
-        _empty = {"Progress": "", "World state": ""}
         if batch_size is not None:
-            self._memories = [dict(_empty) for _ in range(batch_size)]
+            self._memories = ["" for _ in range(batch_size)]
         elif self._memories is not None:
-            self._memories = [dict(_empty) for _ in range(len(self._memories))]
+            self._memories = ["" for _ in range(len(self._memories))]
         else:
             self._memories = None
 
@@ -169,7 +167,7 @@ class DualSystemAgentLoop:
         if self._memories is not None:
             for i in range(min(len(self._memories), done_mask.shape[0])):
                 if done_mask[i].item():
-                    self._memories[i] = {"Progress": "", "World state": ""}
+                    self._memories[i] = ""
 
         # Mark the cached subtask as stale for done envs by setting it to None.
         # ``run_step`` will detect this and force a fresh VLM call next step.
@@ -247,57 +245,38 @@ class DualSystemAgentLoop:
         subtasks: list[str]
 
         if call_vlm:
-            # ----- Build per-sample prompts ----- #
+            # ----- Build per-sample prompts (unified via build_vlm_user_text) ----- #
             if self.enable_memory:
-                # Lazy-init memory.
-                _empty = {"Progress": "", "World state": ""}
                 if self._memories is None or len(self._memories) != batch_size:
-                    self._memories = [dict(_empty) for _ in range(batch_size)]
-                # Snapshot AFTER init but BEFORE VLM call (for logging).
-                input_memories = [dict(m) for m in self._memories]
-
-                prompts = [
-                    MEMORY_VLM_PROMPT.format(
-                        task_description=task_descriptions[i],
-                        progress=self._memories[i].get("Progress", ""),
-                        world_state=self._memories[i].get("World state", ""),
-                    )
-                    for i in range(batch_size)
-                ]
+                    self._memories = ["" for _ in range(batch_size)]
+                input_memories = list(self._memories)
             else:
-                prompts = [
-                    DEFAULT_VLM_PROMPT.format(
-                        task_description=task_descriptions[i]
-                        if i < len(task_descriptions)
-                        else "",
-                    )
-                    for i in range(batch_size)
-                ]
+                input_memories = None
 
-            # ----- Turn 1: VLM generates subtask (+ memory) ----- #
-            # Pass the list of prompts so the VLM processes the whole batch in
-            # one forward pass (images + texts are padded together).
+            prompts = []
+            for i in range(batch_size):
+                td = task_descriptions[i] if i < len(task_descriptions) else ""
+                mem = self._memories[i] if self._memories else ""
+                prompts.append(build_vlm_user_text(
+                    task_description=td,
+                    memory=mem,
+                    enable_memory=self.enable_memory,
+                ))
+
+            # ----- Turn 1: VLM generates subtask (+ optional reasoning/memory) ----- #
             raw_outputs = self.vlm_model.generate_subtask(
                 obs, prompt=prompts, **self.vlm_sampling_params
             )
-            # ----- Parse outputs ----- #
+
+            # ----- Parse outputs (unified via parse_vlm_output) ----- #
             subtasks = []
-            if self.enable_memory:
-                new_memories: list[dict] = []
-                for i, raw in enumerate(raw_outputs):
-                    sub, mem_dict = parse_agentic_output(raw)
-                    subtasks.append(sub)
-                    # If parsing produced non-empty memory, use it; else keep old.
-                    if mem_dict.get("Progress") or mem_dict.get("World state"):
-                        new_memories.append(mem_dict)
-                    else:
-                        new_memories.append(self._memories[i])
-                # Update memory state — strictly aligned per batch index.
-                self._memories = new_memories
-            else:
-                for raw in raw_outputs:
-                    sub, _ = parse_subtask_only(raw)
-                    subtasks.append(sub)
+            reasonings = []
+            for i, raw in enumerate(raw_outputs):
+                reasoning, memory, subtask = parse_vlm_output(raw)
+                subtasks.append(subtask)
+                reasonings.append(reasoning)
+                if self.enable_memory and memory:
+                    self._memories[i] = memory
 
             # Refresh the per-env cache so subsequent skipped turns can reuse.
             self._cached_subtasks = list(subtasks)
@@ -311,6 +290,7 @@ class DualSystemAgentLoop:
             # per agentloop step (with skip=True).
             subtasks = list(self._cached_subtasks)
             raw_outputs = list(self._cached_raw_outputs) if self._cached_raw_outputs is not None else []
+            reasonings = []
             input_memories = (
                 list(self._cached_input_memories)
                 if self._cached_input_memories is not None
@@ -324,7 +304,7 @@ class DualSystemAgentLoop:
                 "[DualSystem] VLM subtask (skip=%s): %s", skip, subtasks[0]
             )
             if self.enable_memory and self._memories:
-                logger.info("[DualSystem] Memory: %s", str(self._memories[0])[:200])
+                logger.info("[DualSystem] Memory: %s", self._memories[0][:200])
 
         # ----- Turn 2: VLA generates actions ----- #
         obs_with_subtask = copy.deepcopy(dict(obs))
@@ -345,23 +325,18 @@ class DualSystemAgentLoop:
         # ----- Assemble result with detailed logging ----- #
         vla_result["subtasks"] = subtasks
 
-        # VLM inputs: what the VLM saw this turn (or what was cached).
         vla_result["vlm_inputs"] = {
             "task_descriptions": list(task_descriptions),
             "prompts": prompts,
-            "input_memories": input_memories,  # None when memory disabled
+            "input_memories": input_memories,
             "skip": skip,
         }
 
-        # VLM outputs: what the VLM produced this turn (or the cached value).
-        reasonings = None
-        if self.enable_memory and raw_outputs:
-            reasonings = [extract_reasoning(raw) for raw in raw_outputs]
         vla_result["vlm_outputs"] = {
             "raw_outputs": list(raw_outputs),
             "subtasks": list(subtasks),
             "output_memories": list(self._memories) if self.enable_memory else None,
-            "reasonings": reasonings,
+            "reasonings": reasonings if reasonings else None,
             "skip": skip,
         }
 

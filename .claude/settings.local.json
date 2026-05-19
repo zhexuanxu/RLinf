@@ -62,7 +62,12 @@
       "Bash(wc -l /mnt/public/xzxuan/repos/RLinf_pi05/dual_system/*.md)",
       "Bash(python -m py_compile rlinf/models/embodiment/VLM/qwen2_5_vl_policy.py)",
       "Bash(python -m py_compile rlinf/models/embodiment/VLM/qwen3_vl_policy.py)",
-      "Bash(grep *)"
+      "Bash(grep *)",
+      "Bash(pkill -9 -f raylet)",
+      "Bash(pkill -9 -f gcs_server)",
+      "Bash(pkill -9 -f ray::)",
+      "Bash(pkill -9 -f \"ray start\")",
+      "Bash(pkill -9 -f \"ray stop\")"
     ]
   }
 }

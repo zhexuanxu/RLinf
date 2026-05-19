@@ -28,7 +28,11 @@ from rlinf.workers.sft.fsdp_sft_worker import FSDPSftWorker
 
 class FSDPVlmSftWorker(FSDPSftWorker):
     def __init__(self, cfg: DictConfig):
-        self._is_agentic = cfg.data.get("dataset_name", "") == "behavior_agentic_sft"
+        self._is_agentic = (
+            cfg.data.get("enable_reasoning", False)
+            or cfg.data.get("enable_memory", False)
+            or not cfg.data.get("simple_skill", True)
+        )
         super().__init__(cfg)
 
     def _save_data_state(self, save_path: str):
@@ -115,7 +119,6 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                     if not eval_dataset
                     else self.cfg.actor.get("eval_batch_size", 1)
                 )
-                enable_memory = dataset_name == "behavior_agentic_sft"
                 data_loader = create_behavior_vlm_data_loader_qwen(
                     data_root=data_dir,
                     tasks=["turning_on_radio"],
@@ -126,9 +129,10 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                     num_workers=self.cfg.data.get("num_workers", 4),
                     seed=self.cfg.data.get("seed", 42),
                     system_prompt=self.cfg.data.get("system_prompt", None),
-                    enable_memory=enable_memory,
+                    enable_reasoning=self.cfg.data.get("enable_reasoning", False),
+                    enable_memory=self.cfg.data.get("enable_memory", False),
+                    simple_skill=self.cfg.data.get("simple_skill", True),
                     sft_data_dir=self.cfg.data.get("sft_data_dir", None),
-                    use_simple_skill=self.cfg.data.get("use_simple_skill", False),
                 )
                 data_config = {
                     "dataset_name": dataset_name,
