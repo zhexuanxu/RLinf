@@ -61,106 +61,78 @@ BEHAVIOR-1K 包含 50 个家务操控任务。要切换任务，请在配置 YAM
 
 ## 场景初始化模式
 
-`omni_config.task.instance_resample_mode` 设置控制每个 episode 开始时场景的初始化方式。
+`omni_config.task.instance_resample_mode` 控制每个 episode 开始时场景的初始化方式。`activity_instance_id` 支持单个整数或整数列表。
 
-### 模式 1：`disabled`（默认） -- 固定实例
+### 背景：template 与 tro_state
 
-```yaml
-omni_config:
-  task:
-    instance_resample_mode: disabled
-    activity_instance_id: 0
-    activity_instance_dir: null
-    online_object_sampling: False
-    use_presampled_robot_pose: True
-```
+官方数据集中，每个任务有两种实例文件：
 
-**行为**：每个 episode 重置为完全相同的场景状态。
-- 若 `activity_instance_dir` 为 `null`，使用 OmniGibson 内置的默认实例。
-- 若 `activity_instance_dir` 已设置，从该目录加载 id=`activity_instance_id` 的实例。
+| 格式 | 大小 | 数量 | 内容 |
+|------|------|------|------|
+| `_template.json` | ~400K | 仅 instance 0 | 完整场景快照（261 个物体的定义、位置、状态） |
+| `_template-tro_state.json` | ~4K | 0-300 共 301 个 | 仅任务相关物体（如 radio、table）的位置 + 机器人初始位姿 |
 
-#### 在 `disabled` 模式下使用特定 `tro_state` 实例
+tro_state 的加载过程是：先用 instance 0 的 template 建好完整场景，再用目标 instance 的 tro_state 把几个关键物体搬到正确位置。RLinf 的 `ActivityInstanceLoader` 会自动处理这个两步流程，**无需手动设置 `scene_instance`**。
 
-当 `activity_instance_dir` 指向一个 `tro_state` 文件目录，且需要评估特定实例（例如 instance 242）时，还必须将 `scene.scene_instance` 设置为已存在的 `_template.json` 名称。这是因为 OmniGibson 在初始化时需要完整的 template 文件来构建场景，而 `tro_state` 文件仅在场景加载后替换任务相关的物体状态。
+### 用法 1：固定单个实例（`disabled` 模式）
+
+每个 episode 重置为完全相同的场景状态。
 
 ```yaml
 omni_config:
   task:
     activity_name: turning_on_radio
-    activity_instance_id: 242                     # 重置时加载的目标 tro_state 实例
+    activity_instance_id: 242
     instance_resample_mode: disabled
-    activity_instance_dir: /path/to/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances/
+    activity_instance_dir: /path/to/turning_on_radio_instances/
     instance_file_format: tro_state
     online_object_sampling: False
     use_presampled_robot_pose: True
-  scene:
-    type: RLinfInteractiveTraversableScene
-    scene_model: house_double_floor_lower
-    scene_instance: house_double_floor_lower_task_turning_on_radio_0_0_template  # 初始化用的完整 template
 ```
 
-**执行过程**：
-1. OmniGibson 使用 `scene_instance` 指定的 template（`*_0_0_template.json`）初始化场景。
-2. RLinf 的 `ActivityInstanceLoader` 扫描 `activity_instance_dir` 中的 `tro_state` 文件。
-3. 每次重置时，加载器应用 `activity_instance_id=242` 对应的 `tro_state` 文件，就地替换任务相关物体的位置和机器人位姿。
+- 若 `activity_instance_dir` 为 `null`，使用 OmniGibson 内置的默认实例（instance 0）。
+- 若 `activity_instance_dir` 已设置，从该目录加载 `activity_instance_id` 指定的实例。
+- `disabled` 模式下 `activity_instance_id` 必须是单个整数，不能是列表。
 
-**为什么这里需要 `scene_instance`，而默认 `activity_instance_id: 0` 时不需要**：
+### 用法 2：从指定列表中随机采样（`offline` + 列表）
 
-当配置中未设置 `scene_instance` 时，OmniGibson 的 `BehaviorTask.verify_scene_and_task_config()` 会从 `activity_instance_id` 自动生成：
-
-```
-scene_instance = "{scene_model}_task_{activity}_{definition_id}_{instance_id}_template"
-```
-
-使用默认 `activity_instance_id: 0` 时，会生成 `house_double_floor_lower_task_turning_on_radio_0_0_template`，其对应的 `_template.json` 存在于 `task_dir/json/` 目录中，因此无需显式设置 `scene_instance`。
-
-当 `activity_instance_id` 改为 242 时，自动生成的名称变为 `*_0_242_template`，但官方数据集仅为非零 instance ID 提供 `tro_state` 文件（没有 `_template.json`）。显式设置 `scene_instance` 可以覆盖自动生成逻辑，使 OmniGibson 加载已有的 id=0 template。
-
-### 模式 2：`offline` -- 从缓存中随机采样
+每次 reset 从给定的 instance ID 列表中随机选一个。适用于标准化评估（如官方 test set 的 20 个 instance）。
 
 ```yaml
 omni_config:
   task:
+    activity_name: turning_on_radio
+    activity_instance_id: [242, 295, 211, 203, 109, 181, 197, 187, 214, 139, 185, 102, 246, 105, 271, 119, 220, 224, 212, 298]
     instance_resample_mode: offline
-    activity_instance_dir: /path/to/cached_instances/  # 必填
-    instance_file_format: tro_state  # 或 "template"
+    activity_instance_dir: /path/to/turning_on_radio_instances/
+    instance_file_format: tro_state
     online_object_sampling: False
     use_presampled_robot_pose: True
 ```
 
-**行为**：启动时 RLinf 扫描 `activity_instance_dir`。每次重置前，随机采样一个实例。
+- 每次 reset 时，通过 `random.choice()` 从列表中选取一个 instance ID。
+- 如果 `total_num_envs=8`、`eval_rollout_epoch=5`，则总共 40 条轨迹，每个 instance ID 被均匀随机分配。
+- 列表中的每个 ID 必须在 `activity_instance_dir` 中存在对应的 tro_state 文件。
 
-支持两种格式：
-- **`tro_state`**：轻量级，就地恢复任务相关物体 + 机器人位姿
-- **`template`**：完整场景重载，彻底重置但速度较慢
+### 用法 3：从全部可用实例中随机采样（`offline` + 不指定列表）
 
-#### 在 `offline` 模式下使用 `tro_state` 文件
-
-在 `offline` 模式下使用 `tro_state` 格式时，同样必须设置 `scene.scene_instance`，原因与 `disabled` 模式相同：OmniGibson 需要完整的 template 来初始化场景，`tro_state` 文件只能在初始化之后替换物体状态。
+每次 reset 从目录中的所有实例文件中随机选一个。
 
 ```yaml
 omni_config:
   task:
     activity_name: turning_on_radio
     instance_resample_mode: offline
-    activity_instance_dir: /path/to/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances/
+    activity_instance_dir: /path/to/turning_on_radio_instances/
     instance_file_format: tro_state
     online_object_sampling: False
     use_presampled_robot_pose: True
-  scene:
-    type: RLinfInteractiveTraversableScene
-    scene_model: house_double_floor_lower
-    scene_instance: house_double_floor_lower_task_turning_on_radio_0_0_template
 ```
 
-**执行过程**：
-1. OmniGibson 使用 `scene_instance` 指定的 template 初始化场景。
-2. RLinf 的 `ActivityInstanceLoader` 扫描 `activity_instance_dir` 中的所有 `tro_state` 文件。
-3. 每次重置时，通过 `random.choice()` 选取一个实例，并就地应用其 tro_state，替换任务相关物体位置和机器人位姿。
+- 不设置 `activity_instance_id`（或保持默认 `0`），此时该字段被忽略。
+- RLinf 启动时扫描 `activity_instance_dir` 中所有匹配的实例文件，每次 reset 随机选取一个。
 
-注意：`offline` 模式下 `activity_instance_id` 被忽略（实例始终随机选取）。若 `instance_file_format` 为 `template` 而非 `tro_state`，则不需要设置 `scene_instance`，因为每个 template 文件包含完整的场景定义。
-
-### 模式 3：`online` -- 实时 BDDL 采样
+### 用法 4：`online` -- 实时 BDDL 采样
 
 ```yaml
 omni_config:
@@ -171,7 +143,7 @@ omni_config:
     activity_instance_dir: null  # 不可设置
 ```
 
-**行为**：每次重置前，OmniGibson 的 BDDL 约束求解器生成一个新场景。多样性最高但速度最慢。
+每次重置前，OmniGibson 的 BDDL 约束求解器生成一个新场景。多样性最高但速度最慢。
 
 ## 下载与生成初始化样本
 
@@ -225,7 +197,7 @@ python rlinf/envs/behavior/instance_generator.py \
 | `type` | `RLinfBehaviorTask` | **保持不变。** RLinf 修改版任务类。 |
 | `activity_name` | `turning_on_radio` | 任务名称。更改此项以切换任务。 |
 | `activity_definition_id` | `0` | 任务定义变体（通常为 0）。 |
-| `activity_instance_id` | `0` | `mode=disabled` 下使用缓存目录时的实例 id。 |
+| `activity_instance_id` | `0` | 实例 id。支持单个整数（`disabled`/`offline`）或整数列表（仅 `offline`，随机采样）。 |
 | `instance_resample_mode` | `disabled` | `disabled` / `offline` / `online`。 |
 | `activity_instance_dir` | `null` | 缓存实例文件路径（`offline` 模式必填）。 |
 | `instance_file_format` | `tro_state` | `template` 或 `tro_state`。当 `activity_instance_dir` 设置时必填。 |
@@ -274,27 +246,56 @@ python rlinf/envs/behavior/instance_generator.py \
 | `render_viewer_camera` | `False` | 向查看器相机渲染（开销大）。保持 `False`。 |
 | `use_numpy_controller_backend` | `True` | Numpy 控制器后端（更快）。保持 `True`。 |
 
-## 示例：多任务 offline 评估
+## 示例
 
-要使用多样化场景评估多个任务：
+### 固定单个 instance 评估
 
 ```bash
-# 任务 1：turning_on_radio（offline）
-bash examples/embodiment/eval_embodiment.sh behavior_ppo_openpi_agentic \
-  env.eval.omni_config.task.activity_name=turning_on_radio \
-  env.eval.omni_config.task.instance_resample_mode=offline \
-  env.eval.omni_config.task.activity_instance_dir=/path/to/instances/
+# 方式 1：直接修改 behavior_r1pro.yaml
+# activity_instance_id: 242
+# activity_instance_dir: /path/to/turning_on_radio_instances/
+# instance_resample_mode: disabled
+bash examples/embodiment/eval_embodiment.sh behavior_ppo_openpi_agentic
 
-# 任务 8：rearranging_kitchen_furniture（offline）
+# 方式 2：命令行覆盖
 bash examples/embodiment/eval_embodiment.sh behavior_ppo_openpi_agentic \
-  env.eval.omni_config.task.activity_name=rearranging_kitchen_furniture \
-  env.eval.omni_config.task.instance_resample_mode=offline \
-  env.eval.omni_config.task.activity_instance_dir=/path/to/instances/ \
-  env.eval.omni_config.scene.load_room_types='["kitchen"]'
+  env.eval.omni_config.task.activity_instance_id=242 \
+  env.eval.omni_config.task.activity_instance_dir=/path/to/turning_on_radio_instances/ \
+  env.eval.omni_config.task.instance_resample_mode=disabled
 ```
 
+### 从官方 test set 列表中随机评估
+
+```bash
+# 在 behavior_r1pro.yaml 中设置：
+# activity_instance_id: [242, 295, 211, 203, 109, 181, 197, 187, 214, 139, 185, 102, 246, 105, 271, 119, 220, 224, 212, 298]
+# activity_instance_dir: /path/to/turning_on_radio_instances/
+# instance_resample_mode: offline
+bash examples/embodiment/eval_embodiment.sh behavior_ppo_openpi_agentic
+```
+
+### 从全部 301 个实例中随机评估
+
+```bash
+bash examples/embodiment/eval_embodiment.sh behavior_ppo_openpi_agentic \
+  env.eval.omni_config.task.instance_resample_mode=offline \
+  env.eval.omni_config.task.activity_instance_dir=/path/to/turning_on_radio_instances/
+```
+
+### 各任务的 `activity_instance_dir` 路径格式
+
+```
+/path/to/2025-challenge-task-instances/scenes/<scene_model>/json/<scene_model>_task_<activity_name>_instances/
+```
+
+例如 turning_on_radio：
+
+```
+/mnt/public/xzxuan/data/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances/
+```
 ## 相关文档
 
 - [vla_eval.md](vla_eval.md) -- 独立 VLA 评估指南
 - [vlm_vla_eval.md](vlm_vla_eval.md) -- VLM+VLA 评估指南
 - [data.md](data.md) -- 数据参考手册
+

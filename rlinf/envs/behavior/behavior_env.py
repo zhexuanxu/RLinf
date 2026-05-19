@@ -39,10 +39,12 @@ __all__ = ["BehaviorEnv"]
 
 class BehaviorProcess:
     @staticmethod
-    def process_loop(cfg: DictConfig, conn, num_envs: int):
+    def process_loop(
+        cfg: DictConfig, conn, num_envs: int, seed_offset: int = 0, total_num_workers: int = 1
+    ):
         process = None
         try:
-            process = BehaviorProcess(cfg, conn, num_envs)
+            process = BehaviorProcess(cfg, conn, num_envs, seed_offset, total_num_workers)
             process.loop()
         except Exception:
             conn.send({"traceback": traceback.format_exc()})
@@ -55,12 +57,16 @@ class BehaviorProcess:
                         pass
             conn.close()
 
-    def __init__(self, cfg: DictConfig, conn, num_envs: int):
+    def __init__(
+        self, cfg: DictConfig, conn, num_envs: int, seed_offset: int = 0, total_num_workers: int = 1
+    ):
         self.conn = conn
         from omnigibson.envs import VectorEnvironment
 
         omni_cfg = setup_omni_cfg(cfg)
-        self.instance_loader = ActivityInstanceLoader.from_omni_cfg(omni_cfg)
+        self.instance_loader = ActivityInstanceLoader.from_omni_cfg(
+            omni_cfg, seed_offset=seed_offset, total_num_workers=total_num_workers
+        )
 
         # create env and apply env wrapper if enabled
         omni_cfg_dict = OmegaConf.to_container(
@@ -169,7 +175,9 @@ class ThreadWithResult(Thread):
 
 
 class BehaviorProcessProxy:
-    def __init__(self, cfg: DictConfig, num_env_shard: int):
+    def __init__(
+        self, cfg: DictConfig, num_env_shard: int, seed_offset: int = 0, total_num_workers: int = 1
+    ):
         spawn_ctx = get_context("spawn")
         self.parent_conn, child_conn = spawn_ctx.Pipe()
         self.env_process = spawn_ctx.Process(
@@ -178,6 +186,8 @@ class BehaviorProcessProxy:
                 cfg,
                 child_conn,
                 num_env_shard,
+                seed_offset,
+                total_num_workers,
             ),
             daemon=True,
         )
@@ -297,8 +307,10 @@ class BehaviorEnv(gym.Env):
             BehaviorProcessProxy(
                 self.cfg,
                 self.num_env_shard,
+                seed_offset=self.seed_offset * self.num_env_subprocess + s,
+                total_num_workers=self.total_num_processes * self.num_env_subprocess,
             )
-            for _ in range(self.num_env_subprocess)
+            for s in range(self.num_env_subprocess)
         ]
         activity_names = [env_proxy.wait_ready_msg() for env_proxy in self.env_proxys]
 

@@ -9,7 +9,7 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor: 4-7
+    actor: all
 
 runner:
   task_type: sft
@@ -19,10 +19,10 @@ runner:
     experiment_name: ${runner.experiment_name}
     logger_backends: ["tensorboard"]
 
-  max_epochs: 5
-  max_steps: 500
-  val_check_interval: 50
-  save_interval: 100
+  max_epochs: 2
+  max_steps: 200 # TODO: remember to setup lr warmup!
+  val_check_interval: 250
+  save_interval: 250
   max_eval_samples: 20
   print_eval_samples: 5
   experiment_name: behavior_qwen2_5_vlm_sft_agentic
@@ -46,7 +46,7 @@ algorithm:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 2
+  micro_batch_size: 4
   eval_batch_size: 2
   global_batch_size: 32
   seed: 42
@@ -66,7 +66,7 @@ actor:
     clip_grad: 1.0
     lr_scheduler: "cosine"
     total_training_steps: ${runner.max_steps}
-    lr_warmup_steps: 40
+    lr_warmup_steps: 20
 
   fsdp_config:
     strategy: "fsdp"
