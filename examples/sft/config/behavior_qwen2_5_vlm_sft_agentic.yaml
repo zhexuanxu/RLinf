@@ -36,7 +36,9 @@ data:
   train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   val_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   num_workers: 4
-  use_simple_skill: true
+  enable_reasoning: true
+  enable_memory: true
+  simple_skill: true
 
 algorithm:
   adv_type: gae

@@ -16,11 +16,12 @@
 
 from rlinf.agents.dualsystem.dual_system_agent_loop import DualSystemAgentLoop
 from rlinf.agents.dualsystem.eval_runner import DualSystemEvalRunner
-from rlinf.agents.dualsystem.prompts import DEFAULT_VLM_PROMPT, MEMORY_VLM_PROMPT
+from rlinf.agents.dualsystem.prompts import build_vlm_answer, build_vlm_user_text, parse_vlm_output
 
 __all__ = [
     "DualSystemAgentLoop",
     "DualSystemEvalRunner",
-    "DEFAULT_VLM_PROMPT",
-    "MEMORY_VLM_PROMPT",
+    "build_vlm_user_text",
+    "build_vlm_answer",
+    "parse_vlm_output",
 ]
