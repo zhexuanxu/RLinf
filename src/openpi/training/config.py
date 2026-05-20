@@ -973,6 +973,77 @@ _CONFIGS = [
         batch_size=8 * 32,
         wandb_enabled=True,
     ),
+    # 4f. SFT from pretrained pt50 model: task-level language
+    TrainConfig(
+        name="pi05_b1k-task0000_sft_local_pt50",
+        exp_name="openpi",
+        project_name="B1K",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
+        data=LeRobotB1KDataConfig(
+            repo_id="behavior-1k/2025-challenge-demos",
+            assets=AssetsConfig(
+                assets_dir="/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                behavior_dataset_root="/mnt/public/xzxuan/data/2025-challenge-demos",
+                tasks=["turning_on_radio"],
+                fine_grained_level=0,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/params"),
+        num_train_steps=20_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-6,
+            decay_steps=20_000,
+        ),
+        freeze_filter=pi0_config.Pi0Config(pi05=True, action_horizon=32).get_freeze_filter(),
+        ema_decay=None,
+        checkpoint_base_dir=".",
+        num_workers=8,
+        batch_size=8 * 32,
+        wandb_enabled=True,
+    ),
+    # 4g. SFT from pretrained pt50 model: skill-level language
+    TrainConfig(
+        name="pi05_b1k-task0000_sft_local_skill_pt50",
+        exp_name="openpi",
+        project_name="B1K",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
+        data=LeRobotB1KDataConfig(
+            repo_id="behavior-1k/2025-challenge-demos",
+            assets=AssetsConfig(
+                assets_dir="/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets",
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+                behavior_dataset_root="/mnt/public/xzxuan/data/2025-challenge-demos",
+                tasks=["turning_on_radio"],
+                fine_grained_level=0,
+                skill_labels={
+                    0: "move to radio",
+                    1: "pick up radio from coffee table",
+                    2: "press radio",
+                    3: "place radio on coffee table",
+                },
+                enable_gap=True,
+                allow_left=100,
+                allow_right=100,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/params"),
+        num_train_steps=20_000,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-6,
+            decay_steps=20_000,
+        ),
+        freeze_filter=pi0_config.Pi0Config(pi05=True, action_horizon=32).get_freeze_filter(),
+        ema_decay=None,
+        checkpoint_base_dir=".",
+        num_workers=8,
+        batch_size=8 * 32,
+        wandb_enabled=True,
+    ),
     # 5. Multi-dataset Training Configs
     TrainConfig(
         name="pi05-b1k-demo0_6-comet0_4-step20k",

@@ -33,6 +33,8 @@ RESUME="${3:-}"
 declare -A CONFIG_MAP=(
     [jax]="pi05_b1k-task0000_sft_local"
     [jax_skill]="pi05_b1k-task0000_sft_local_skill"
+    [jax_pt50]="pi05_b1k-task0000_sft_local_pt50"
+    [jax_skill_pt50]="pi05_b1k-task0000_sft_local_skill_pt50"
     [pytorch_bf16]="pi05_b1k-task0000_sft_local_pytorch_bf16"
     [pytorch_fp32]="pi05_b1k-task0000_sft_local_pytorch_fp32"
     [pytorch_mixed]="pi05_b1k-task0000_sft_local_pytorch_mixed"
@@ -41,6 +43,8 @@ declare -A CONFIG_MAP=(
 declare -A EXP_MAP=(
     [jax]="task0000_sft_jax"
     [jax_skill]="task0000_sft_skill"
+    [jax_pt50]="task0000_sft_pt50"
+    [jax_skill_pt50]="task0000_sft_skill_pt50"
     [pytorch_bf16]="task0000_sft_pytorch_bf16"
     [pytorch_fp32]="task0000_sft_pytorch_fp32"
     [pytorch_mixed]="task0000_sft_pytorch_mixed"
@@ -48,7 +52,7 @@ declare -A EXP_MAP=(
 
 if [ -z "${CONFIG_MAP[$MODE]+x}" ]; then
     echo "Error: unknown mode '$MODE'"
-    echo "Usage: bash run.sh <jax|jax_skill|pytorch_mixed|pytorch_fp32|pytorch_bf16> [debug]"
+    echo "Usage: bash run.sh <jax|jax_skill|jax_pt50|jax_skill_pt50|pytorch_mixed|pytorch_fp32|pytorch_bf16> [debug]"
     exit 1
 fi
 
@@ -78,7 +82,7 @@ else
     RUN_FLAG="--overwrite"
 fi
 
-if [ "$MODE" = "jax" ] || [ "$MODE" = "jax_skill" ]; then
+if [ "$MODE" = "jax" ] || [ "$MODE" = "jax_skill" ] || [ "$MODE" = "jax_pt50" ] || [ "$MODE" = "jax_skill_pt50" ]; then
     export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
     python scripts/train.py "$CONFIG" --exp_name="$EXP_NAME" $RUN_FLAG
 else
