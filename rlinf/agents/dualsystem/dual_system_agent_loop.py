@@ -51,11 +51,17 @@ logger = logging.getLogger(__name__)
 
 
 class DualSystemAgentLoop:
-    """Coordinates VLM and VLA for one agentloop step.
+    """Coordinates VLM and VLA(s) for one agentloop step.
 
     Args:
         vlm_model: VLM exposing ``generate_subtask(obs, prompt, **kwargs)``.
-        vla_model: VLA exposing ``predict_action_batch(env_obs, **kwargs)``.
+        vla_models: List of ``(model, skill_name)`` tuples. Each model
+            exposes ``predict_action_batch(env_obs, **kwargs)``.  When
+            ``multi_vla=False`` the list must have exactly one entry and
+            the behaviour is identical to the original single-VLA path.
+        multi_vla: When ``True``, each batch element is routed to the VLA
+            whose *skill* keyword appears in the subtask (case-insensitive
+            substring match).
         log_subtasks: Log the first subtask at each step.
         enable_reasoning: Expect ``<think>`` block in VLM output.
         enable_memory: Include Old Memory in prompt and expect ``<memory>``
@@ -66,7 +72,8 @@ class DualSystemAgentLoop:
     def __init__(
         self,
         vlm_model,
-        vla_model,
+        vla_models: list[tuple],
+        multi_vla: bool = False,
         log_subtasks: bool = False,
         enable_reasoning: bool = False,
         enable_memory: bool = False,
@@ -74,7 +81,14 @@ class DualSystemAgentLoop:
         frequency: int = 1,
     ):
         self.vlm_model = vlm_model
-        self.vla_model = vla_model
+        self.vla_models = vla_models  # list of (model, skill_name)
+        self.multi_vla = multi_vla
+        if not multi_vla:
+            assert len(vla_models) == 1, (
+                f"Single VLA mode requires exactly one VLA, got {len(vla_models)}"
+            )
+        # Backward compat: expose first model as self.vla_model
+        self.vla_model = vla_models[0][0]
         self.log_subtasks = log_subtasks
         self.enable_reasoning = enable_reasoning
         self.enable_memory = enable_memory
@@ -310,14 +324,48 @@ class DualSystemAgentLoop:
         obs_with_subtask = copy.deepcopy(dict(obs))
         obs_with_subtask["task_descriptions"] = subtasks
 
-        if vla_kwargs is not None:
-            actions, vla_result = self.vla_model.predict_action_batch(
-                env_obs=obs_with_subtask, **vla_kwargs
-            )
+        if not self.multi_vla:
+            # Single VLA: existing batched path (unchanged).
+            if vla_kwargs is not None:
+                actions, vla_result = self.vla_model.predict_action_batch(
+                    env_obs=obs_with_subtask, **vla_kwargs
+                )
+            else:
+                actions, vla_result = self.vla_model.predict_action_batch(
+                    env_obs=obs_with_subtask, mode=mode
+                )
         else:
-            actions, vla_result = self.vla_model.predict_action_batch(
-                env_obs=obs_with_subtask, mode=mode
-            )
+            # Multi VLA: group batch elements by routed VLA, call each
+            # VLA once with its sub-batch, then scatter actions back.
+            from collections import defaultdict
+
+            vla_indices = [self._select_vla_index(s) for s in subtasks]
+            groups: dict[int, list[int]] = defaultdict(list)
+            for batch_idx, vla_idx in enumerate(vla_indices):
+                groups[vla_idx].append(batch_idx)
+
+            actions_buf: list[torch.Tensor | None] = [None] * batch_size
+            vla_result = {}
+
+            for vla_idx, indices in groups.items():
+                vla = self.vla_models[vla_idx][0]
+                sub_obs = self._gather_obs(obs_with_subtask, indices)
+                if vla_kwargs is not None:
+                    sub_act, sub_res = vla.predict_action_batch(
+                        env_obs=sub_obs, **vla_kwargs
+                    )
+                else:
+                    sub_act, sub_res = vla.predict_action_batch(
+                        env_obs=sub_obs, mode=mode
+                    )
+                if isinstance(sub_act, np.ndarray):
+                    sub_act = torch.from_numpy(sub_act)
+                for j, idx in enumerate(indices):
+                    actions_buf[idx] = sub_act[j : j + 1]
+                if not vla_result:
+                    vla_result = sub_res
+
+            actions = torch.cat(actions_buf, dim=0)
 
         if isinstance(actions, np.ndarray):
             actions = torch.from_numpy(actions)
@@ -383,3 +431,34 @@ class DualSystemAgentLoop:
             else:
                 single[key] = val
         return single
+
+    @staticmethod
+    def _gather_obs(obs: dict[str, Any], indices: list[int]) -> dict[str, Any]:
+        """Gather a sub-batch from a batched obs dict by indices."""
+        gathered: dict[str, Any] = {}
+        for key, val in obs.items():
+            if isinstance(val, torch.Tensor):
+                gathered[key] = val[indices]
+            elif isinstance(val, (list, tuple)):
+                gathered[key] = [val[i] for i in indices]
+            elif isinstance(val, np.ndarray):
+                gathered[key] = val[indices]
+            else:
+                gathered[key] = val
+        return gathered
+
+    def _select_vla_index(self, subtask: str) -> int:
+        """Return the index of the VLA whose skill keyword matches the subtask.
+
+        Uses case-insensitive substring matching; first match wins.
+        Falls back to index 0 if no skill matches.
+        """
+        subtask_lower = subtask.lower()
+        for i, (_, skill) in enumerate(self.vla_models):
+            if skill and skill.lower() in subtask_lower:
+                return i
+        logger.warning(
+            "[DualSystem] No VLA skill matched subtask '%s'; using default.",
+            subtask[:80],
+        )
+        return 0

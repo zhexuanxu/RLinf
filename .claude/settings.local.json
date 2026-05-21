@@ -67,7 +67,11 @@
       "Bash(pkill -9 -f gcs_server)",
       "Bash(pkill -9 -f ray::)",
       "Bash(pkill -9 -f \"ray start\")",
-      "Bash(pkill -9 -f \"ray stop\")"
+      "Bash(pkill -9 -f \"ray stop\")",
+      "Bash(tail -100 /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260520-04:35:00-behavior_ppo_openpi_agentic_multivlas/*.log)",
+      "Bash(nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader)",
+      "Bash(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader)",
+      "Bash(nvidia-smi *)"
     ]
   }
 }
