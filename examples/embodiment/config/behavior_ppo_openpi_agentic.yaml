@@ -24,8 +24,7 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor,env: 0-1
-    rollout: 2-3
+    actor,env,rollout: all
 
 runner:
   task_type: embodied
@@ -99,26 +98,59 @@ env:
       fps: 15
   eval:
     total_num_envs: 8
-    max_episode_steps: 4096
-    max_steps_per_rollout_epoch: 4096
+    max_episode_steps: 64
+    max_steps_per_rollout_epoch: 64
     video_cfg:
       save_video: True
       video_base_dir: ${runner.logger.log_path}/video/eval
       fps: 15
+    # validation  
+    skip_intermediate_obs_in_chunk: False
+    omni_config:
+      env:
+        action_frequency: 30
+        physics_frequency: 120
+        rendering_frequency: 30
+      task:
+        activity_instance_dir: ${oc.env:OMNIGIBSON_DATA_PATH}/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances
+        activity_instance_id: [242, 295, 211, 203, 109, 181, 197, 187, 214, 139]
+        instance_file_format: tro_state
+        instance_resample_mode: offline
+        online_object_sampling: False
+        use_presampled_robot_pose: True
+        reward_config:
+          reward_mode: task
+          task_specific_reward_name: turning_on_radio
+      scene:
+        load_room_types: ["living_room", "kitchen"]
+        partial_scene_load: false      
 
 rollout:
   group_name: "RolloutGroup"
   backend: "huggingface"
   enable_offload: True
   pipeline_stage_num: 1
+  multi_vla: False
 
   model:
     model_path: /mnt/public/xzxuan/models/ckpt/jax_skill
     precision: ${actor.model.precision}
 
+  # Multi-VLA routing: each subtask is dispatched to the VLA whose
+  # `skill` keyword appears in the VLM-generated subtask text.
+  vla_models:
+    - model_path: /mnt/public/xzxuan/models/ckpt/behavior/jax_skill
+      skill: "move to"
+    - model_path: /mnt/public/xzxuan/models/ckpt/behavior/jax_skill
+      skill: "pick up"
+    - model_path: /mnt/public/xzxuan/models/ckpt/behavior/jax_skill
+      skill: "press"
+    - model_path: /mnt/public/xzxuan/models/ckpt/behavior/jax_skill
+      skill: "place on"
+
 # VLM (Qwen2.5-VL) settings — loaded on the rollout GPU alongside the VLA.
 vlm:
-  log_subtasks: False
+  log_subtasks: True # TODO:
   # 3-flag system (must match SFT training config):
   enable_reasoning: true
   enable_memory: true

@@ -92,12 +92,35 @@ class MultiStepRolloutWorker(Worker):
         self.weight_syncer = WeightSyncer.create(weight_syncer_cfg)
 
     def init_worker(self):
-        rollout_model_config = copy.deepcopy(self.cfg.actor.model)
-        with open_dict(rollout_model_config):
-            rollout_model_config.precision = self.cfg.rollout.model.precision
-            rollout_model_config.model_path = self.cfg.rollout.model.model_path
-
-        self.hf_model: BasePolicy = get_model(rollout_model_config)
+        # ----- Load VLA model(s) ----- #
+        multi_vla = self.cfg.rollout.get("multi_vla", False)
+        if multi_vla:
+            # Multi-VLA: load each model from the vla_models list.
+            vla_models_cfg = self.cfg.rollout.vla_models
+            self._vla_models_with_skills: list[tuple[BasePolicy, str | None]] = []
+            for entry in vla_models_cfg:
+                vla_cfg = copy.deepcopy(self.cfg.actor.model)
+                with open_dict(vla_cfg):
+                    vla_cfg.precision = self.cfg.rollout.model.precision
+                    vla_cfg.model_path = entry.model_path
+                vla_model_i = get_model(vla_cfg)
+                self._vla_models_with_skills.append(
+                    (vla_model_i, str(entry.skill))
+                )
+            # Primary model for weight_syncer / cuda_graph compatibility.
+            self.hf_model: BasePolicy = self._vla_models_with_skills[0][0]
+            self.log_info(
+                f"Multi-VLA mode: loaded {len(self._vla_models_with_skills)} VLAs "
+                f"({[s for _, s in self._vla_models_with_skills]})"
+            )
+        else:
+            # Single VLA: existing path.
+            rollout_model_config = copy.deepcopy(self.cfg.actor.model)
+            with open_dict(rollout_model_config):
+                rollout_model_config.precision = self.cfg.rollout.model.precision
+                rollout_model_config.model_path = self.cfg.rollout.model.model_path
+            self.hf_model: BasePolicy = get_model(rollout_model_config)
+            self._vla_models_with_skills = [(self.hf_model, None)]
 
         if self.cfg.runner.get("ckpt_path", None):
             model_dict = torch.load(self.cfg.runner.ckpt_path)
@@ -116,7 +139,8 @@ class MultiStepRolloutWorker(Worker):
                 expert_model_dict = torch.load(self.cfg.runner.expert_ckpt_path)
                 self.expert_model.load_state_dict(expert_model_dict)
 
-        self.hf_model.eval()
+        for vla_model, _ in self._vla_models_with_skills:
+            vla_model.eval()
         if self.expert_model is not None:
             self.expert_model.eval()
 
@@ -185,9 +209,11 @@ class MultiStepRolloutWorker(Worker):
         enable_memory = vlm_cfg.get("enable_memory", False)
         frequency = int(vlm_cfg.get("frequency", 1))
 
+        multi_vla = self.cfg.rollout.get("multi_vla", False)
         self.agentloop = DualSystemAgentLoop(
             vlm_model=vlm_model,
-            vla_model=self.hf_model,
+            vla_models=self._vla_models_with_skills,
+            multi_vla=multi_vla,
             log_subtasks=log_subtasks,
             enable_reasoning=enable_reasoning,
             enable_memory=enable_memory,
@@ -195,7 +221,8 @@ class MultiStepRolloutWorker(Worker):
             frequency=frequency,
         )
         self.log_info(
-            f"DualSystemAgentLoop initialized (VLM + VLA on rollout GPU, "
+            f"DualSystemAgentLoop initialized (VLM + "
+            f"{'multi-VLA' if multi_vla else 'VLA'} on rollout GPU, "
             f"reasoning={enable_reasoning}, memory={enable_memory}, "
             f"frequency={frequency})."
         )
@@ -575,13 +602,15 @@ class MultiStepRolloutWorker(Worker):
     def offload_model(self):
         if self.enable_cuda_graph:
             self.hf_model.release_cuda_graph()
-        self.hf_model.to("cpu")
+        for vla_model, _ in self._vla_models_with_skills:
+            vla_model.to("cpu")
         if self.agentloop is not None:
             self.agentloop.vlm_model.to("cpu")
         self.torch_platform.empty_cache()
 
     def reload_model(self):
-        self.hf_model.to(self.device)
+        for vla_model, _ in self._vla_models_with_skills:
+            vla_model.to(self.device)
         if self.agentloop is not None:
             self.agentloop.vlm_model.to(self.device)
         if self.enable_cuda_graph:
