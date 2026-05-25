@@ -138,7 +138,7 @@ env:
           task_specific_reward_name: turning_on_radio
       scene:
         load_room_types: ["living_room", "kitchen"]
-        partial_scene_load: false      
+        partial_scene_load: false          
 
 rollout:
   group_name: "RolloutGroup"
@@ -154,8 +154,8 @@ rollout:
 vlm:
   log_subtasks: False
   # 3-flag system (must match SFT training config):
-  enable_reasoning: true
-  enable_memory: true
+  enable_reasoning: false
+  enable_memory: false
   simple_skill: true
 
   # Skill/subtask augmentation (loaded from env/behavior_skill_library via defaults).
@@ -180,7 +180,7 @@ vlm:
 
   model:
     model_type: "qwen2.5_vl_embodied"
-    model_path: /mnt/public/xzxuan/models/ckpt/qwen2_5_vlm_sft_agentic_peihongv0_2epoch
+    model_path: /mnt/public/xzxuan/models/ckpt/qwen2_5_vl_behavior_skill
     # /mnt/public/xzxuan/models/ckpt/qwen2_5_vlm_sft_agentic
     # /mnt/public/xzxuan/models/ckpt/qwen2_5_vl_sft_agentic
     # /mnt/public/xzxuan/models/ckpt/behavior/qwen2_5_vl_behavior_skill_step1000

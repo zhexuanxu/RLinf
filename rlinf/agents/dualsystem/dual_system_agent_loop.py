@@ -79,6 +79,9 @@ class DualSystemAgentLoop:
         enable_memory: bool = False,
         vlm_sampling_params: dict | None = None,
         frequency: int = 1,
+        skill_aug: list[str] | None = None,
+        subtask_aug: list[str] | None = None,
+        aug_option: str = "none",
     ):
         self.vlm_model = vlm_model
         self.vla_models = vla_models  # list of (model, skill_name)
@@ -98,6 +101,10 @@ class DualSystemAgentLoop:
         # ``frequency=N`` calls the VLM once every N steps and reuses the
         # cached subtask for the remaining (N-1) steps.
         self.frequency = max(1, int(frequency))
+        # Skill/subtask augmentation for prompt injection.
+        self.skill_aug = skill_aug
+        self.subtask_aug = subtask_aug  # pre-resolved subtask list for current task
+        self.aug_option = aug_option
 
         # Per-environment memory strings.  Initialised lazily on the first
         # call to run_step (when batch size is known) or via reset_memory().
@@ -275,6 +282,9 @@ class DualSystemAgentLoop:
                     task_description=td,
                     memory=mem,
                     enable_memory=self.enable_memory,
+                    skill_aug=self.skill_aug,
+                    subtask_aug=self.subtask_aug,
+                    aug_option=self.aug_option,
                 ))
 
             # ----- Turn 1: VLM generates subtask (+ optional reasoning/memory) ----- #

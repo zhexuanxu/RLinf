@@ -210,6 +210,16 @@ class MultiStepRolloutWorker(Worker):
         frequency = int(vlm_cfg.get("frequency", 1))
 
         multi_vla = self.cfg.rollout.get("multi_vla", False)
+        # Resolve subtask_aug for the current task at init time.
+        task_subtasks_dict = vlm_cfg.get("task_subtasks", None)
+        resolved_subtask_aug = None
+        if task_subtasks_dict:
+            activity_name = self.cfg.env.eval.omni_config.task.get(
+                "activity_name", None
+            )
+            if activity_name and activity_name in task_subtasks_dict:
+                resolved_subtask_aug = list(task_subtasks_dict[activity_name])
+
         self.agentloop = DualSystemAgentLoop(
             vlm_model=vlm_model,
             vla_models=self._vla_models_with_skills,
@@ -219,6 +229,9 @@ class MultiStepRolloutWorker(Worker):
             enable_memory=enable_memory,
             vlm_sampling_params=self._vlm_sampling_params,
             frequency=frequency,
+            skill_aug=vlm_cfg.get("skill_library", None),
+            subtask_aug=resolved_subtask_aug,
+            aug_option=str(vlm_cfg.get("skill_subtask_aug", "none")),
         )
         self.log_info(
             f"DualSystemAgentLoop initialized (VLM + "

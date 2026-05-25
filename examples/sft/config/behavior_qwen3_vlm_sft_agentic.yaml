@@ -20,26 +20,31 @@ runner:
     experiment_name: ${runner.experiment_name}
     logger_backends: ["tensorboard"]
 
-  max_epochs: 5
-  max_steps: 3000
-  val_check_interval: 500
+  max_epochs: 10
+  max_steps: 1000
+  val_check_interval: 50
   save_interval: 1000
   print_eval_samples: 5
-  experiment_name: behavior_qwen2_5_vlm_sft
+  experiment_name: behavior_qwen3_vlm_sft_agentic
   output_dir: ../results
   resume_dir: null
 
+# Qwen3-VL-Thinking: native reasoning via <think> — use with enable_reasoning=true
 data:
   type: vlm
-  dataset_name: "behavior_skill_sft"
+  dataset_name: "behavior_agentic_sft"
+  sft_data_dir: /mnt/public/xzxuan/data/behavior_SFT
   train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   val_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   num_workers: 4
+  enable_reasoning: true
+  enable_memory: true
+  simple_skill: true
   eval_ratio: 0.05
-  eval_max_new_tokens: 64
   task_names: ["turning_on_radio"]
-  skill_subtask_aug: subtask
-  # eval_only: val  # uncomment for eval-only mode: val | train | all
+  skill_subtask_aug: subtask # skill, subtask, none
+  eval_max_new_tokens: 512
+  # eval_only: train  # uncomment for eval-only mode: val | train | all
 
 algorithm:
   adv_type: gae
@@ -48,18 +53,22 @@ actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
   micro_batch_size: 4
-  eval_batch_size: 4
-  global_batch_size: 256
+  eval_batch_size: 128
+  global_batch_size: 32
   seed: 42
 
   model:
-    model_type: "qwen2.5_vl"
+    model_type: "qwen3_vl"
     precision: fp32
-    model_path: /mnt/public/xzxuan/models/Qwen2.5-VL-3B-Instruct
+    model_path: /mnt/public/xzxuan/models/Qwen3-VL-4B-Thinking
+    # /mnt/public/xzxuan/repos/dualsys/logs/20260522-13:08:24/hf
+    # /mnt/public/xzxuan/repos/dualsys/logs/20260521-15:18:50/behavior_qwen3_vlm_sft_agentic/hf
+    # /mnt/public/xzxuan/repos/dualsys/logs/20260521-15:18:50/hf_fixed
+    # /mnt/public/xzxuan/models/Qwen3-VL-4B-Thinking
     is_lora: False
 
   optim:
-    lr: 1e-5
+    lr: 2e-5
     adam_beta1: 0.9
     adam_beta2: 0.999
     adam_eps: 1.0e-08
@@ -67,7 +76,7 @@ actor:
     clip_grad: 1.0
     lr_scheduler: "cosine"
     total_training_steps: ${runner.max_steps}
-    lr_warmup_steps: 200
+    lr_warmup_steps: 80
 
   fsdp_config:
     strategy: "fsdp"

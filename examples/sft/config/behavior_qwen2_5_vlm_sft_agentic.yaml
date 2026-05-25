@@ -1,4 +1,5 @@
 defaults:
+  - env/behavior_skill_library@data
   - override hydra/job_logging: stdout
 
 hydra:
@@ -19,26 +20,31 @@ runner:
     experiment_name: ${runner.experiment_name}
     logger_backends: ["tensorboard"]
 
-  max_epochs: 2
-  max_steps: 200 # TODO: remember to setup lr warmup!
-  val_check_interval: 250
-  save_interval: 250
-  max_eval_samples: 20
+  max_epochs: 5
+  max_steps: 500 # TODO: remember to setup lr warmup!
+  val_check_interval: 50
+  save_interval: 500
   print_eval_samples: 5
   experiment_name: behavior_qwen2_5_vlm_sft_agentic
   output_dir: ../results
   resume_dir: null
 
+# train mode
 data:
   type: vlm
   dataset_name: "behavior_agentic_sft"
-  sft_data_dir: /mnt/public/xzxuan/data/turn_on_radio_fix_path
+  sft_data_dir: /mnt/public/xzxuan/data/behavior_SFT
   train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   val_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   num_workers: 4
   enable_reasoning: true
   enable_memory: true
   simple_skill: true
+  eval_ratio: 0.05
+  eval_max_new_tokens: 512
+  task_names: ["turning_on_radio"]
+  skill_subtask_aug: subtask
+  # eval_only: val  # uncomment for eval-only mode: val | train | all
 
 algorithm:
   adv_type: gae
@@ -47,7 +53,7 @@ actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
   micro_batch_size: 4
-  eval_batch_size: 2
+  eval_batch_size: 4
   global_batch_size: 32
   seed: 42
 
@@ -66,7 +72,7 @@ actor:
     clip_grad: 1.0
     lr_scheduler: "cosine"
     total_training_steps: ${runner.max_steps}
-    lr_warmup_steps: 20
+    lr_warmup_steps: 40
 
   fsdp_config:
     strategy: "fsdp"

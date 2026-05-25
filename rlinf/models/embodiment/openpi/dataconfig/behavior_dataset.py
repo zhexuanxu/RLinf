@@ -873,12 +873,36 @@ class BehaviorLeRobotDataset(LeRobotDataset):
         return frame_index >= end_frames[skill_idx]
 
     def _get_skill_label(self, item: dict) -> str:
-        """Resolve the current frame to a skill-level label using annotations."""
+        """Resolve the current frame to a skill-level label using annotations.
+
+        Gap frames (between the end of one skill and the start of the next)
+        are split in half: the first half is assigned to the previous skill,
+        the second half to the next skill.
+        """
         ep_idx = item["episode_index"].item()
         frame_index = round(item["timestamp"].item() * self.fps)
         start_frames = self.skill_start_frames[ep_idx]
+        end_frames = self.skill_end_frames[ep_idx]
+
         skill_idx = bisect.bisect_right(start_frames, frame_index) - 1
         skill_idx = max(0, min(skill_idx, len(start_frames) - 1))
+
+        # Frame is within the skill's actual range
+        if frame_index < end_frames[skill_idx]:
+            return self.skill_labels[skill_idx]
+
+        # Frame is in a gap between skill[skill_idx] and skill[skill_idx+1].
+        # Split the gap in half: first half -> previous skill, second half -> next skill.
+        if skill_idx + 1 < len(start_frames):
+            gap_start = end_frames[skill_idx]
+            gap_end = start_frames[skill_idx + 1]
+            midpoint = (gap_start + gap_end) // 2
+            if frame_index < midpoint:
+                return self.skill_labels[skill_idx]
+            else:
+                return self.skill_labels[skill_idx + 1]
+
+        # After the last skill, assign to last skill
         return self.skill_labels[skill_idx]
 
     # -------------------------------------------------------------------------

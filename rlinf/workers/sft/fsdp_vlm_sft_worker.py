@@ -21,19 +21,22 @@ from typing import Any
 import torch
 from omegaconf import DictConfig
 
+from rlinf.agents.dualsystem.prompts import parse_vlm_output
 from rlinf.config import SupportedModel
 from rlinf.hybrid_engines.fsdp.utils import generate_with_kv_cache
 from rlinf.workers.sft.fsdp_sft_worker import FSDPSftWorker
 
+# Qwen3-VL </think> token ID for token-level thinking strip.
+_THINK_END_TOKEN_ID = 151668
+
 
 class FSDPVlmSftWorker(FSDPSftWorker):
     def __init__(self, cfg: DictConfig):
-        self._is_agentic = (
-            cfg.data.get("enable_reasoning", False)
-            or cfg.data.get("enable_memory", False)
-            or not cfg.data.get("simple_skill", True)
-        )
         super().__init__(cfg)
+        self._is_qwen3 = SupportedModel(cfg.actor.model.model_type) in [
+            SupportedModel.QWEN3_VL_SFT,
+            SupportedModel.QWEN3_VL_MOE_SFT,
+        ]
 
     def _save_data_state(self, save_path: str):
         state = {
@@ -51,6 +54,8 @@ class FSDPVlmSftWorker(FSDPSftWorker):
     def _load_data_state(self, load_path: str):
         path = os.path.join(load_path, "data_state.json")
         if not os.path.exists(path):
+            return
+        if self.data_loader is None:
             return
         with open(path, "r") as f:
             state = json.load(f)
@@ -106,8 +111,8 @@ class FSDPVlmSftWorker(FSDPSftWorker):
             if dataset_name in ("behavior_skill_sft", "behavior_agentic_sft"):
                 from transformers import AutoProcessor
 
-                from rlinf.models.embodiment.openpi.dataconfig.behavior_vlm_data_loader import (
-                    create_behavior_vlm_data_loader_qwen,
+                from rlinf.data.datasets.behavior_photo_vlm import (
+                    create_behavior_photo_data_loader_qwen as create_behavior_vlm_data_loader_qwen,
                 )
 
                 data_dir = data_paths[0] if isinstance(data_paths, list) else data_paths
@@ -119,20 +124,44 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                     if not eval_dataset
                     else self.cfg.actor.get("eval_batch_size", 1)
                 )
+
+                # In eval-only mode, eval_split controls which data split to evaluate
+                eval_only = self.cfg.data.get("eval_only", None)
+                eval_split = eval_only if eval_dataset and eval_only else None
+
+                task_names_cfg = self.cfg.data.get("task_names", ["turning_on_radio"])
+                if task_names_cfg == "all":
+                    from rlinf.data.datasets.behavior_photo_vlm import TASK_NAMES_TO_INDICES
+                    task_names_cfg = list(TASK_NAMES_TO_INDICES.keys())
+
+                # Convert OmegaConf containers to plain Python for pickling
+                task_subtasks_raw = self.cfg.data.get("task_subtasks", None)
+                if task_subtasks_raw is not None:
+                    from omegaconf import OmegaConf
+                    task_subtasks_raw = OmegaConf.to_container(task_subtasks_raw, resolve=True)
+                skill_library_raw = self.cfg.data.get("skill_library", None)
+                if skill_library_raw is not None:
+                    from omegaconf import OmegaConf
+                    skill_library_raw = OmegaConf.to_container(skill_library_raw, resolve=True)
+
                 data_loader = create_behavior_vlm_data_loader_qwen(
                     data_root=data_dir,
-                    tasks=["turning_on_radio"],
+                    tasks=task_names_cfg,
                     processor=processor,
                     tokenizer=self.tokenizer,
                     eval_mode=eval_dataset,
+                    eval_ratio=self.cfg.data.get("eval_ratio", 0.1),
+                    eval_split=eval_split,
                     batch_size=batch_size,
                     num_workers=self.cfg.data.get("num_workers", 4),
                     seed=self.cfg.data.get("seed", 42),
-                    system_prompt=self.cfg.data.get("system_prompt", None),
                     enable_reasoning=self.cfg.data.get("enable_reasoning", False),
                     enable_memory=self.cfg.data.get("enable_memory", False),
                     simple_skill=self.cfg.data.get("simple_skill", True),
                     sft_data_dir=self.cfg.data.get("sft_data_dir", None),
+                    task_subtasks=task_subtasks_raw,
+                    skill_library=skill_library_raw,
+                    aug_option=str(self.cfg.data.get("skill_subtask_aug", "none")),
                 )
                 data_config = {
                     "dataset_name": dataset_name,
@@ -201,95 +230,23 @@ class FSDPVlmSftWorker(FSDPSftWorker):
     def _normalize_text(self, s: str) -> str:
         return " ".join(str(s).strip().lower().split())
 
-    def _extract_boxed(self, text: str) -> str | None:
-        idx = text.rfind("boxed")
-        if idx < 0:
-            return None
-        s = text[idx + len("boxed") :].strip()
-        if not s:
-            return None
-        if s[0] != "{":
-            return s.split("$")[0].strip() or None
+    def _strip_thinking_tokens(self, token_ids: torch.Tensor) -> str:
+        """Strip ``<think>...</think>`` from Qwen3-VL output at token level.
 
-        depth = 0
-        out = []
-        for ch in s:
-            if ch == "{":
-                depth += 1
-                if depth == 1:
-                    continue
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            if depth >= 1:
-                out.append(ch)
-        ans = "".join(out).strip()
-        return ans or None
+        Uses the same logic as ``Qwen3_VLPolicy._strip_thinking``.
+        """
+        ids_list = token_ids.tolist()
+        try:
+            idx = len(ids_list) - 1 - ids_list[::-1].index(_THINK_END_TOKEN_ID)
+            content_ids = ids_list[idx + 1:]
+        except ValueError:
+            content_ids = ids_list
 
-    def _extract_answer(self, text: str) -> str:
-        if SupportedModel(self.cfg.actor.model.model_type) not in [
-            SupportedModel.QWEN2_5_VL_SFT,
-            SupportedModel.QWEN3_VL_SFT,
-            SupportedModel.QWEN3_VL_MOE_SFT,
-        ]:
-            raise ValueError(
-                f"not support such model type {self.cfg.actor.model.model_type} for SFT right now."
-            )
-
-        if not text:
-            return ""
-
-        # 1) Get the last assistant span from common chat templates.
-        patterns = [
-            r"<\|im_start\|>assistant\s*(.*?)<\|im_end\|>",
-            r"<\|assistant\|>\s*(.*?)(?:<\|end\|>|$)",
-        ]
-        body = None
-        for p in patterns:
-            matches = re.findall(p, text, flags=re.DOTALL | re.IGNORECASE)
-            if matches:
-                body = matches[-1].strip()
-                break
-        if body is None:
-            body = text.strip()
-
-        # 2) Remove reasoning blocks if present.
-        body = re.sub(
-            r"<think>.*?</think>", "", body, flags=re.DOTALL | re.IGNORECASE
+        text = self.tokenizer.decode(
+            content_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False,
         ).strip()
-
-        # 3) Remove chat special tokens (e.g., <|im_end|>, <|endoftext|>)
-        body = re.sub(r"<\|[^>]+?\|>", " ", body).strip()
-
-        # 4) Try explicit "final answer" markers.
-        marker_patterns = [
-            r"(?:final answer is|the answer is)\s*[:：]?\s*(.+)$",
-            r"(?:answer)\s*[:：]\s*(.+)$",
-        ]
-        for p in marker_patterns:
-            m = re.search(p, body, flags=re.IGNORECASE | re.DOTALL)
-            if m:
-                cand = m.group(1).strip()
-                cand = re.split(r"\n|<\|im_end\|>", cand)[0].strip()
-                if cand:
-                    body = cand
-                    break
-
-        # 5) Math-style boxed fallback.
-        boxed = self._extract_boxed(body)
-        if boxed:
-            body = boxed
-
-        # 6) Last non-empty line fallback.
-        lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-        if lines:
-            body = lines[-1]
-
-        # final cleanup
-        body = body.strip().strip("`").strip()
-        body = body.rstrip(".").rstrip("/")
-        return body
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        return text
 
     def run_eval(self):
         # Reset per-eval-pass print counter on rank 0.
@@ -299,39 +256,49 @@ class FSDPVlmSftWorker(FSDPSftWorker):
             else 0
         )
 
-        if self._is_agentic:
-            self._eval_loss_sum = 0.0
-            self._eval_loss_count = 0
-            result = super().run_eval()
-            # Add eval_loss metric
-            if self._eval_loss_count > 0:
-                result["eval_loss"] = self._eval_loss_sum / self._eval_loss_count
-            else:
-                result["eval_loss"] = 0.0
-            return result
+        # Setup eval logging — every rank writes its own tmp file + images.
+        log_root = os.path.join(
+            self.cfg.runner.logger.log_path,
+            self.cfg.runner.logger.experiment_name,
+        )
+        step = getattr(self, "global_step", 0)
+        eval_dir = os.path.join(log_root, f"eval_step_{step}")
+        self._eval_image_dir = os.path.join(eval_dir, "images")
+        os.makedirs(self._eval_image_dir, exist_ok=True)
+        self._eval_log_tmp = os.path.join(eval_dir, f"eval_rank_{self._rank}.jsonl")
+        self._eval_log_file = open(self._eval_log_tmp, "w")
+        self._eval_sample_idx = 0
 
-        return super().run_eval()
+        metrics = super().run_eval()
 
-    def _compute_eval_loss(self, batch: dict[str, Any]) -> float:
-        """Compute eval loss with the same masking as training (no grad, model.eval)."""
-        input_ids = batch["prompt"].to(self.device)
-        attention_mask = batch["attention_mask"].to(self.device, dtype=torch.bool)
-        multi_modal_inputs = {
-            k: v.to(device=self.device) for k, v in batch["multi_modal_inputs"].items()
-        }
-        label_mask = batch["label_mask"].to(device=self.device, dtype=torch.bool)
+        self._eval_log_file.close()
 
-        labels = input_ids.detach().clone().masked_fill(~attention_mask, -100)
-        labels = labels.masked_fill(label_mask, -100)
+        # Barrier so all ranks finish writing before rank 0 merges.
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
 
-        with torch.no_grad(), self.amp_context:
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                **multi_modal_inputs,
+        if self._rank == 0:
+            # Merge all rank files into one sorted JSONL.
+            import glob
+            merged_path = os.path.join(eval_dir, "eval_results.jsonl")
+            all_records = []
+            for rank_file in sorted(glob.glob(os.path.join(eval_dir, "eval_rank_*.jsonl"))):
+                with open(rank_file) as f:
+                    for line in f:
+                        all_records.append(json.loads(line))
+                os.remove(rank_file)
+            all_records.sort(key=lambda r: r["sample_idx"])
+            with open(merged_path, "w") as f:
+                for r in all_records:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+            acc = metrics.get("eval_accuracy", 0.0)
+            logging.info(
+                f"[EVAL] accuracy = {acc:.4f} ({acc * 100:.1f}%), "
+                f"{len(all_records)} samples saved to {merged_path}"
             )
-        return outputs.loss.item()
+
+        return metrics
 
     def get_eval_model_output(self, batch: dict[str, Any]):
         correct = 0
@@ -342,77 +309,14 @@ class FSDPVlmSftWorker(FSDPSftWorker):
         for k, v in multi_modal_inputs.items():
             multi_modal_inputs[k] = v.to(device=self.device)
 
-        if self._is_agentic:
-            # 1) Compute eval loss (same masking as training)
-            # input_ids contains full sequence (prompt + answer) because
-            # agentic transform always uses eval_mode=False
-            eval_loss = self._compute_eval_loss(batch)
-            self._eval_loss_sum += eval_loss
-            self._eval_loss_count += 1
-
-            # 2) Generate model output for logging
-            # Extract prompt-only tokens using label_mask.
-            # After left-padding + collation, layout is:
-            #   [False(pad), True(prompt), False(answer)]
-            # Find the position right after the last True = start of answer.
-            label_mask = batch["label_mask"].to(self.device, dtype=torch.bool)
-            # Flip and find first True from the right → gives answer start position
-            prompt_end_positions = (
-                label_mask.shape[1] - label_mask.flip(1).long().argmax(1)
-            )  # [B], each is the position right after the last True
-            max_prompt_end = prompt_end_positions.max().item()
-            gen_input_ids = input_ids[:, :max_prompt_end]
-            gen_attention_mask = attention_mask[:, :max_prompt_end]
-            gen_multi_modal = multi_modal_inputs
-
-            eos_token_id = self.tokenizer.eos_token_id
-            pad_token_id = (
-                self.tokenizer.pad_token_id
-                if self.tokenizer.pad_token_id is not None
-                else (eos_token_id if eos_token_id is not None else 0)
-            )
-            with torch.no_grad():
-                generate_ids = generate_with_kv_cache(
-                    model=self.model,
-                    eos_token_id=eos_token_id,
-                    pad_token_id=pad_token_id,
-                    amp_context=self.amp_context,
-                    input_ids=gen_input_ids,
-                    attention_mask=gen_attention_mask,
-                    multi_modal_inputs=gen_multi_modal,
-                )
-
-            # 3) Print samples
-            for i in range(len(answers)):
-                new_token_ids = generate_ids[i, gen_input_ids.shape[1]:]
-                full_pred_text = self.tokenizer.decode(
-                    new_token_ids.tolist(), skip_special_tokens=False
-                )
-                gold_text = answers[i]
-                prompt_text = batch.get("prompt_text", [""] * len(answers))[i]
-
-                if self._rank == 0 and getattr(self, "_eval_print_remaining", 0) > 0:
-                    print(
-                        f"\n==== EVAL AGENTIC (loss={eval_loss:.4f}) ====\n"
-                        f"Input:\n{prompt_text}\n"
-                        f"---\n"
-                        f"Gold:\n{gold_text[:500]}\n"
-                        f"---\n"
-                        f"Pred:\n{full_pred_text[:500]}\n"
-                        "======================",
-                        flush=True,
-                    )
-                    self._eval_print_remaining -= 1
-
-            return 0  # no accuracy for agentic
-
-        # --- Original skill-based eval ---
         eos_token_id = self.tokenizer.eos_token_id
         pad_token_id = (
             self.tokenizer.pad_token_id
             if self.tokenizer.pad_token_id is not None
             else (eos_token_id if eos_token_id is not None else 0)
         )
+
+        eval_max_new_tokens = self.cfg.data.get("eval_max_new_tokens", 128)
 
         with torch.no_grad():
             generate_ids = generate_with_kv_cache(
@@ -423,32 +327,79 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 multi_modal_inputs=multi_modal_inputs,
+                max_new_tokens=eval_max_new_tokens,
             )
 
         for i in range(len(answers)):
             new_token_ids = generate_ids[i, input_ids.shape[1]:]
-            full_pred_text = self.tokenizer.decode(
-                new_token_ids.tolist(), skip_special_tokens=False
+
+            # Full decoded text (preserving <think> for logging).
+            raw_decoded = self.tokenizer.decode(
+                new_token_ids.tolist(), skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
             )
 
-            pred_text = self._extract_answer(full_pred_text)
+            # Strip thinking for subtask extraction (aligned with VLM inference).
+            if self._is_qwen3:
+                content_text = self._strip_thinking_tokens(new_token_ids)
+            else:
+                content_text = raw_decoded
+
+            _, _, pred_text = parse_vlm_output(content_text)
             gold_text = answers[i]
 
-            is_correct = self._normalize_text(pred_text) == self._normalize_text(gold_text)
+            is_correct = self._normalize_text(pred_text) == self._normalize_text(
+                gold_text
+            )
             if is_correct:
                 correct += 1
 
+            # Log to console (first N samples)
             if self._rank == 0 and getattr(self, "_eval_print_remaining", 0) > 0:
                 verdict = "CORRECT" if is_correct else "WRONG"
                 print(
-                    f"\n==== EVAL SKILL ({verdict}) ====\n"
+                    f"\n==== EVAL ({verdict}) ====\n"
                     f"Gold:  {gold_text!r}\n"
                     f"Pred:  {pred_text!r}\n"
-                    f"Raw:   {full_pred_text[:100]!r}\n"
+                    f"Raw:   {raw_decoded!r}\n"
                     "================================",
                     flush=True,
                 )
                 self._eval_print_remaining -= 1
+
+            # Log to JSONL + save image (all ranks)
+            if hasattr(self, "_eval_log_file"):
+                from PIL import Image as PILImage
+
+                img_path = ""
+                image_data = batch.get("image_data")
+                if image_data and i < len(image_data) and image_data[i]:
+                    pil_img = image_data[i][0]
+                    if isinstance(pil_img, PILImage.Image):
+                        img_path = os.path.join(
+                            self._eval_image_dir,
+                            f"r{self._rank}_s{self._eval_sample_idx:05d}.jpg",
+                        )
+                        pil_img.save(img_path, "JPEG")
+
+                output_token_len = int((new_token_ids != pad_token_id).sum().item())
+                record = {
+                    "sample_idx": self._eval_sample_idx,
+                    "rank": self._rank,
+                    "prompt_text": batch["prompt_text"][i],
+                    "gold_answer": gold_text,
+                    "pred_raw": raw_decoded,
+                    "pred_content": content_text,
+                    "pred_subtask": pred_text,
+                    "is_correct": is_correct,
+                    "input_token_len": int(input_ids.shape[1]),
+                    "output_token_len": output_token_len,
+                    "image_path": img_path,
+                }
+                self._eval_log_file.write(
+                    json.dumps(record, ensure_ascii=False) + "\n"
+                )
+                self._eval_sample_idx += 1
 
         return correct
 

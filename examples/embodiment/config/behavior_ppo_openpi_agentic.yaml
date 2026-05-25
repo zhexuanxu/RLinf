@@ -9,6 +9,7 @@
 defaults:
   - env/behavior_r1pro@env.train
   - env/behavior_r1pro@env.eval
+  - env/behavior_skill_library@vlm
   - model/pi0_5@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - weight_syncer/patch_syncer@weight_syncer
@@ -155,6 +156,11 @@ vlm:
   enable_reasoning: true
   enable_memory: true
   simple_skill: true
+
+  # Skill/subtask augmentation (task_subtasks & skill_library loaded from
+  # env/behavior_skill_library via Hydra defaults above).
+  skill_subtask_aug: subtask   # "skill" | "subtask" | "none"
+
   # Number of observation images to save per trajectory (-1 = all, 0 = none).
   k_images: -1
   # How many run_step() calls between successive VLM invocations.

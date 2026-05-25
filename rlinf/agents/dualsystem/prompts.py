@@ -40,15 +40,37 @@ def build_vlm_user_text(
     task_description: str,
     memory: str = "",
     enable_memory: bool = False,
+    skill_aug: list[str] | None = None,
+    subtask_aug: list[str] | None = None,
+    aug_option: str = "none",
 ) -> str:
     """Build the user-message text for the VLM.
 
     When ``enable_memory=True``, includes Old Memory line.
     When ``enable_memory=False``, omits it entirely.
+
+    ``aug_option`` controls skill/subtask augmentation in the prompt:
+
+    - ``"skill"``: tells the model which skills are available (global)
+    - ``"subtask"``: tells the model which subtasks are valid for this task
+    - ``"none"``: no augmentation (original behavior)
     """
     parts = [f"Main Task: {task_description}"]
     if enable_memory:
         parts.append(f"Old Memory: {memory}")
+
+    if aug_option == "skill" and skill_aug:
+        skill_list_str = ", ".join(f'"{s}"' for s in skill_aug)
+        parts.append(
+            f"A subtask is composed of a skill and optional objects. "
+            f"Available skills: [{skill_list_str}]"
+        )
+    elif aug_option == "subtask" and subtask_aug:
+        subtask_list_str = ", ".join(f'"{s}"' for s in subtask_aug)
+        parts.append(
+            f"Your output subtask must be one of: [{subtask_list_str}]"
+        )
+
     parts.append("What the next subtask should being performed now?")
     return "\n".join(parts)
 

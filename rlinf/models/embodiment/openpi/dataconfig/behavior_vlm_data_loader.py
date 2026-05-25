@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""VLM-specific data loader for BEHAVIOR skill prediction.
+"""VLM-specific data loader for BEHAVIOR skill prediction (pi0.5 path).
 
 Reuses ``BehaviorLeRobotDataset`` (the same backbone as the VLA pipeline) but
 applies VLM-specific transforms instead of VLA transforms.  No norm_stats are
 loaded — this is purely VLM (CE loss on text tokens).
 
-Entry points:
+Entry point:
 - ``create_behavior_vlm_data_loader`` — pi0.5 VLM-only path
-- ``create_behavior_vlm_data_loader_qwen`` — Qwen2.5-VL path (skill or agentic)
+
+For Qwen VLM SFT, see ``rlinf.data.datasets.behavior_photo_vlm``.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from __future__ import annotations
 import json
 import logging
 import multiprocessing
-import os
 
 import einops
 import numpy as np
@@ -36,10 +36,6 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from rlinf.agents.dualsystem.prompts import (
-    build_vlm_answer,
-    build_vlm_user_text,
-)
 from rlinf.models.embodiment.openpi.dataconfig.behavior_dataset import (
     BehaviorLeRobotDataset,
     PromptFromLeRobotItem,
@@ -49,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Pi0.5 VLM transform (unchanged — different tokenizer / output format)
+# Pi0.5 VLM transform
 # ---------------------------------------------------------------------------
 
 
@@ -181,130 +177,7 @@ class BehaviorSkillVLMTransform:
 
 
 # ---------------------------------------------------------------------------
-# Unified Qwen VLM transform (handles both skill-only and agentic modes)
-# ---------------------------------------------------------------------------
-
-
-class BehaviorQwenTransform:
-    """Convert BehaviorLeRobotDataset item → Qwen ``SftDatasetItem``.
-
-    Controlled by 3 independent flags: ``enable_reasoning``,
-    ``enable_memory``, ``simple_skill``.  Prompt/answer format uses
-    ``build_vlm_user_text`` / ``build_vlm_answer`` from ``prompts.py``.
-    """
-
-    def __init__(
-        self,
-        processor,
-        tokenizer,
-        eval_mode: bool = False,
-        system_prompt: str | None = None,
-        enable_reasoning: bool = False,
-        enable_memory: bool = False,
-        simple_skill: bool = True,
-    ):
-        self.processor = processor
-        self.tokenizer = tokenizer
-        self.eval_mode = eval_mode
-        self.system_prompt = system_prompt
-        self.enable_reasoning = enable_reasoning
-        self.enable_memory = enable_memory
-        self.simple_skill = simple_skill
-
-    def _extract_image(self, data: dict) -> Image.Image:
-        """Extract image tensor from data and convert to PIL RGB."""
-        img_tensor = data.get(
-            "observation.images.rgb.head",
-            data.get("observation/egocentric_camera"),
-        )
-        img = np.asarray(img_tensor)
-        if np.issubdtype(img.dtype, np.floating):
-            if img.shape[0] == 3:
-                img = einops.rearrange(img, "c h w -> h w c")
-            img = (img * 255).clip(0, 255).astype(np.uint8)
-        else:
-            if img.shape[0] == 3:
-                img = einops.rearrange(img, "c h w -> h w c")
-        return Image.fromarray(img).convert("RGB")
-
-    def __call__(self, data: dict):
-        from rlinf.data.datasets.item import SftDatasetItem
-
-        pil_img = self._extract_image(data)
-        prompt_text = data.get("prompt", "")
-
-        # --- Build user text (from prompts.py) ---
-        old_memory = data.get("old_memory", {})
-        old_memory_str = old_memory.get("Progress", "") if old_memory else ""
-        user_text = build_vlm_user_text(
-            task_description=prompt_text,
-            memory=old_memory_str,
-            enable_memory=self.enable_memory,
-        )
-
-        # --- Build answer text (from prompts.py) ---
-        subtask = data.get("skill_label", "") if self.simple_skill else data.get("subtask", "")
-        new_memory = data.get("new_memory", {})
-        new_memory_str = new_memory.get("Progress", "") if new_memory else ""
-        answer_text = build_vlm_answer(
-            reasoning=data.get("reasoning", ""),
-            memory=new_memory_str,
-            subtask=subtask,
-            enable_reasoning=self.enable_reasoning,
-            enable_memory=self.enable_memory,
-        )
-
-        # --- Build chat messages ---
-        image_context = [{"type": "image", "image": pil_img}, {"type": "text", "text": user_text}]
-        prompt_messages = []
-        if self.system_prompt:
-            prompt_messages.append({"role": "system", "content": [{"type": "text", "text": self.system_prompt}]})
-        prompt_messages.append({"role": "user", "content": image_context})
-
-        with_answer = [(*prompt_messages, {"role": "assistant", "content": [{"type": "text", "text": answer_text}]})]
-        without_answer = [tuple(prompt_messages)]
-
-        prompt_inputs = self._encode(with_answer, [pil_img])
-        label_inputs = self._encode(without_answer, [pil_img])
-
-        if self.eval_mode:
-            input_ids = label_inputs.pop("input_ids")
-            attention_mask = label_inputs.pop("attention_mask")
-            label_mask = attention_mask
-            multi_modal = label_inputs
-        else:
-            input_ids = prompt_inputs.pop("input_ids")
-            attention_mask = prompt_inputs.pop("attention_mask")
-            label_mask = label_inputs.pop("attention_mask")
-            multi_modal = prompt_inputs
-
-        if isinstance(input_ids, torch.Tensor):
-            if input_ids.dim() == 2 and input_ids.size(0) == 1:
-                input_ids = input_ids.squeeze(0)
-            input_ids = input_ids.to(dtype=torch.long)
-        else:
-            input_ids = torch.tensor(input_ids, dtype=torch.long)
-
-        return SftDatasetItem(
-            prompt=input_ids,
-            length=int(input_ids.numel()),
-            idx=0,
-            image_data=[pil_img],
-            answer=answer_text,
-            prompt_text=user_text,
-            attention_mask=attention_mask,
-            label_mask=label_mask,
-            meta=None,
-            multi_modal_inputs={k: v for k, v in multi_modal.items()},
-        )
-
-    def _encode(self, messages, images):
-        rendered = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        return self.processor(text=rendered, images=images, return_tensors="pt", padding=True)
-
-
-# ---------------------------------------------------------------------------
-# Wrapper datasets
+# Wrapper dataset (used by pi0.5 path)
 # ---------------------------------------------------------------------------
 
 
@@ -320,73 +193,6 @@ class _TransformedVLMDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self._base[idx]
-        for t in self._transforms:
-            item = t(item)
-        return item
-
-
-class _AgenticVLMDataset(Dataset):
-    """Wraps BehaviorLeRobotDataset, only exposes frames present in the
-    agentic SFT JSON files, and attaches old_memory/reasoning/new_memory/subtask."""
-
-    def __init__(self, base_dataset: BehaviorLeRobotDataset, sft_data_dir: str, transforms: list):
-        self._base = base_dataset
-        self._transforms = transforms
-
-        # Build ep_idx → hf_dataset start offset mapping
-        self._ep_offset = {}
-        for i, ep_idx in enumerate(base_dataset.episodes):
-            self._ep_offset[ep_idx] = base_dataset.episode_data_index["from"][i].item()
-
-        # Load SFT JSON files, collect result_used=True data points
-        self.samples = []
-        for fname in sorted(os.listdir(sft_data_dir)):
-            if not fname.endswith(".json"):
-                continue
-            ep_idx = int(fname.replace("episode_", "").replace(".json", ""))
-            if ep_idx not in self._ep_offset:
-                continue  # not in current split
-            with open(os.path.join(sft_data_dir, fname)) as f:
-                data = json.load(f)
-            for r in data["results"]:
-                if not r["result_used"]:
-                    continue
-                old_mem = r["request_input"]["old_memory"]
-                if old_mem and isinstance(old_mem, str):
-                    old_mem = json.loads(old_mem)
-                else:
-                    old_mem = {}
-                self.samples.append({
-                    "ep_idx": ep_idx,
-                    "frame_number": r["frame_number"],
-                    "old_memory": old_mem,
-                    "reasoning": r["model_response"]["reasoning"],
-                    "new_memory": r["model_response"]["new_memory"],
-                    "subtask": r["model_response"]["subtask"],
-                })
-
-        logger.info(
-            "AgenticVLMDataset: loaded %d samples from %d episodes in %s",
-            len(self.samples),
-            len({s["ep_idx"] for s in self.samples}),
-            sft_data_dir,
-        )
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        sample = self.samples[idx]
-        hf_idx = self._ep_offset[sample["ep_idx"]] + sample["frame_number"]
-
-        item = self._base[hf_idx]
-
-        # Attach agentic fields
-        item["old_memory"] = sample["old_memory"]
-        item["reasoning"] = sample["reasoning"]
-        item["new_memory"] = sample["new_memory"]
-        item["subtask"] = sample["subtask"]
-
         for t in self._transforms:
             item = t(item)
         return item
@@ -411,7 +217,7 @@ def _pi05_vlm_collate_fn(batch):
 
 
 # ---------------------------------------------------------------------------
-# Data loader factories
+# Data loader factory (pi0.5 only)
 # ---------------------------------------------------------------------------
 
 
@@ -419,9 +225,8 @@ def _get_train_eval_episode_indices(
     data_root: str,
     tasks: list[str] | None,
     eval_ratio: float = 0.1,
-    seed: int = 42,
 ) -> tuple[list[int], list[int]]:
-    """Split episodes into train/eval by index (episode-level, iid).
+    """Split episodes into train/eval by index (episode-level, deterministic).
 
     Returns 0-based index lists into the per-task episode list.
     """
@@ -450,53 +255,11 @@ def _get_train_eval_episode_indices(
     if ep_count == 0:
         return [], []
 
-    rng = np.random.default_rng(seed)
     all_indices = list(range(ep_count))
-    rng.shuffle(all_indices)
     n_eval = max(1, int(ep_count * eval_ratio))
-    eval_indices = sorted(all_indices[:n_eval])
-    train_indices = sorted(all_indices[n_eval:])
+    train_indices = all_indices[: ep_count - n_eval]
+    eval_indices = all_indices[ep_count - n_eval :]
     return train_indices, eval_indices
-
-
-def _get_agentic_episode_split(
-    sft_data_dir: str,
-    video_data_root: str,
-    eval_ratio: float = 0.1,
-    seed: int = 42,
-) -> tuple[list[int], list[int]]:
-    """Split SFT agentic episodes into train/eval.
-
-    Returns two lists of 0-based per-task positions for use with
-    BehaviorLeRobotDataset(episodes=...).
-    """
-    from pathlib import Path
-
-    sft_eps = sorted(
-        int(f.replace("episode_", "").replace(".json", ""))
-        for f in os.listdir(sft_data_dir)
-        if f.endswith(".json")
-    )
-
-    episodes_path = Path(video_data_root) / "meta" / "episodes.jsonl"
-    all_task_eps = []
-    with episodes_path.open() as f:
-        for line in f:
-            item = json.loads(line)
-            if int(item["episode_index"] // 1e4) == 0:  # task-0000
-                all_task_eps.append(item["episode_index"])
-    all_task_eps.sort()
-    ep_to_pos = {ep: i for i, ep in enumerate(all_task_eps)}
-
-    sft_positions = [ep_to_pos[ep] for ep in sft_eps if ep in ep_to_pos]
-
-    rng = np.random.default_rng(seed)
-    shuffled = list(sft_positions)
-    rng.shuffle(shuffled)
-    n_eval = max(1, int(len(shuffled) * eval_ratio))
-    eval_positions = sorted(shuffled[:n_eval])
-    train_positions = sorted(shuffled[n_eval:])
-    return train_positions, eval_positions
 
 
 def _create_base_dataset(
@@ -507,11 +270,7 @@ def _create_base_dataset(
     shuffle: bool,
     episode_indices: list[int] | None = None,
 ):
-    """Create a BehaviorLeRobotDataset configured for VLM (no delta_timestamps).
-
-    Uses ``chunk_streaming_using_keyframe=False`` to avoid the streaming
-    state that doesn't survive Ray actor spawning / DataLoader workers.
-    """
+    """Create a BehaviorLeRobotDataset configured for VLM (no delta_timestamps)."""
     skill_labels = {
         0: "move to radio",
         1: "pick up radio from coffee table",
@@ -560,7 +319,7 @@ def create_behavior_vlm_data_loader(
         tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 
     train_indices, eval_indices = _get_train_eval_episode_indices(
-        data_root, tasks, eval_ratio=eval_ratio, seed=seed,
+        data_root, tasks, eval_ratio=eval_ratio,
     )
     ep_indices = eval_indices if eval_mode else train_indices
     logger.info(
@@ -619,165 +378,3 @@ def create_behavior_vlm_data_loader(
         effective_workers,
     )
     return loader, tokenizer
-
-
-def create_behavior_vlm_data_loader_qwen(
-    data_root: str,
-    *,
-    tasks: list[str] | None = None,
-    tolerance_s: float = 1e-4,
-    processor,
-    tokenizer,
-    eval_mode: bool = False,
-    eval_ratio: float = 0.1,
-    batch_size: int = 4,
-    num_workers: int = 4,
-    seed: int = 42,
-    system_prompt: str | None = None,
-    enable_reasoning: bool = False,
-    enable_memory: bool = False,
-    simple_skill: bool = True,
-    sft_data_dir: str | None = None,
-):
-    """Create a PyTorch DataLoader for Qwen2.5-VL SFT on BEHAVIOR data.
-
-    Args:
-        enable_reasoning: Include ``<think>`` block in the answer.
-        enable_memory: Include Old Memory in input and ``<memory>`` block
-            in output.
-        simple_skill: Use 4-option skill labels for subtask vs. detailed
-            sentences from the SFT JSON.
-        sft_data_dir: Path to agentic SFT JSON files.  Required when any
-            of ``enable_reasoning``, ``enable_memory``, or
-            ``simple_skill=False`` is set.
-    """
-    from rlinf.data.datasets import sft_collate_fn
-
-    # Decide data source: only the simplest case (no reasoning, no memory,
-    # simple skill) can use the regular all-frames dataset.  Everything else
-    # needs the agentic SFT JSON for reasoning/memory/detailed subtask.
-    needs_sft_json = enable_reasoning or enable_memory or not simple_skill
-
-    if needs_sft_json:
-        assert sft_data_dir is not None, (
-            "sft_data_dir is required when enable_reasoning, enable_memory, "
-            "or simple_skill=False"
-        )
-
-        train_positions, eval_positions = _get_agentic_episode_split(
-            sft_data_dir, data_root, eval_ratio=eval_ratio, seed=seed,
-        )
-        ep_positions = eval_positions if eval_mode else train_positions
-        logger.info(
-            "Agentic episode split: %d train, %d eval — using %s (%d episodes)",
-            len(train_positions), len(eval_positions),
-            "eval" if eval_mode else "train", len(ep_positions),
-        )
-
-        # When simple_skill=True, add skill_labels to base dataset so each
-        # frame gets a skill_label field for the 4-option subtask.
-        skill_labels_for_base = None
-        if simple_skill:
-            skill_labels_for_base = {
-                0: "move to radio",
-                1: "pick up radio from coffee table",
-                2: "press radio",
-                3: "place radio on coffee table",
-            }
-
-        base_dataset = BehaviorLeRobotDataset(
-            repo_id="behavior-1k/2025-challenge-demos",
-            root=data_root,
-            tolerance_s=tolerance_s,
-            tasks=["turning_on_radio"],
-            episodes=ep_positions,
-            modalities=["rgb"],
-            local_only=True,
-            delta_timestamps=None,
-            chunk_streaming_using_keyframe=False,
-            shuffle=not eval_mode,
-            seed=seed,
-            fine_grained_level=0,
-            skill_labels=skill_labels_for_base,
-        )
-
-        # Always use eval_mode=False for the transform so input_ids contain
-        # the full sequence (prompt + answer), enabling eval loss computation.
-        qwen_transform = BehaviorQwenTransform(
-            processor=processor,
-            tokenizer=tokenizer,
-            eval_mode=False,
-            system_prompt=system_prompt,
-            enable_reasoning=enable_reasoning,
-            enable_memory=enable_memory,
-            simple_skill=simple_skill,
-        )
-
-        dataset = _AgenticVLMDataset(
-            base_dataset, sft_data_dir, [PromptFromLeRobotItem(), qwen_transform]
-        )
-    else:
-        # Simplest case: no reasoning, no memory, simple skill labels only.
-        train_indices, eval_indices = _get_train_eval_episode_indices(
-            data_root, tasks, eval_ratio=eval_ratio, seed=seed,
-        )
-        ep_indices = eval_indices if eval_mode else train_indices
-        logger.info(
-            "Episode split (Qwen): %d train, %d eval — using %s (%d episodes)",
-            len(train_indices), len(eval_indices),
-            "eval" if eval_mode else "train", len(ep_indices),
-        )
-
-        base_dataset = _create_base_dataset(
-            data_root, tasks, tolerance_s, seed,
-            shuffle=not eval_mode,
-            episode_indices=ep_indices,
-        )
-
-        qwen_transform = BehaviorQwenTransform(
-            processor=processor,
-            tokenizer=tokenizer,
-            eval_mode=eval_mode,
-            system_prompt=system_prompt,
-            enable_reasoning=False,
-            enable_memory=False,
-            simple_skill=True,
-        )
-
-        dataset = _TransformedVLMDataset(
-            base_dataset, [PromptFromLeRobotItem(), qwen_transform]
-        )
-
-    sampler = None
-    if torch.distributed.is_initialized():
-        sampler = torch.utils.data.distributed.DistributedSampler(
-            dataset,
-            num_replicas=torch.distributed.get_world_size(),
-            rank=torch.distributed.get_rank(),
-            shuffle=not eval_mode,
-            drop_last=True,
-        )
-
-    effective_workers = 0 if eval_mode else num_workers
-    mp_context = multiprocessing.get_context("spawn") if effective_workers > 0 else None
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        sampler=sampler,
-        shuffle=(sampler is None and not eval_mode),
-        num_workers=effective_workers,
-        multiprocessing_context=mp_context,
-        persistent_workers=effective_workers > 0,
-        collate_fn=sft_collate_fn,
-        drop_last=True,
-    )
-
-    logger.info(
-        "Built behavior VLM Qwen %s%s dataloader: %d samples, batch=%d, workers=%d",
-        "agentic " if enable_memory else "",
-        "eval" if eval_mode else "train",
-        len(dataset),
-        batch_size,
-        effective_workers,
-    )
-    return loader

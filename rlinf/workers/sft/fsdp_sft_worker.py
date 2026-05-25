@@ -54,11 +54,15 @@ class FSDPSftWorker(FSDPModelManager, Worker):
             self.global_batch_size // self.micro_batch_size // self._world_size
         )
 
-        # if train_data_paths is not set, the code will just eval the model
-        if self.cfg.data.get("train_data_paths") is None:
-            logging.warning("train_data_paths is not set, will just eval the model")
+        # eval-only mode: eval_only is set, or train_data_paths is not set
+        eval_only = self.cfg.data.get("eval_only", None)
+        if eval_only is not None or self.cfg.data.get("train_data_paths") is None:
+            logging.warning(
+                "Eval-only mode (eval_only=%s): skipping train dataloader",
+                eval_only,
+            )
             assert self.cfg.data.get("val_data_paths") is not None, (
-                "train_data_paths is not set, val_data_paths must be set"
+                "val_data_paths must be set in eval-only mode"
             )
             self.data_loader = None
             self.data_iter = None
@@ -111,11 +115,6 @@ class FSDPSftWorker(FSDPModelManager, Worker):
 
         with self.worker_timer():
             eval_step = len(eval_data_iter)
-            # Cap eval steps if max_eval_samples is configured
-            max_eval_samples = getattr(self.cfg.runner, "max_eval_samples", 0)
-            if max_eval_samples and max_eval_samples > 0:
-                max_eval_steps = max(1, max_eval_samples // self.eval_batch_size)
-                eval_step = min(eval_step, max_eval_steps)
             eval_pbar = tqdm(
                 initial=0,
                 total=eval_step,
@@ -123,12 +122,15 @@ class FSDPSftWorker(FSDPModelManager, Worker):
                 dynamic_ncols=True,
             )
             self.model.eval()
-            total = eval_step * self.eval_batch_size
+            total = 0
             correct = 0
 
             # get the next batch
             for _ in range(eval_step):
-                correct += self.get_eval_model_output(next(eval_data_iter))
+                batch = next(eval_data_iter)
+                batch_size = batch["prompt"].size(0)
+                correct += self.get_eval_model_output(batch)
+                total += batch_size
                 eval_pbar.update(1)
 
             metrics = {
