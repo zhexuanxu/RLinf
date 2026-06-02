@@ -71,7 +71,13 @@
       "Bash(tail -100 /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260520-04:35:00-behavior_ppo_openpi_agentic_multivlas/*.log)",
       "Bash(nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader)",
       "Bash(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader)",
-      "Bash(nvidia-smi *)"
+      "Bash(nvidia-smi *)",
+      "Bash(/mnt/public/xzxuan/.venv_agentic/bin/ray stop *)",
+      "Bash(ffprobe *)",
+      "Bash(wc -l /mnt/public/xzxuan/repos/dualsys/logs/20260520-08:09:18-behavior_ppo_openpi_agentic_nodes/trajectories/images/*)",
+      "Bash(/mnt/public/xzxuan/.venv_pi/bin/ray stop *)",
+      "Bash(/mnt/public/xzxuan/.venv_agentic/bin/python -c ' *)",
+      "Bash(/mnt/public/xzxuan/.venv_agentic/bin/pip install *)"
     ]
   }
 }

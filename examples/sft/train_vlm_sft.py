@@ -58,8 +58,8 @@ def main(cfg) -> None:
     )
 
     runner.init_workers()
-    # if train_data_paths is None, the code will just eval the model
-    if cfg.data.get("train_data_paths", None) is None:
+    # eval-only mode: eval_only is set, or train_data_paths is not set
+    if cfg.data.get("eval_only", None) is not None or cfg.data.get("train_data_paths", None) is None:
         runner.run_eval()
     else:
         runner.run()

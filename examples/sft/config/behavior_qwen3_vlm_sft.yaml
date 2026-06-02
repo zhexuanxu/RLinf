@@ -25,7 +25,7 @@ runner:
   val_check_interval: 500
   save_interval: 1000
   print_eval_samples: 5
-  experiment_name: behavior_qwen2_5_vlm_sft
+  experiment_name: behavior_qwen3_vlm_sft
   output_dir: ../results
   resume_dir: null
 
@@ -53,9 +53,9 @@ actor:
   seed: 42
 
   model:
-    model_type: "qwen2.5_vl"
+    model_type: "qwen3_vl"
     precision: fp32
-    model_path: /mnt/public/xzxuan/models/Qwen2.5-VL-3B-Instruct
+    model_path: /mnt/public/xzxuan/models/Qwen3-VL-4B-Instruct
     is_lora: False
 
   optim:

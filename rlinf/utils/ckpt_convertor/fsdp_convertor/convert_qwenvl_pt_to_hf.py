@@ -19,19 +19,39 @@ covers embodied model types registered in ``_MODEL_REGISTRY``.  Qwen-VL models
 (qwen2.5_vl, qwen3_vl, etc.) are loaded via ``AutoModelForVision2Seq`` in the
 FSDP worker fallback path, so they need a dedicated converter.
 
+Supports both Qwen2.5-VL and Qwen3-VL by auto-detecting the target model's
+on-disk key format from its safetensors index.
+
 Usage:
     python -m rlinf.utils.ckpt_convertor.fsdp_convertor.convert_qwenvl_pt_to_hf \
-        --ckpt_path /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260519-13:45:24/behavior_qwen2_5_vlm_sft_agentic/checkpoints/global_step_190/actor/model_state_dict/full_weights.pt \
-        --model_path /mnt/public/xzxuan/models/Qwen2.5-VL-3B-Instruct \
-        --save_path /mnt/public/xzxuan/models/ckpt/behavior/behavior_qwen2_5_vlm_sft_agentic_peihongv0_2epoch/
+        --ckpt_path /mnt/public/xzxuan/repos/dualsys/logs/20260522-13:08:24/behavior_qwen3_vlm_sft_agentic/checkpoints/global_step_1000/actor/model_state_dict/full_weights.pt \
+        --model_path /mnt/public/xzxuan/models/Qwen3-VL-4B-Thinking \
+        --save_path /mnt/public/xzxuan/repos/dualsys/logs/20260522-13:08:24/hf
 """
 
 import argparse
+import json
+import os
 
 import torch
 from transformers import AutoConfig, AutoModelForVision2Seq
 
 from .utils import copy_model_config_and_code, save_state_dict_sharded_safetensors
+
+
+def _load_reference_keys(model_path: str) -> set[str]:
+    """Load the set of weight keys from the reference model's safetensors index."""
+    index_path = os.path.join(model_path, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        with open(index_path) as f:
+            return set(json.load(f)["weight_map"].keys())
+    single = os.path.join(model_path, "model.safetensors")
+    if os.path.exists(single):
+        from safetensors import safe_open
+
+        with safe_open(single, framework="pt") as f:
+            return set(f.keys())
+    return set()
 
 
 def main():
@@ -82,10 +102,29 @@ def main():
     copy_model_config_and_code(model_path=args.model_path, save_path=args.save_path)
 
     # 4. Remap keys from AutoModelForVision2Seq internal format to HF on-disk format.
-    #    AutoModelForVision2Seq wraps sub-models, producing keys like:
-    #      model.language_model.layers.0... -> model.layers.0...
-    #      model.visual.blocks.0...         -> visual.blocks.0...
-    #    We strip the wrapper prefix so the output matches the base model layout.
+    #
+    #    AutoModelForVision2Seq wraps all models with:
+    #      model.language_model.*  and  model.visual.*
+    #
+    #    But different models have different on-disk formats:
+    #      Qwen2.5-VL: model.layers.*, visual.*        (strips language_model + model.visual)
+    #      Qwen3-VL:   model.language_model.*, model.visual.*  (keeps as-is)
+    #
+    #    We auto-detect by inspecting the reference model's safetensors index.
+    ref_keys = _load_reference_keys(args.model_path)
+    needs_strip_language_model = ref_keys and not any(
+        k.startswith("model.language_model.") for k in ref_keys
+    )
+    needs_strip_visual_prefix = ref_keys and any(
+        k.startswith("visual.") for k in ref_keys
+    )
+
+    if ref_keys:
+        print(
+            f"  Key format: strip_language_model={needs_strip_language_model}, "
+            f"strip_visual_prefix={needs_strip_visual_prefix}"
+        )
+
     raw_sd = model.state_dict()
     remapped_sd: dict[str, torch.Tensor] = {}
     seen_ptrs: dict[int, str] = {}
@@ -96,18 +135,26 @@ def main():
             continue
         seen_ptrs[ptr] = k
 
-        # Remap key prefixes
-        if k.startswith("model.language_model."):
+        # Remap key prefixes based on auto-detected format
+        new_k = k
+        if needs_strip_language_model and k.startswith("model.language_model."):
             new_k = "model." + k[len("model.language_model."):]
-        elif k.startswith("model.visual."):
+        if needs_strip_visual_prefix and k.startswith("model.visual."):
             new_k = "visual." + k[len("model.visual."):]
-        else:
-            new_k = k
         remapped_sd[new_k] = v
 
     skipped = len(raw_sd) - len(remapped_sd)
     if skipped:
         print(f"  Skipped {skipped} tied weight(s)")
+
+    # Validate remapped keys against reference
+    if ref_keys:
+        unexpected = set(remapped_sd.keys()) - ref_keys
+        if unexpected:
+            print(f"  WARNING: {len(unexpected)} keys not in reference model: {sorted(unexpected)[:5]}...")
+        missing = ref_keys - set(remapped_sd.keys())
+        if missing:
+            print(f"  WARNING: {len(missing)} reference keys missing from output: {sorted(missing)[:5]}...")
 
     print(f"Saving safetensors to {args.save_path} ...")
     num_shards, total_size = save_state_dict_sharded_safetensors(
