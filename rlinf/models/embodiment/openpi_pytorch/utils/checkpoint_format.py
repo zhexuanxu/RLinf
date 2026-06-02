@@ -43,10 +43,13 @@ def old_to_new_state_dict(old_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
         if ok in old_sd:
             new_sd["img.stem" + suf] = old_sd[ok]
 
-    # Pos embedding
+    # Pos embedding. The old SigLIP stores this as an (num_patches, width)
+    # nn.Embedding weight; the new SigLIPViT holds a (1, num_patches, width)
+    # parameter, so add the leading broadcast dimension on import.
     ok = _SIGLIP_OLD + "embeddings.position_embedding.weight"
     if ok in old_sd:
-        new_sd["img.pos_embedding"] = old_sd[ok]
+        pos = old_sd[ok]
+        new_sd["img.pos_embedding"] = pos.unsqueeze(0) if pos.dim() == 2 else pos
 
     # Encoder layers (0..26)
     for i in range(27):
@@ -169,12 +172,16 @@ def old_to_new_state_dict(old_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
         if ok in old_sd:
             new_sd["llm.final_norms.1.ada_modulation" + suf] = old_sd[ok]
 
-    # --- lm_head → embedder (tied weights — either key works) ---
+    # --- lm_head → embedder ---
+    # The new model's shared token embedder is PaliGemma's embedding (tied with
+    # ``paligemma.lm_head``, width = paligemma width, e.g. 2048). The action
+    # expert's ``gemma_expert.lm_head`` is a separate, narrower head (e.g. 1024)
+    # and must NOT be used for the embedder, so prefer the PaliGemma key.
     lm_head_key = None
-    if "paligemma_with_expert.gemma_expert.lm_head.weight" in old_sd:
-        lm_head_key = "paligemma_with_expert.gemma_expert.lm_head.weight"
-    elif "paligemma_with_expert.paligemma.lm_head.weight" in old_sd:
+    if "paligemma_with_expert.paligemma.lm_head.weight" in old_sd:
         lm_head_key = "paligemma_with_expert.paligemma.lm_head.weight"
+    elif "paligemma_with_expert.gemma_expert.lm_head.weight" in old_sd:
+        lm_head_key = "paligemma_with_expert.gemma_expert.lm_head.weight"
     if lm_head_key is not None:
         new_sd["llm.embedder.embedding.weight"] = old_sd[lm_head_key]
 
