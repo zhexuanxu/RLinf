@@ -95,3 +95,44 @@ def test_normalize_parity_against_openpi():
     v_un = unnormalize_quantile(actions, vendored_stats["actions"])
     u_un = actions_unnorm({"actions": actions.copy()})["actions"]
     np.testing.assert_allclose(v_un, u_un, rtol=0, atol=0)
+
+
+def test_behavior_policy_parity_against_old():
+    """Vendored BehaviorInputs/extract_state matches the old openpi-based policy."""
+    pytest.importorskip("openpi")
+    from openpi.models import model as _model
+
+    from rlinf.models.embodiment.openpi.policies import behavior_policy as old_bp
+    from rlinf.models.embodiment.openpi_pytorch.policies import (
+        behavior_policy as new_bp,
+    )
+
+    rng = np.random.default_rng(2)
+    proprio = rng.uniform(-1.0, 1.0, size=(256,))
+
+    np.testing.assert_array_equal(
+        new_bp.extract_state_from_proprio(proprio),
+        old_bp.extract_state_from_proprio(proprio),
+    )
+
+    data = {
+        "observation/image": rng.integers(0, 256, size=(3, 224, 224), dtype=np.uint8),
+        "observation/wrist_image": rng.integers(
+            0, 256, size=(2, 3, 224, 224), dtype=np.uint8
+        ),
+        "observation/state": proprio,
+        "prompt": "turn on radio",
+    }
+    old = old_bp.BehaviorInputs(
+        model_type=_model.ModelType.PI05,
+        extract_state_from_proprio=True,
+        use_all_wrist_images=True,
+    )(dict(data))
+    new = new_bp.BehaviorInputs(
+        extract_state_from_proprio=True, use_all_wrist_images=True
+    )(dict(data))
+
+    np.testing.assert_array_equal(new["state"], old["state"])
+    for key in ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"):
+        np.testing.assert_array_equal(new["image"][key], old["image"][key])
+        assert bool(new["image_mask"][key]) == bool(old["image_mask"][key])
