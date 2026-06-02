@@ -15,7 +15,6 @@
 import json
 import logging
 import os
-import re
 from typing import Any
 
 import torch
@@ -24,6 +23,7 @@ from omegaconf import DictConfig
 from rlinf.config import SupportedModel
 from rlinf.hybrid_engines.fsdp.utils import generate_with_kv_cache
 from rlinf.workers.sft.fsdp_sft_worker import FSDPSftWorker
+from rlinf.workers.sft.utils import vlm_extract_answer, vlm_normalize_text
 
 
 class FSDPVlmSftWorker(FSDPSftWorker):
@@ -76,7 +76,9 @@ class FSDPVlmSftWorker(FSDPSftWorker):
 
     def load_checkpoint(self, load_path: str):
         super().load_checkpoint(load_path)
-        self._load_data_state(load_path)
+        if self.data_loader is not None:
+            # run the eval model not to load data_loader ckpt
+            self._load_data_state(load_path)
 
     def build_tokenizer(self):
         from transformers import AutoTokenizer
@@ -184,6 +186,9 @@ class FSDPVlmSftWorker(FSDPSftWorker):
             )
             logging.info(
                 f"Build data loader from {data_paths} with {len(train_dataset)} samples"
+            )
+            assert len(data_loader) != 0, (
+                f"data_loader is not empty, please check the data_path {data_paths}"
             )
 
             data_config = {
@@ -340,7 +345,10 @@ class FSDPVlmSftWorker(FSDPSftWorker):
         attention_mask = batch["attention_mask"].to(self.device)
         multi_modal_inputs = batch["multi_modal_inputs"]
         for k, v in multi_modal_inputs.items():
-            multi_modal_inputs[k] = v.to(device=self.device)
+            if isinstance(v, list):
+                multi_modal_inputs[k] = torch.cat(v, dim=0).to(device=self.device)
+            else:
+                multi_modal_inputs[k] = v.to(device=self.device)
 
         if self._is_agentic:
             # 1) Compute eval loss (same masking as training)
@@ -431,7 +439,9 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                 new_token_ids.tolist(), skip_special_tokens=False
             )
 
-            pred_text = self._extract_answer(full_pred_text)
+            pred_text = vlm_extract_answer(
+                full_pred_text, self.cfg.actor.model.model_type
+            )
             gold_text = answers[i]
 
             is_correct = self._normalize_text(pred_text) == self._normalize_text(gold_text)
@@ -452,13 +462,18 @@ class FSDPVlmSftWorker(FSDPSftWorker):
 
         return correct
 
-    def get_train_model_output(self, batch: dict[str, Any]):
+    def get_train_model_output(
+        self, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
         # hundle the input batch
         input_ids = batch["prompt"].to(self.device)
         attention_mask = batch["attention_mask"].to(self.device, dtype=torch.bool)
         multi_modal_inputs = batch["multi_modal_inputs"]
         for k, v in multi_modal_inputs.items():
-            multi_modal_inputs[k] = v.to(device=self.device)
+            if isinstance(v, list):
+                multi_modal_inputs[k] = torch.cat(v, dim=0).to(device=self.device)
+            else:
+                multi_modal_inputs[k] = v.to(device=self.device)
         label_mask = batch["label_mask"].to(device=self.device, dtype=torch.bool)
 
         labels = input_ids.detach().clone().masked_fill(~attention_mask, -100)
@@ -473,5 +488,5 @@ class FSDPVlmSftWorker(FSDPSftWorker):
                 **multi_modal_inputs,
             )
 
-        # train model return the loss
-        return outputs.loss
+        loss = outputs.loss
+        return loss, {"loss": loss.detach().item()}

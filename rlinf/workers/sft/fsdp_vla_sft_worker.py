@@ -16,12 +16,12 @@ from typing import Any
 
 import torch
 from omegaconf import DictConfig
-from torch.utils._pytree import tree_map
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from rlinf.config import SupportedModel
+from rlinf.data.lerobot_paths import resolve_lerobot_repo_id
 from rlinf.models.embodiment.base_policy import ForwardType
-from rlinf.utils.pytree import register_pytree_dataclasses
+from rlinf.utils.utils import get_rng_state, set_rng_state
 from rlinf.workers.sft.fsdp_sft_worker import FSDPSftWorker
 
 
@@ -40,17 +40,26 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         forward_mode = getattr(self.cfg.actor.model.openpi, "forward_mode", "vla")
         return bool(full_pi05) and forward_mode == "vlm"
 
-    def build_dataloader(self, data_paths: list[str], eval_dataset: bool = False):
+    def build_dataloader(self, data_paths: Any, eval_dataset: bool = False):
         if SupportedModel(self.cfg.actor.model.model_type) in [SupportedModel.OPENPI]:
             # Check for pi0.5 VLM-only mode — uses custom dataset instead of openpi data loader
             if self._is_pi05_vlm_only():
                 return self._build_pi05_vlm_dataloader(data_paths, eval_dataset=eval_dataset)
+            repo_id = resolve_lerobot_repo_id(data_paths)
+            if repo_id is None:
+                raise ValueError(
+                    "OpenPI SFT requires data.train_data_paths to be set to a local "
+                    "dataset path or LeRobot repo id."
+                )
+
+            import openpi.training.data_loader as openpi_data_loader
 
             from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
             config = get_openpi_config(
                 self.cfg.actor.model.openpi.config_name,
                 model_path=self.cfg.actor.model.model_path,
                 batch_size=self.cfg.actor.micro_batch_size * self._world_size,
+                repo_id=repo_id,
                 data_kwargs=getattr(self.cfg.actor, "openpi_data", None),
             )
 
@@ -113,7 +122,6 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         elif SupportedModel(self.cfg.actor.model.model_type) in [
             SupportedModel.DREAMZERO
         ]:
-            self._dreamzero_loss = None
             from rlinf.data.datasets.dreamzero import (
                 build_dreamzero_sft_dataloader,
             )
@@ -171,89 +179,24 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         # now the eval is not supported for embodied sft
         raise NotImplementedError("eval is not supported for embodied sft right now.")
 
-    def get_train_model_output(self, batch: dict[str, Any]):
-        if SupportedModel(self.cfg.actor.model.model_type) in [
-            SupportedModel.LINGBOTVLA,
-            SupportedModel.DREAMZERO,
-        ]:
-            with self.amp_context:
-                losses_dict = self.model(forward_type=ForwardType.SFT, data=batch)
-            if losses_dict.get("dynamics_loss", None) is not None:
-                self._dreamzero_loss = {
-                    "dynamics_loss": losses_dict["dynamics_loss"],
-                    "action_loss": losses_dict["action_loss"],
-                }
-            return losses_dict["loss"]
-
-        # Pi0.5 VLM dataset returns a 3-tuple (obs, actions, meta); openpi
-        # data loader returns a 2-tuple (obs, actions). Tolerate both.
-        if len(batch) == 3:
-            observation, actions, _meta = batch
-        else:
-            observation, actions = batch
-
-        # Extract token_kv_cache_mask before Observation.from_dict() drops it
-        # (it's computed by cot_transform but not a recognized Observation field)
-        token_kv_cache_mask = None
-        if isinstance(observation, dict) and "token_kv_cache_mask" in observation:
-            token_kv_cache_mask = observation.pop("token_kv_cache_mask")
-
-        register_pytree_dataclasses(observation)
-        observation = tree_map(
-            lambda x: (
-                torch.as_tensor(x, device=self.device).contiguous().clone()
-                if x is not None
-                else x
-            ),
-            observation,
-        )
-        if actions is not None:
-            actions = actions.to(torch.float32)
-            actions = actions.to(self.device)
-        if token_kv_cache_mask is not None:
-            token_kv_cache_mask = torch.as_tensor(
-                token_kv_cache_mask, device=self.device
-            ).contiguous().clone()
-
+    def get_train_model_output(self, batch: Any) -> tuple[torch.Tensor, dict[str, Any]]:
         with self.amp_context:
-            data = {"observation": observation, "actions": actions}
-            if token_kv_cache_mask is not None:
-                data["token_kv_cache_mask"] = token_kv_cache_mask
-            losses = self.model(
-                forward_type=ForwardType.SFT,
-                data=data,
-            )
+            output = self.model(forward_type=ForwardType.SFT, data=batch)
 
-        # Full pi0.5 returns a dict with loss + extra metrics
-        if isinstance(losses, dict):
-            self._full_pi05_loss = {
-                k: v.detach() if isinstance(v, torch.Tensor) else v
-                for k, v in losses.items()
-                if k != "loss" and v is not None
-            }
-            return losses["loss"]
+        if isinstance(output, torch.Tensor):
+            loss = output
+        else:
+            loss = output["loss"]
 
-        return losses
-
-    def run_training(self):
-        train_metrics = super().run_training()
-        if (
-            SupportedModel(self.cfg.actor.model.model_type)
-            in [SupportedModel.DREAMZERO]
-            and self._dreamzero_loss is not None
-        ):
-            train_metrics.update(
+        step_metrics = {"loss": loss.detach().item()}
+        if isinstance(output, dict) and output.get("dynamics_loss", None) is not None:
+            step_metrics.update(
                 {
-                    "dynamics_loss": self._dreamzero_loss["dynamics_loss"],
-                    "action_loss": self._dreamzero_loss["action_loss"],
+                    "dynamics_loss": output["dynamics_loss"].detach().item(),
+                    "action_loss": output["action_loss"].detach().item(),
                 }
             )
-            self._dreamzero_loss = None
-        # Full pi0.5 extra metrics (language_loss, action_loss, language_token_acc)
-        if self._full_pi05_loss is not None:
-            train_metrics.update(self._full_pi05_loss)
-            self._full_pi05_loss = None
-        return train_metrics
+        return loss, step_metrics
 
     def save_checkpoint(self, save_path: str, step: int = 0) -> None:
         super().save_checkpoint(save_path, step)
@@ -269,6 +212,14 @@ class FSDPVlaSftWorker(FSDPSftWorker):
 
             torch.distributed.barrier()
 
+            rng_state = get_rng_state()
+            all_rng_states = [None] * self._world_size
+            torch.distributed.all_gather_object(all_rng_states, rng_state)
+            if self._rank == 0:
+                torch.save(all_rng_states, os.path.join(save_path, "rng.pt"))
+
+            torch.distributed.barrier()
+
     def load_checkpoint(self, load_path: str) -> None:
         super().load_checkpoint(load_path)
 
@@ -278,8 +229,14 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             )
             state = all_states[self._rank]
             self.data_loader.load_state_dict(state)
+            self.data_iter = iter(self.data_loader)
 
-        torch.distributed.barrier()
+            rng_path = os.path.join(load_path, "rng.pt")
+            if os.path.exists(rng_path):
+                all_rng_states = torch.load(rng_path, weights_only=False)
+                set_rng_state(all_rng_states[self._rank])
+
+            torch.distributed.barrier()
 
     def get_max_steps_per_epoch(self):
         if self.data_loader is None:
