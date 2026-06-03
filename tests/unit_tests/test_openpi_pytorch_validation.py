@@ -72,17 +72,47 @@ def test_openpi_pytorch_validation_rejects_unsupported_embodied_paths(
         _validate_openpi_pytorch_eval_cfg(cfg, task_type="embodied")
 
 
-def test_validate_sft_cfg_rejects_openpi_pytorch():
+def _sft_cfg(**overrides):
     cfg = OmegaConf.create(
         {
             "actor": {
-                "global_batch_size": 1,
-                "micro_batch_size": 1,
-                "model": {"model_type": "openpi_pytorch"},
+                "global_batch_size": 256,
+                "micro_batch_size": 32,
+                "model": {
+                    "model_type": "openpi_pytorch",
+                    "precision": None,
+                    "add_value_head": False,
+                    "openpi": {
+                        "config_name": "pi05_behavior_b1k_local",
+                        "full_pi05": False,
+                    },
+                },
             },
             "data": {"train_data_paths": "/tmp/data"},
             "runner": {},
         }
     )
-    with pytest.raises(AssertionError, match="SFT training is not supported"):
+    for path, value in overrides.items():
+        OmegaConf.update(cfg, path.replace("__", "."), value, merge=True)
+    return cfg
+
+
+def test_validate_sft_cfg_accepts_openpi_pytorch_behavior():
+    # openpi_pytorch SFT on a BEHAVIOR data config is now supported.
+    validate_sft_cfg(_sft_cfg())
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "match"),
+    [
+        ("actor__model__openpi__full_pi05", True, "full_pi05"),
+        ("actor__model__openpi__use_dsrl", True, "use_dsrl"),
+        ("actor__model__add_value_head", True, "add_value_head"),
+        ("actor__model__openpi__config_name", "pi05_libero", "BEHAVIOR"),
+        ("actor__model__precision", "fp32", "precision"),
+    ],
+)
+def test_validate_sft_cfg_rejects_unsupported_openpi_pytorch(path, value, match):
+    cfg = _sft_cfg(**{path: value})
+    with pytest.raises(AssertionError, match=match):
         validate_sft_cfg(cfg)

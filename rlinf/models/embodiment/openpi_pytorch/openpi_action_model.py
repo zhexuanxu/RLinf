@@ -31,7 +31,9 @@ from typing import Any, Literal
 import torch
 import torch.nn as nn
 
+from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.models.embodiment.openpi_pytorch.processing import BehaviorEvalProcessor
+from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.utils.pi0 import Pi0
 
 
@@ -82,15 +84,103 @@ class OpenPiPytorchActionModel(nn.Module):
         }
         return actions, result
 
-    # --- Reserved for a future training implementation (SFT); not implemented here. ---
-    def compute_loss(self, *args, **kwargs):
+    # --- SFT training (BEHAVIOR supervised fine-tuning) ---
+    def forward(self, forward_type: ForwardType = ForwardType.SFT, **kwargs):
+        """Dispatch a training forward pass.
+
+        Eval/action-generation goes through :meth:`predict_action_batch`; the
+        SFT runner calls this with ``forward_type=ForwardType.SFT, data=batch``.
+        """
+        if forward_type == ForwardType.SFT:
+            return self.sft_forward(**kwargs)
         raise NotImplementedError(
-            "SFT loss computation is not implemented for this eval-only model; "
-            "it is reserved for a future training implementation."
+            "OpenPiPytorchActionModel supports eval (predict_action_batch) and "
+            f"SFT (ForwardType.SFT); got forward_type={forward_type!r}."
         )
 
-    def sft_forward(self, *args, **kwargs):
-        raise NotImplementedError(
-            "SFT training is not implemented for this eval-only model; it is "
-            "reserved for a future training implementation."
+    def sft_forward(self, data: Any) -> torch.Tensor:
+        """Compute the flow-matching SFT loss for one batch.
+
+        ``data`` is either a ``(observation, actions)`` tuple or a dict with
+        ``observation`` and ``actions``. ``actions`` must already be normalized
+        and padded to the model action dim (done in the data pipeline so it
+        matches the reference loader). Returns the scalar mean of the
+        ``(B, action_horizon)`` per-timestep loss from :meth:`Pi0.compute_loss`.
+        """
+        observation, actions = self._unpack_sft_batch(data)
+        observation = self._observation_to_device(observation)
+        actions = self._actions_to_device(actions)
+        per_timestep_loss = self.model.compute_loss(
+            observation, actions, train=self.training
         )
+        return per_timestep_loss.mean()
+
+    def compute_loss(self, data: Any) -> torch.Tensor:
+        """Alias kept for interface parity with the old action model."""
+        return self.sft_forward(data)
+
+    @staticmethod
+    def _unpack_sft_batch(data: Any) -> tuple[Any, Any]:
+        if isinstance(data, (tuple, list)):
+            if len(data) != 2:
+                raise ValueError(
+                    "SFT batch tuple must be (observation, actions); "
+                    f"got length {len(data)}."
+                )
+            observation, actions = data
+        elif isinstance(data, dict):
+            if "observation" not in data or "actions" not in data:
+                raise ValueError(
+                    "SFT batch dict must contain 'observation' and 'actions'; "
+                    f"got keys {sorted(data)}."
+                )
+            observation, actions = data["observation"], data["actions"]
+        else:
+            raise TypeError(f"Unsupported SFT batch type: {type(data)!r}.")
+        if observation is None or actions is None:
+            raise ValueError("SFT batch is missing observation or actions.")
+        return observation, actions
+
+    def _observation_to_device(self, observation: Any) -> Observation:
+        if isinstance(observation, dict):
+            observation = Observation.from_dict(observation)
+        if not isinstance(observation, Observation):
+            raise TypeError(
+                f"SFT observation must be an Observation or dict; "
+                f"got {type(observation)!r}."
+            )
+        device = self.device
+
+        def _move(x):
+            return x.to(device) if isinstance(x, torch.Tensor) else x
+
+        return Observation(
+            images={k: _move(v) for k, v in observation.images.items()},
+            image_masks={k: _move(v) for k, v in observation.image_masks.items()},
+            state=_move(observation.state),
+            tokenized_prompt=_move(observation.tokenized_prompt),
+            tokenized_prompt_mask=_move(observation.tokenized_prompt_mask),
+            token_ar_mask=_move(observation.token_ar_mask),
+            token_loss_mask=_move(observation.token_loss_mask),
+            pcd_xyz=_move(observation.pcd_xyz),
+        )
+
+    def _actions_to_device(self, actions: Any) -> torch.Tensor:
+        if not isinstance(actions, torch.Tensor):
+            actions = torch.as_tensor(actions)
+        actions = actions.to(device=self.device, dtype=torch.float32)
+        model_action_dim = self.model.action_dim
+        if actions.dim() != 3 or actions.shape[-1] != model_action_dim:
+            raise ValueError(
+                "SFT actions must have shape [B, action_horizon, "
+                f"{model_action_dim}] (normalized + padded in the data "
+                f"pipeline); got {tuple(actions.shape)}."
+            )
+        return actions
+
+    # --- Gradient checkpointing pass-through (used by the FSDP training path) ---
+    def gradient_checkpointing_enable(self, **kwargs) -> None:
+        self.model.gradient_checkpointing_enable()
+
+    def gradient_checkpointing_disable(self, **kwargs) -> None:
+        self.model.gradient_checkpointing_disable()

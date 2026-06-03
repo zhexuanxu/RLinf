@@ -1071,7 +1071,12 @@ def validate_offline_cfg(cfg: DictConfig) -> DictConfig:
 
 
 def _validate_openpi_pytorch_eval_cfg(cfg: DictConfig, task_type: str) -> None:
-    """Reject unsupported uses of the eval-only BEHAVIOR OpenPI PyTorch path."""
+    """Restrict the self-contained BEHAVIOR OpenPI PyTorch model to supported paths.
+
+    The model supports BEHAVIOR eval (action sampling) and BEHAVIOR SFT training.
+    The full-VLM (``full_pi05``) path, DSRL, a value head, RL, and non-BEHAVIOR
+    environments are out of scope and must fail loudly.
+    """
     model_type = cfg.actor.model.get("model_type", None)
     if model_type not in (
         SupportedModel.OPENPI_PYTORCH.value,
@@ -1079,15 +1084,47 @@ def _validate_openpi_pytorch_eval_cfg(cfg: DictConfig, task_type: str) -> None:
     ):
         return
 
-    if task_type == "sft":
-        raise AssertionError(
-            "openpi_pytorch is eval-only; SFT training is not supported for this model."
+    model_cfg = cfg.actor.model
+
+    # full_pi05 / DSRL / value-head are unsupported for both eval and SFT.
+    unsupported_flags = (
+        "add_value_head",
+        "openpi.full_pi05",
+        "openpi.use_dsrl",
+        "openpi.add_value_head",
+    )
+    for flag in unsupported_flags:
+        assert not bool(OmegaConf.select(model_cfg, flag, default=False)), (
+            f"openpi_pytorch does not support actor.model.{flag} "
+            "(full_pi05 / DSRL / value-head are out of scope; use the old "
+            "openpi model for those paths)."
         )
+
+    # Only bf16 / null precision is supported on the model and rollout sides.
+    for precision_path in ("actor.model.precision", "rollout.model.precision"):
+        precision = OmegaConf.select(cfg, precision_path, default=None)
+        assert precision in (None, "null", "bf16", "bf16-mixed"), (
+            "openpi_pytorch supports only precision=null or bf16; "
+            f"{precision_path}={precision!r}."
+        )
+
+    if task_type == "sft":
+        # SFT configs carry no env.* section; use the data-config / config_name
+        # signal to confirm the BEHAVIOR environment.
+        config_name = OmegaConf.select(model_cfg, "openpi.config_name", default="")
+        assert "behavior" in str(config_name).lower(), (
+            "openpi_pytorch SFT supports only the BEHAVIOR env; "
+            f"actor.model.openpi.config_name={config_name!r} must name a "
+            "BEHAVIOR data config."
+        )
+        return
+
     if task_type != "embodied":
         return
 
+    # Eval (embodied) path: action sampling only (eval-only), BEHAVIOR env only.
     assert cfg.runner.get("only_eval", False), (
-        "openpi_pytorch is eval-only; set runner.only_eval=True and use "
+        "openpi_pytorch eval is eval-only; set runner.only_eval=True and use "
         "the old openpi model for training/RL paths."
     )
 
@@ -1099,25 +1136,6 @@ def _validate_openpi_pytorch_eval_cfg(cfg: DictConfig, task_type: str) -> None:
         ), (
             "openpi_pytorch supports only BEHAVIOR eval; "
             f"{env_path}={env_type!r}."
-        )
-
-    model_cfg = cfg.actor.model
-    unsupported_flags = (
-        "add_value_head",
-        "openpi.full_pi05",
-        "openpi.use_dsrl",
-        "openpi.add_value_head",
-    )
-    for flag in unsupported_flags:
-        assert not bool(OmegaConf.select(model_cfg, flag, default=False)), (
-            f"openpi_pytorch (eval-only) does not support actor.model.{flag}."
-        )
-
-    for precision_path in ("actor.model.precision", "rollout.model.precision"):
-        precision = OmegaConf.select(cfg, precision_path, default=None)
-        assert precision in (None, "null", "bf16", "bf16-mixed"), (
-            "openpi_pytorch (eval-only) supports only precision=null or bf16; "
-            f"{precision_path}={precision!r}."
         )
 
 
