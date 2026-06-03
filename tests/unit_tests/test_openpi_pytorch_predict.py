@@ -16,8 +16,8 @@
 
 Builds the model from the converted checkpoint via ``get_model`` and runs
 ``predict_action_batch`` on a synthetic BEHAVIOR-shaped observation, asserting
-the drop-in return contract ``[B, action_chunk, action_env_dim]``. Also checks
-the reserved SFT methods raise. GPU + checkpoint gated.
+the drop-in return contract ``[B, action_chunk, action_env_dim]``. Also exercises
+the SFT loss path on CPU with a lightweight fake core. GPU + checkpoint gated.
 """
 
 from __future__ import annotations
@@ -29,17 +29,78 @@ import pytest
 _NEW_CKPT = pathlib.Path("/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew")
 
 
-def test_reserved_sft_methods_raise():
-    # This part needs no GPU/checkpoint: the reserved interface must fail loudly.
+def test_sft_forward_cpu_dummy():
+    """sft_forward wires the SFT loss path; verified on CPU with a fake core.
+
+    Uses a lightweight stand-in for the vendored Pi0 so the loss-path contract
+    (tuple/dict batch, device move, scalar reduction, malformed-batch errors,
+    gradient-checkpointing pass-through) is exercised without a GPU/checkpoint.
+    """
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    from rlinf.models.embodiment.base_policy import ForwardType
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
+    from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
 
-    dummy = OpenPiPytorchActionModel.__new__(OpenPiPytorchActionModel)
-    with pytest.raises(NotImplementedError):
-        OpenPiPytorchActionModel.compute_loss(dummy)
-    with pytest.raises(NotImplementedError):
-        OpenPiPytorchActionModel.sft_forward(dummy)
+    class _FakeCore(nn.Module):
+        action_dim = 32
+
+        def __init__(self):
+            super().__init__()
+            self.dummy = nn.Parameter(torch.zeros(1))
+            self.gc = False
+
+        def compute_loss(self, observation, actions, *, train=False):
+            # (B, action_horizon) per-timestep loss; depends on a param so the
+            # reduced scalar is differentiable.
+            return (actions.float() ** 2).mean(dim=-1) + self.dummy
+
+        def gradient_checkpointing_enable(self):
+            self.gc = True
+
+        def gradient_checkpointing_disable(self):
+            self.gc = False
+
+    model = OpenPiPytorchActionModel(
+        _FakeCore(),
+        processor=None,
+        num_steps=10,
+        action_chunk=32,
+        action_env_dim=23,
+    )
+    obs = Observation(images={}, image_masks={}, state=torch.zeros(2, 32))
+    actions = torch.randn(2, 32, 32)
+
+    # Tuple form -> finite differentiable scalar.
+    loss = model.sft_forward((obs, actions))
+    assert loss.ndim == 0 and torch.isfinite(loss)
+    loss.backward()
+
+    # Dict form via forward(ForwardType.SFT).
+    loss2 = model(
+        forward_type=ForwardType.SFT,
+        data={"observation": obs, "actions": actions},
+    )
+    assert loss2.ndim == 0 and torch.isfinite(loss2)
+
+    # Gradient-checkpointing pass-through reaches the inner core.
+    model.gradient_checkpointing_enable()
+    assert model.model.gc is True
+    model.gradient_checkpointing_disable()
+    assert model.model.gc is False
+
+    # Malformed batches fail loudly.
+    with pytest.raises(ValueError):
+        model.sft_forward((obs,))
+    with pytest.raises(ValueError):
+        model.sft_forward({"observation": obs})
+    with pytest.raises(ValueError):  # env-dim actions (23) not padded to 32
+        model.sft_forward((obs, torch.randn(2, 32, 23)))
+    with pytest.raises(TypeError):
+        model.sft_forward(42)
 
 
 def test_predict_action_batch_contract():
