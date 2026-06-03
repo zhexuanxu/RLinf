@@ -1,4 +1,4 @@
-"""Checkpoint format conversion — module-level patching.
+r"""Checkpoint format conversion — module-level patching.
 
 Each module class (RMSNorm, Attention, FeedForward, etc.) owns its
 old-format conversion logic.  This module provides:

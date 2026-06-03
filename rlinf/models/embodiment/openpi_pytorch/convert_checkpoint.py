@@ -40,8 +40,6 @@ import torch
 
 from rlinf.models.embodiment.openpi_pytorch.utils import checkpoint_format as cf
 
-logger_print = print
-
 
 def _state_dict_digest(state_dict: dict[str, torch.Tensor]) -> str:
     """A stable digest over (sorted key, dtype, shape) — for a reproducible report."""
@@ -62,13 +60,13 @@ def convert_checkpoint(input_dir: str | pathlib.Path, output_dir: str | pathlib.
     if not old_path.exists():
         raise FileNotFoundError(f"old checkpoint not found: {old_path}")
 
-    logger_print(f"[convert] loading old checkpoint: {old_path}")
+    print(f"[convert] loading old checkpoint: {old_path}")
     old_sd = safetensors.torch.load_file(str(old_path), device="cpu")
-    logger_print(f"[convert] old tensors: {len(old_sd)}  digest={_state_dict_digest(old_sd)}")
+    print(f"[convert] old tensors: {len(old_sd)}  digest={_state_dict_digest(old_sd)}")
 
     new_sd = cf.old_to_new_state_dict(old_sd)
     n_params = sum(t.numel() for t in new_sd.values())
-    logger_print(
+    print(
         f"[convert] new tensors: {len(new_sd)}  params={n_params:,}  "
         f"digest={_state_dict_digest(new_sd)}"
     )
@@ -76,20 +74,20 @@ def convert_checkpoint(input_dir: str | pathlib.Path, output_dir: str | pathlib.
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / "model.safetensors"
     safetensors.torch.save_file(new_sd, str(out_path))
-    logger_print(f"[convert] wrote: {out_path} ({out_path.stat().st_size / 1e9:.2f} GB)")
+    print(f"[convert] wrote: {out_path} ({out_path.stat().st_size / 1e9:.2f} GB)")
 
     # Copy config.json (if present) and the norm-stats asset tree so the new dir
     # is self-sufficient for eval.
     config_src = input_dir / "config.json"
     if config_src.exists():
         shutil.copy2(config_src, output_dir / "config.json")
-        logger_print(f"[convert] copied config.json: {json.loads(config_src.read_text())}")
+        print(f"[convert] copied config.json: {json.loads(config_src.read_text())}")
     for asset_dir in input_dir.glob("*"):
         if asset_dir.is_dir():
             dst = output_dir / asset_dir.name
             if not dst.exists():
                 shutil.copytree(asset_dir, dst)
-                logger_print(f"[convert] copied asset tree: {asset_dir.name}/")
+                print(f"[convert] copied asset tree: {asset_dir.name}/")
 
     return out_path
 
