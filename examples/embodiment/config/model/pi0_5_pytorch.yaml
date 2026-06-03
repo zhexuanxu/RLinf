@@ -1,0 +1,27 @@
+model_type: "openpi_pytorch"
+
+# Model path - a NEW-format checkpoint directory produced by
+# rlinf.models.embodiment.openpi_pytorch.convert_checkpoint (set in the eval config).
+model_path: "/path/to/model/openpi_pytorch"
+
+# The self-contained model runs its own bfloat16 mixed precision internally.
+precision: null
+
+# Action and chunk settings (BEHAVIOR pi05).
+num_action_chunks: 32
+action_dim: 23
+use_proprio: True
+
+# Number of flow-matching denoising steps for eval action sampling.
+num_steps: 10
+
+# No value head in the Phase 1 eval model.
+add_value_head: False
+
+# openpi_pytorch parameters (clean/minimal: no full_pi05, dsrl, value-head, or RL fields).
+openpi:
+  config_name: "pi05_behavior"
+  num_images_in_input: 3
+  action_chunk: ${actor.model.num_action_chunks}
+  num_steps: ${actor.model.num_steps}
+  action_env_dim: ${actor.model.action_dim}
