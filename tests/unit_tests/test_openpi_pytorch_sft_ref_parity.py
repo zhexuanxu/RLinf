@@ -95,6 +95,72 @@ def test_tokenizer_exact_parity_vs_reference(ref_dump):
         np.testing.assert_array_equal(np.asarray(mask, dtype=bool), ref["mask"][i])
 
 
+def test_fixed_sample_transform_parity_vs_reference(ref_dump):
+    # The strongest gate: feed the SAME raw BEHAVIOR frame the reference
+    # transformed through the new BehaviorSftTransform and assert exact (within
+    # tolerance) parity of tokenized prompt+mask, the three resized images, and
+    # the normalized+padded state and actions. This sidesteps streaming
+    # non-determinism by comparing the transforms on one identical raw input.
+    out, result = ref_dump
+    if not result.get("sample_ok"):
+        pytest.skip(f"reference fixed-sample dump failed: {result.get('sample_err')}")
+
+    from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
+        BehaviorSftTransform,
+        transform_behavior_sft_item,
+    )
+    from rlinf.models.embodiment.openpi_pytorch.normalize import load_norm_stats
+    from rlinf.models.embodiment.openpi_pytorch.tokenizer import PaligemmaTokenizer
+
+    raw = np.load(out / "ref_raw_frame.npz", allow_pickle=True)
+    ref = np.load(out / "ref_item.npz", allow_pickle=True)
+
+    norm_stats = load_norm_stats(
+        pathlib.Path(_ASSETS_DIR) / "behavior-1k" / "2025-challenge-demos"
+    )
+    transform = BehaviorSftTransform(
+        norm_stats=norm_stats,
+        action_dim=32,
+        max_token_len=200,
+        tokenizer=PaligemmaTokenizer(max_len=200),
+    )
+    frame = {
+        "observation.images.rgb.head": raw["head"],
+        "observation.images.rgb.left_wrist": raw["left"],
+        "observation.images.rgb.right_wrist": raw["right"],
+        "observation.state": raw["state"],
+        "action": raw["action"],
+        "task": str(raw["task"]),
+    }
+    item = transform_behavior_sft_item(frame, transform)
+
+    # Normalized + padded state and actions match the reference within tolerance.
+    np.testing.assert_allclose(
+        np.asarray(item["state"]), ref["state"], rtol=1e-4, atol=1e-4
+    )
+    np.testing.assert_allclose(
+        np.asarray(item["actions"]), ref["actions"], rtol=1e-4, atol=1e-4
+    )
+    # Tokenized discrete-state prompt + mask are byte-identical.
+    np.testing.assert_array_equal(
+        np.asarray(item["tokenized_prompt"]), ref["tokenized_prompt"]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(item["tokenized_prompt_mask"]), ref["tokenized_prompt_mask"]
+    )
+    # The three resized images match the reference pixels (within rounding).
+    for cam, key in (
+        ("base", "base_0_rgb"),
+        ("left", "left_wrist_0_rgb"),
+        ("right", "right_wrist_0_rgb"),
+    ):
+        new_img = np.asarray(item["image"][key])
+        assert new_img.shape == tuple(ref[cam].shape)
+        np.testing.assert_allclose(
+            new_img.astype(np.int16), ref[cam].astype(np.int16), atol=2
+        )
+
+
 def test_loader_output_contract_parity_vs_reference(ref_dump):
     out, result = ref_dump
     if not result.get("loader_ok"):

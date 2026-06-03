@@ -97,6 +97,62 @@ def main(out_dir):
     except Exception as e:  # pragma: no cover - environment dependent
         result["loader_err"] = f"{type(e).__name__}: {str(e)[:300]}"
 
+    # 3) Exact fixed-sample parity: one raw frame + its reference transform.
+    try:
+        import openpi.training.config as _config
+        import openpi.training.data_loader as _data_loader
+
+        cfg = _config.get_config(_CONFIG)
+        base = dataclasses.replace(
+            cfg.data.base_config, behavior_dataset_root=_DATA_ROOT
+        )
+        assets = _config.AssetsConfig(
+            assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos"
+        )
+        data = dataclasses.replace(cfg.data, base_config=base, assets=assets)
+        cfg = dataclasses.replace(cfg, data=data, num_workers=0)
+
+        data_config = cfg.data.create(cfg.assets_dirs, cfg.model)
+        raw = _data_loader.create_behavior_dataset(
+            data_config, action_horizon=cfg.model.action_horizon
+        )
+        transformed = _data_loader.transform_dataset(
+            raw, data_config, skip_norm_stats=False
+        )
+        raw_frame = transformed._dataset[0]
+        ref_item = transformed._transform(raw_frame)
+
+        def _g(frame, *keys):
+            for k in keys:
+                if k in frame:
+                    return np.asarray(frame[k])
+            raise KeyError(f"none of {keys} in raw frame keys {list(frame)[:12]}")
+
+        task = raw_frame.get("task", raw_frame.get("prompt", ""))
+        np.savez(
+            f"{out_dir}/ref_raw_frame.npz",
+            head=_g(raw_frame, "observation.images.rgb.head"),
+            left=_g(raw_frame, "observation.images.rgb.left_wrist"),
+            right=_g(raw_frame, "observation.images.rgb.right_wrist"),
+            state=_g(raw_frame, "observation.state"),
+            action=_g(raw_frame, "action", "actions"),
+            task=np.array(str(task.item() if hasattr(task, "item") else task)),
+        )
+        imgs = ref_item["image"]
+        np.savez(
+            f"{out_dir}/ref_item.npz",
+            state=np.asarray(ref_item["state"]),
+            actions=np.asarray(ref_item["actions"]),
+            tokenized_prompt=np.asarray(ref_item["tokenized_prompt"]),
+            tokenized_prompt_mask=np.asarray(ref_item["tokenized_prompt_mask"]),
+            base=np.asarray(imgs["base_0_rgb"]),
+            left=np.asarray(imgs["left_wrist_0_rgb"]),
+            right=np.asarray(imgs["right_wrist_0_rgb"]),
+        )
+        result["sample_ok"] = True
+    except Exception as e:  # pragma: no cover - environment dependent
+        result["sample_err"] = f"{type(e).__name__}: {str(e)[:400]}"
+
     print("REF_DUMP_RESULT " + json.dumps(result))
 
 
