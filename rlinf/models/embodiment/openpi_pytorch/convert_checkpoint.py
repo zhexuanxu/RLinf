@@ -52,7 +52,9 @@ def _state_dict_digest(state_dict: dict[str, torch.Tensor]) -> str:
     return hasher.hexdigest()[:16]
 
 
-def convert_checkpoint(input_dir: str | pathlib.Path, output_dir: str | pathlib.Path) -> pathlib.Path:
+def convert_checkpoint(
+    input_dir: str | pathlib.Path, output_dir: str | pathlib.Path
+) -> pathlib.Path:
     """Convert ``input_dir/model.safetensors`` (old layout) to ``output_dir`` (new)."""
     input_dir = pathlib.Path(input_dir)
     output_dir = pathlib.Path(output_dir)
@@ -84,10 +86,13 @@ def convert_checkpoint(input_dir: str | pathlib.Path, output_dir: str | pathlib.
         print(f"[convert] copied config.json: {json.loads(config_src.read_text())}")
     for asset_dir in input_dir.glob("*"):
         if asset_dir.is_dir():
+            if asset_dir.resolve() == output_dir.resolve():
+                continue
             dst = output_dir / asset_dir.name
-            if not dst.exists():
-                shutil.copytree(asset_dir, dst)
-                print(f"[convert] copied asset tree: {asset_dir.name}/")
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(asset_dir, dst)
+            print(f"[convert] copied asset tree: {asset_dir.name}/")
 
     return out_path
 

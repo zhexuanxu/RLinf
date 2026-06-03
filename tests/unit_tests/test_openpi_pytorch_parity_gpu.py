@@ -28,8 +28,10 @@ Parity contract (task9 — pinned):
 - tokenizer: PaligemmaTokenizer(max_len=200) — MUST fit the full pi05 prompt;
   a too-short max_len truncates the "Action:" suffix and corrupts the first
   action-horizon steps (this was empirically confirmed).
-- noise: torch.randn (1,32,32), generator seed 123; num_steps=10; dtype fp32.
-- tolerance: max |Δ| over the env-relevant 23 dims <= 2e-2 (observed ~5e-3).
+- noise: torch.randn (1,32,32), generator seed 123; num_steps=5; noise stays
+  fp32, matching the old eval path's default generated-noise dtype.
+- tolerance: FP32 max |Δ| <= 2e-2; BF16 max |Δ| <= 8e-2. Both the full
+  32-dim model action and the env-relevant 23-dim slice are asserted.
 
 The test is skipped unless a CUDA device, the installed ``openpi`` package, and
 both checkpoints are available, since it loads two ~3.35B-param models.
@@ -46,8 +48,9 @@ import pytest
 _OLD_CKPT = pathlib.Path("/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999")
 _NEW_CKPT = pathlib.Path("/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew")
 _IMAGE_KEYS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-_NUM_STEPS = 10
+_NUM_STEPS = 5
 _FP32_TOL = 2e-2
+_BF16_TOL = 8e-2
 
 
 def _raw_observation():
@@ -55,26 +58,38 @@ def _raw_observation():
     from rlinf.models.embodiment.openpi_pytorch.tokenizer import PaligemmaTokenizer
 
     images = {
-        k: np.random.randint(0, 256, (1, 224, 224, 3), dtype=np.uint8) for k in _IMAGE_KEYS
+        k: np.random.randint(0, 256, (1, 224, 224, 3), dtype=np.uint8)
+        for k in _IMAGE_KEYS
     }
     masks = {k: np.ones((1,), dtype=bool) for k in _IMAGE_KEYS}
     state = np.random.uniform(-1.0, 1.0, (1, 32)).astype(np.float32)
-    tokens, tmask = PaligemmaTokenizer(max_len=200).tokenize("turn on radio", state[0, :23])
+    tokens, tmask = PaligemmaTokenizer(max_len=200).tokenize(
+        "turn on radio", state[0, :23]
+    )
     return images, masks, state, tokens[None].astype(np.int64), tmask[None].astype(bool)
 
 
-def test_action_parity_new_vs_old_path():
+@pytest.mark.parametrize(
+    ("dtype_name", "config_dtype", "tolerance"),
+    [
+        ("fp32", "float32", _FP32_TOL),
+        ("bf16", "bfloat16", _BF16_TOL),
+    ],
+)
+def test_action_parity_new_vs_old_path(dtype_name, config_dtype, tolerance):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
-    if not (_OLD_CKPT / "model.safetensors").exists() or not (
-        _NEW_CKPT / "model.safetensors"
-    ).exists():
+    if (
+        not (_OLD_CKPT / "model.safetensors").exists()
+        or not (_NEW_CKPT / "model.safetensors").exists()
+    ):
         pytest.skip("BEHAVIOR checkpoints not available")
     pytest.importorskip("openpi")
     import safetensors.torch
 
     dev = "cuda"
+    torch_dtype = torch.float32 if dtype_name == "fp32" else torch.bfloat16
     images, masks, state, tokp, tokm = _raw_observation()
 
     def td(x):
@@ -94,13 +109,13 @@ def test_action_parity_new_vs_old_path():
     from rlinf.models.embodiment.openpi_pytorch.utils.pi0_config import Pi0Config
 
     new_model = Pi0Config(
-        pi05=True, action_horizon=32, action_dim=32, dtype="float32", pcd=False
+        pi05=True, action_horizon=32, action_dim=32, dtype=config_dtype, pcd=False
     ).create()
     new_model.load_state_dict(
         safetensors.torch.load_file(str(_NEW_CKPT / "model.safetensors"), device="cpu"),
         strict=True,
     )
-    new_model = new_model.to(dev).eval().float()
+    new_model = new_model.to(dev).eval().to(torch_dtype)
     with torch.no_grad():
         new_actions = new_model.sample_actions(
             vmodel.Observation.from_dict(copy.deepcopy(raw)),
@@ -118,7 +133,11 @@ def test_action_parity_new_vs_old_path():
         safetensors.torch.load_file(str(_OLD_CKPT / "model.safetensors"), device="cpu"),
         strict=False,
     )
-    old_model = old_model.to(dev).eval().float()
+    old_model = old_model.to(dev).eval()
+    if dtype_name == "bf16":
+        old_model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
+    else:
+        old_model = old_model.float()
     with torch.no_grad():
         old_actions = old_model.sample_actions(
             dev,
@@ -130,7 +149,12 @@ def test_action_parity_new_vs_old_path():
     diff = (new_actions - old_actions).abs()
     full_max = float(diff.max())
     env_max = float(diff[..., :23].max())
-    assert env_max <= _FP32_TOL, (
+    assert full_max <= tolerance, (
+        f"{dtype_name} full action parity exceeded tolerance: "
+        f"max|Δ|(32-dim)={full_max:.4g} > {tolerance} "
+        f"(env 23-dim max={env_max:.4g})"
+    )
+    assert env_max <= tolerance, (
         f"env-dim action parity exceeded tolerance: max|Δ|(23-dim)={env_max:.4g} "
-        f"> {_FP32_TOL} (full 32-dim max={full_max:.4g})"
+        f"> {tolerance} (full 32-dim max={full_max:.4g}, dtype={dtype_name})"
     )

@@ -53,6 +53,56 @@ def test_converter_embedder_and_posembed_fixes():
     assert tuple(new_sd["img.pos_embedding"].shape) == (1, 256, 1152)
 
 
+def test_convert_checkpoint_overwrites_stale_assets(tmp_path):
+    import json
+
+    import safetensors.torch
+
+    from rlinf.models.embodiment.openpi_pytorch.convert_checkpoint import (
+        convert_checkpoint,
+    )
+
+    input_dir = tmp_path / "old"
+    output_dir = tmp_path / "new"
+    asset_dir = input_dir / "physical-intelligence" / "behavior"
+    stale_asset_dir = output_dir / "physical-intelligence" / "behavior"
+    asset_dir.mkdir(parents=True)
+    stale_asset_dir.mkdir(parents=True)
+
+    safetensors.torch.save_file(
+        {
+            "paligemma_with_expert.paligemma.lm_head.weight": torch.zeros(
+                2, 2048, dtype=torch.bfloat16
+            )
+        },
+        str(input_dir / "model.safetensors"),
+    )
+    (input_dir / "config.json").write_text(json.dumps({"action_dim": 32}))
+    (asset_dir / "norm_stats.json").write_text(json.dumps({"fresh": True}))
+    (stale_asset_dir / "norm_stats.json").write_text(json.dumps({"stale": True}))
+
+    convert_checkpoint(input_dir, output_dir)
+
+    copied = json.loads((stale_asset_dir / "norm_stats.json").read_text())
+    assert copied == {"fresh": True}
+
+
+def test_checkpoint_validation_rejects_dtype_mismatch():
+    from rlinf.models.embodiment.openpi_pytorch import (
+        _validate_checkpoint_state_dict,
+    )
+
+    model_state = {"w": torch.empty(2, 3)}
+    checkpoint_state = {"w": torch.empty(2, 3, dtype=torch.float32)}
+
+    with pytest.raises(ValueError, match="dtype mismatch"):
+        _validate_checkpoint_state_dict(
+            checkpoint_state,
+            model_state,
+            expected_dtype=torch.bfloat16,
+        )
+
+
 @pytest.mark.skipif(
     not _OLD_CKPT.exists(), reason="real BEHAVIOR checkpoint not available"
 )

@@ -102,8 +102,12 @@ SupportedModel.RESNET_REWARD = SupportedModel.register("resnet", force=True)
 SupportedModel.CFG_MODEL = SupportedModel.register("cfg_model", force=True)
 SupportedModel.VALUE_MODEL = SupportedModel.register("value_model", force=True)
 
-SupportedModel.QWEN2_5_VL_EMBODIED = SupportedModel.register("qwen2.5_vl_embodied", force=True)
-SupportedModel.QWEN3_VL_EMBODIED = SupportedModel.register("qwen3_vl_embodied", force=True)
+SupportedModel.QWEN2_5_VL_EMBODIED = SupportedModel.register(
+    "qwen2.5_vl_embodied", force=True
+)
+SupportedModel.QWEN3_VL_EMBODIED = SupportedModel.register(
+    "qwen3_vl_embodied", force=True
+)
 
 SupportedModel.QWEN2_5_VL_SFT = SupportedModel.register("qwen2.5_vl", force=True)
 SupportedModel.QWEN3_VL_SFT = SupportedModel.register("qwen3_vl", force=True)
@@ -820,6 +824,7 @@ def validate_embodied_cfg(cfg):
         f"Model type: '{cfg.actor.model.model_type}' is not an embodied model. "
         f"Supported embodied models: {sorted([x.value for x in EMBODIED_MODEL])}."
     )
+    _validate_openpi_pytorch_phase1_cfg(cfg, task_type="embodied")
 
     # NOTE: Currently we only support actor_critic as PPO algorithm loss, and only support value_head as critic model.
     # This will be updated in the future to support more algorithms and critic models.
@@ -1065,6 +1070,57 @@ def validate_offline_cfg(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
+def _validate_openpi_pytorch_phase1_cfg(cfg: DictConfig, task_type: str) -> None:
+    """Reject unsupported Phase 1 uses of the BEHAVIOR-only OpenPI PyTorch path."""
+    model_type = cfg.actor.model.get("model_type", None)
+    if model_type not in (
+        SupportedModel.OPENPI_PYTORCH.value,
+        SupportedModel.OPENPI_PYTORCH,
+    ):
+        return
+
+    if task_type == "sft":
+        raise AssertionError(
+            "openpi_pytorch is Phase 1 eval-only; SFT is reserved for Phase 2."
+        )
+    if task_type != "embodied":
+        return
+
+    assert cfg.runner.get("only_eval", False), (
+        "openpi_pytorch is Phase 1 eval-only; set runner.only_eval=True and use "
+        "the old openpi model for training/RL paths."
+    )
+
+    for env_path in ("env.train.env_type", "env.eval.env_type"):
+        env_type = OmegaConf.select(cfg, env_path)
+        assert (
+            env_type is not None
+            and SupportedEnvType(env_type) == SupportedEnvType.BEHAVIOR
+        ), (
+            "openpi_pytorch (Phase 1) supports only BEHAVIOR eval; "
+            f"{env_path}={env_type!r}."
+        )
+
+    model_cfg = cfg.actor.model
+    unsupported_flags = (
+        "add_value_head",
+        "openpi.full_pi05",
+        "openpi.use_dsrl",
+        "openpi.add_value_head",
+    )
+    for flag in unsupported_flags:
+        assert not bool(OmegaConf.select(model_cfg, flag, default=False)), (
+            f"openpi_pytorch (Phase 1 eval) does not support actor.model.{flag}."
+        )
+
+    for precision_path in ("actor.model.precision", "rollout.model.precision"):
+        precision = OmegaConf.select(cfg, precision_path, default=None)
+        assert precision in (None, "null", "bf16", "bf16-mixed"), (
+            "openpi_pytorch (Phase 1 eval) supports only precision=null or bf16; "
+            f"{precision_path}={precision!r}."
+        )
+
+
 def validate_sft_cfg(cfg: DictConfig) -> DictConfig:
     assert cfg.actor.get("global_batch_size", None) is not None, (
         "the actor.global_batch_size is not set"
@@ -1088,6 +1144,7 @@ def validate_sft_cfg(cfg: DictConfig) -> DictConfig:
             cfg.runner.val_check_interval = cfg.runner.get("val_check_interval", -1)
 
         model_type = cfg.actor.model.get("model_type", None)
+        _validate_openpi_pytorch_phase1_cfg(cfg, task_type="sft")
         if (
             model_type is not None
             and SupportedModel(model_type) == SupportedModel.DREAMZERO

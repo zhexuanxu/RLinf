@@ -66,7 +66,9 @@ def test_predict_action_batch_contract():
     batch = 2
     env_obs = {
         "main_images": torch.randint(0, 256, (batch, 720, 720, 3), dtype=torch.uint8),
-        "wrist_images": torch.randint(0, 256, (batch, 2, 480, 480, 3), dtype=torch.uint8),
+        "wrist_images": torch.randint(
+            0, 256, (batch, 2, 480, 480, 3), dtype=torch.uint8
+        ),
         "states": torch.rand(batch, 256).double(),
         "task_descriptions": ["turn on radio"] * batch,
         "extra_view_images": None,
@@ -87,10 +89,22 @@ def test_get_model_rejects_unsupported_paths():
 
     # full_pi05 must fail loudly (reserved out of Phase 1).
     cfg = OmegaConf.create(
-        {"model_path": str(_NEW_CKPT), "openpi": {"config_name": "pi05_behavior", "full_pi05": True}}
+        {
+            "model_path": str(_NEW_CKPT),
+            "openpi": {"config_name": "pi05_behavior", "full_pi05": True},
+        }
     )
     with pytest.raises(ValueError):
         get_model(cfg)
+
+    # Plain dict configs must not bypass dotted openpi.* guard lookup.
+    with pytest.raises(ValueError, match="full_pi05"):
+        get_model(
+            {
+                "model_path": str(_NEW_CKPT),
+                "openpi": {"config_name": "pi05_behavior", "full_pi05": True},
+            }
+        )
 
     # Non-BEHAVIOR config must fail loudly.
     cfg2 = OmegaConf.create(
@@ -98,3 +112,51 @@ def test_get_model_rejects_unsupported_paths():
     )
     with pytest.raises(ValueError):
         get_model(cfg2)
+
+    # Standard RLinf top-level value-head flag must also fail loudly.
+    cfg3 = OmegaConf.create(
+        {
+            "model_path": str(_NEW_CKPT),
+            "add_value_head": True,
+            "openpi": {"config_name": "pi05_behavior"},
+        }
+    )
+    with pytest.raises(ValueError, match="add_value_head"):
+        get_model(cfg3)
+
+    # Explicit fp32 precision is unsupported in the eval factory because the
+    # vendored model carries internal bf16 activation dtype state.
+    cfg4 = OmegaConf.create(
+        {
+            "model_path": str(_NEW_CKPT),
+            "precision": "fp32",
+            "openpi": {"config_name": "pi05_behavior"},
+        }
+    )
+    with pytest.raises(ValueError, match="precision"):
+        get_model(cfg4)
+
+
+def test_get_model_rejects_missing_checkpoint_files(tmp_path):
+    pytest.importorskip("omegaconf")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    torch = pytest.importorskip("torch")
+    from omegaconf import OmegaConf
+
+    from rlinf.models.embodiment.openpi_pytorch import get_model
+
+    cfg = OmegaConf.create(
+        {
+            "model_path": str(tmp_path),
+            "openpi": {"config_name": "pi05_behavior"},
+        }
+    )
+    with pytest.raises(FileNotFoundError, match="model.safetensors"):
+        get_model(cfg)
+
+    safetensors_torch.save_file(
+        {"placeholder": torch.zeros(1, dtype=torch.bfloat16)},
+        str(tmp_path / "model.safetensors"),
+    )
+    with pytest.raises(FileNotFoundError, match="norm stats"):
+        get_model(cfg)
