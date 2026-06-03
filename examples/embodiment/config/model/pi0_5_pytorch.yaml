@@ -1,7 +1,7 @@
 model_type: "openpi_pytorch"
 
 # Model path - a NEW-format checkpoint directory produced by
-# rlinf.models.embodiment.openpi_pytorch.convert_checkpoint (set in the eval config).
+# rlinf.models.embodiment.openpi_pytorch.utils.old_to_new (set in the eval config).
 model_path: "/path/to/model/openpi_pytorch"
 
 # The self-contained model runs its own bfloat16 mixed precision internally.

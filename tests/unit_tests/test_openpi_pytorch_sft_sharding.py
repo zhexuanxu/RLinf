@@ -24,8 +24,8 @@ rank-independent partition would have given every rank identical data.
 
 from __future__ import annotations
 
-from rlinf.models.embodiment.openpi_pytorch.dataconfig import behavior_sft_dataset
-from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_dataset import (
+from rlinf.data.datasets.behavior import behavior_sft_dataset
+from rlinf.data.datasets.behavior.behavior_sft_dataset import (
     BehaviorSftDataset,
     partition_chunk_indices,
 )

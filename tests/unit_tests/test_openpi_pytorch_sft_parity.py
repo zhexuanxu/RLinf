@@ -45,15 +45,19 @@ def _stats():
 def test_sft_transform_matches_eval_processor():
     pytest.importorskip("torch")
 
-    from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
+    from rlinf.data.datasets.behavior.behavior_sft_transform import (
         BehaviorSftTransform,
         transform_behavior_sft_item,
     )
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import normalize_quantile
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        normalize_quantile,
+    )
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.processing import (
         BehaviorEvalProcessor,
     )
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+        PaligemmaTokenizer,
+    )
 
     norm_stats = _stats()
     tokenizer = PaligemmaTokenizer(max_len=200)

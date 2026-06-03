@@ -92,7 +92,9 @@ def test_tokenizer_exact_parity_vs_reference(ref_dump):
     if not result.get("tokenizer_ok"):
         pytest.skip(f"reference tokenizer dump failed: {result.get('tokenizer_err')}")
 
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+        PaligemmaTokenizer,
+    )
 
     ref = np.load(out / "ref_tokenizer.npz")
     tok = PaligemmaTokenizer(max_len=200)
@@ -112,12 +114,16 @@ def test_fixed_sample_transform_parity_vs_reference(ref_dump):
     if not result.get("sample_ok"):
         pytest.skip(f"reference fixed-sample dump failed: {result.get('sample_err')}")
 
-    from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
+    from rlinf.data.datasets.behavior.behavior_sft_transform import (
         BehaviorSftTransform,
         transform_behavior_sft_item,
     )
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import load_norm_stats
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        load_norm_stats,
+    )
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+        PaligemmaTokenizer,
+    )
 
     raw = np.load(out / "ref_raw_frame.npz", allow_pickle=True)
     ref = np.load(out / "ref_item.npz", allow_pickle=True)
@@ -173,7 +179,7 @@ def test_loader_output_contract_parity_vs_reference(ref_dump):
     if not result.get("loader_ok"):
         pytest.skip(f"reference loader dump failed: {result.get('loader_err')}")
 
-    from rlinf.models.embodiment.openpi_pytorch.dataconfig import (
+    from rlinf.data.datasets.behavior import (
         create_behavior_sft_data_loader,
     )
 

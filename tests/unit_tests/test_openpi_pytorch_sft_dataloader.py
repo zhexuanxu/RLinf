@@ -19,9 +19,11 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+    PaligemmaTokenizer,
+)
 
 
 def _norm_stats():
@@ -50,10 +52,10 @@ def _raw_item():
 
 
 def test_behavior_sft_transform_and_collate_contract():
-    from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_data_loader import (
+    from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
         collate_behavior_sft_items,
     )
-    from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
+    from rlinf.data.datasets.behavior.behavior_sft_transform import (
         BehaviorSftTransform,
         transform_behavior_sft_item,
     )
@@ -88,7 +90,7 @@ def test_behavior_sft_transform_and_collate_contract():
 
 
 def test_behavior_sft_transform_rejects_missing_required_field():
-    from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
+    from rlinf.data.datasets.behavior.behavior_sft_transform import (
         BehaviorSftTransform,
         transform_behavior_sft_item,
     )
@@ -106,7 +108,7 @@ def test_behavior_sft_transform_rejects_missing_required_field():
 
 
 def test_fsdp_vla_worker_dispatches_openpi_pytorch_dataloader(monkeypatch):
-    from rlinf.models.embodiment.openpi_pytorch import dataconfig
+    from rlinf.data.datasets.behavior import behavior_sft_data_loader
     from rlinf.workers.sft.fsdp_vla_sft_worker import FSDPVlaSftWorker
 
     calls = {}
@@ -122,7 +124,9 @@ def test_fsdp_vla_worker_dispatches_openpi_pytorch_dataloader(monkeypatch):
         calls.update(kwargs)
         return _FakeLoader()
 
-    monkeypatch.setattr(dataconfig, "create_behavior_sft_data_loader", _fake_loader)
+    monkeypatch.setattr(
+        behavior_sft_data_loader, "create_behavior_sft_data_loader", _fake_loader
+    )
 
     worker = FSDPVlaSftWorker.__new__(FSDPVlaSftWorker)
     worker.cfg = OmegaConf.create(

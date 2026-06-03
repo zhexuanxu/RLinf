@@ -48,15 +48,17 @@ import dataclasses
 
 import numpy as np
 
-from rlinf.models.embodiment.openpi_pytorch.utils.image_tools import resize_with_pad
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
     NormStats,
     normalize_quantile,
 )
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+    PaligemmaTokenizer,
+)
 from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
     BehaviorInputs,
 )
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+from rlinf.models.embodiment.openpi_pytorch.utils.image_tools import resize_with_pad
 
 # Camera views resolved by `BehaviorInputs` for the pi05 model.
 _IMAGE_KEYS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")

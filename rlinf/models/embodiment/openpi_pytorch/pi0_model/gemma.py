@@ -135,13 +135,11 @@ class RMSNorm(nn.Module):
         normed = x_float * torch.rsqrt(var + 1e-6)
 
         if not self.adaptive:
-            assert cond is None
             scale = 1.0 + self.scale.float()
             normed = normed * scale
             return normed.to(dtype), None
 
         # adaptive RMSNorm
-        assert cond is not None
         target_dtype = self.ada_modulation.weight.dtype
         modulation = self.ada_modulation(cond.to(target_dtype))  # (..., 3*dim)
         scale, shift, gate = torch.chunk(modulation, 3, dim=-1)

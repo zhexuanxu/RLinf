@@ -39,21 +39,30 @@ import typing
 
 import numpy as np
 import torch
+from omegaconf import DictConfig, OmegaConf
 
-from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_dataset import (
+from rlinf.data.datasets.behavior.behavior_sft_dataset import (
     BehaviorSftDataset,
 )
-from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
+from rlinf.data.datasets.behavior.behavior_sft_transform import (
     BehaviorSftTransform,
     transform_behavior_sft_item,
 )
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats, load_norm_stats
+from rlinf.data.lerobot_paths import (
+    resolve_lerobot_dataset_root,
+    resolve_lerobot_repo_id,
+)
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+    NormStats,
+    load_norm_stats,
+)
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "BehaviorSftDataConfig",
+    "build_behavior_sft_dataloader",
     "collate_behavior_sft_items",
     "create_behavior_sft_data_loader",
     "transform_behavior_sft_item",
@@ -344,3 +353,69 @@ class BehaviorSftDataLoader:
 
     def __len__(self) -> int:
         return len(self._torch_loader)
+
+
+def build_behavior_sft_dataloader(cfg, world_size, rank, data_paths, eval_dataset=False):
+    """Build the self-contained BEHAVIOR SFT data loader for the SFT worker.
+
+    Owns the config extraction the FSDP SFT worker previously did inline. The
+    streaming dataset handles rank-aware sharding internally (it reads the
+    distributed rank from ``torch.distributed``), so ``world_size``/``rank`` are
+    accepted only for dispatch parity with the other SFT builders. Returns
+    ``(loader, loader.data_config())``.
+    """
+    del world_size, rank  # rank-aware partition is internal to the streaming dataset
+
+    data_path = resolve_lerobot_repo_id(data_paths)
+    if data_path is None:
+        raise ValueError("openpi_pytorch BEHAVIOR SFT requires data.train_data_paths.")
+
+    model_cfg = cfg.actor.model
+    openpi_data = OmegaConf.select(cfg.actor, "openpi_data", default={})
+    if not isinstance(openpi_data, DictConfig):
+        openpi_data = OmegaConf.create(openpi_data)
+
+    def model_select(key, default):
+        return OmegaConf.select(model_cfg, key, default=default)
+
+    def data_select(key, default):
+        return OmegaConf.select(openpi_data, key, default=default)
+
+    norm_stats_path = model_select("openpi.norm_stats_path", None)
+    assets_dir = (
+        norm_stats_path
+        or model_select("openpi.assets_dir", None)
+        or model_select("model_path", "")
+    )
+    asset_id = (
+        None
+        if norm_stats_path
+        else model_select("openpi.asset_id", "physical-intelligence/behavior")
+    )
+
+    micro_batch_size = cfg.actor.micro_batch_size
+    eval_batch_size = cfg.actor.get("eval_batch_size", 1)
+
+    loader = create_behavior_sft_data_loader(
+        behavior_dataset_root=str(
+            data_select(
+                "behavior_dataset_root",
+                resolve_lerobot_dataset_root(str(data_path)),
+            )
+        ),
+        assets_dir=str(assets_dir),
+        asset_id=asset_id,
+        repo_id=str(data_select("repo_id", _DEFAULT_REPO_ID)),
+        tasks=list(data_select("tasks", ["turning_on_radio"])),
+        modalities=list(data_select("modalities", ["rgb"])),
+        action_dim=int(model_select("openpi.model_action_dim", 32)),
+        action_horizon=int(model_select("num_action_chunks", 32)),
+        max_token_len=int(model_select("openpi.max_token_len", 200)),
+        batch_size=eval_batch_size if eval_dataset else micro_batch_size,
+        num_workers=int(OmegaConf.select(cfg.data, "num_workers", default=8)),
+        fine_grained_level=int(data_select("fine_grained_level", 0)),
+        tolerance_s=float(data_select("tolerance_s", 1e-4)),
+        shuffle=not eval_dataset,
+        seed=int(cfg.actor.get("seed", 42)),
+    )
+    return loader, loader.data_config()

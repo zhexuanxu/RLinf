@@ -50,7 +50,13 @@ _FORBIDDEN_OLD_PATHS = re.compile(
     r"convert_checkpoint|export_checkpoint|_import_isolation)\b"
     r"|openpi_pytorch\.utils\.(?:model|pi0|pi0_config|gemma|siglip|pointnet|lora|utils|"
     r"convert_checkpoint|export_checkpoint|checkpoint_format)\b"
+    # The BEHAVIOR SFT data pipeline moved to rlinf.data.datasets.behavior.
+    r"|openpi_pytorch\.dataconfig\.behavior_sft\w*"
 )
+
+# Source/config file types scanned for stale import/reference paths (AC-1
+# requires coverage of rlinf/, tests/, examples/ — including YAML config text).
+_SCANNED_SUFFIXES = (".py", ".yaml", ".yml")
 
 
 def test_required_utility_modules_importable():
@@ -74,18 +80,21 @@ def test_expected_subpackages_exist():
 
 
 def test_no_old_import_paths_anywhere():
-    """No source file under rlinf/, tests/, examples/ references an old import path."""
+    """No .py/.yaml source under rlinf/, tests/, examples/ references an old path."""
     offenders: list[str] = []
+    self_path = Path(__file__).resolve()
     for sub in ("rlinf", "tests", "examples"):
         root = _REPO_ROOT / sub
         if not root.exists():
             continue
-        for py_file in root.rglob("*.py"):
-            if py_file.resolve() == Path(__file__).resolve():
+        for src in root.rglob("*"):
+            if src.suffix not in _SCANNED_SUFFIXES or "__pycache__" in src.parts:
+                continue
+            if src.resolve() == self_path:
                 continue  # this file names the forbidden patterns as regex literals
-            text = py_file.read_text(encoding="utf-8")
+            text = src.read_text(encoding="utf-8")
             for m in _FORBIDDEN_OLD_PATHS.finditer(text):
                 lineno = text.count("\n", 0, m.start()) + 1
-                rel = py_file.relative_to(_REPO_ROOT)
+                rel = src.relative_to(_REPO_ROOT)
                 offenders.append(f"{rel}:{lineno}: {m.group(0)}")
     assert not offenders, "Old import paths still present:\n" + "\n".join(offenders)

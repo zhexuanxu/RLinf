@@ -19,14 +19,14 @@ eval / action-generation path is fully self-contained: it does not import the
 externally installed ``openpi`` package and does not patch ``transformers``.
 
 Layout:
-  utils/                  vendored model core (pi0, gemma, siglip, ...).
-  policies/               BEHAVIOR input/output transforms.
-  normalize.py            norm-stats load + quantile (un)normalization.
-  tokenizer.py            PaliGemma tokenizer (bundled SentencePiece asset).
-  image_tools.py          PIL resize-with-pad (matches the old eval).
-  processing.py           BehaviorEvalProcessor (env_obs -> model.Observation).
   openpi_action_model.py  eval action sampling and SFT-loss entry point.
-  convert_checkpoint.py   old-format -> new-format checkpoint converter.
+  pi0_model/              vendored model core + preprocessing (pi0, gemma,
+                          siglip, normalize, processing, tokenizer, ...).
+  utils/                  checkpoint conversion + image tooling
+                          (jax_to_new_pytorch, old_to_new, new_to_old,
+                          export_sft_checkpoint, image_tools).
+  policies/               BEHAVIOR input/output transforms.
+  dataconfig/             BEHAVIOR data config (mirrors openpi/dataconfig).
 """
 
 from __future__ import annotations
@@ -124,13 +124,19 @@ def get_model(cfg, torch_dtype=None):
     import safetensors.torch
     from omegaconf import OmegaConf
 
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import load_norm_stats
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.processing import BehaviorEvalProcessor
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        load_norm_stats,
+    )
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.processing import (
+        BehaviorEvalProcessor,
+    )
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+        PaligemmaTokenizer,
+    )
 
     def _select(path, default=None):
         if isinstance(cfg, dict):

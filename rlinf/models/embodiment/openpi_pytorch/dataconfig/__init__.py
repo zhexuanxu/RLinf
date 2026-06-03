@@ -12,35 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Self-contained BEHAVIOR-1K SFT data pipeline for the PyTorch OpenPI package.
+"""BEHAVIOR data-config package for the self-contained PyTorch OpenPI 0.5 model.
 
-Ports the old (installed-``openpi``) BEHAVIOR streaming SFT pipeline into the
-vendored ``openpi_pytorch`` package with zero installed-``openpi`` imports. All
-preprocessing primitives (state extraction, image resize/pad, quantile
-normalization, and the PaliGemma tokenizer) are reused from the vendored
-``openpi_pytorch`` modules.
+The BEHAVIOR streaming SFT pipeline (dataset / transform / data loader) now lives
+under ``rlinf.data.datasets.behavior``; import it from there. This package is
+reserved for the YAML-driven BEHAVIOR data config that mirrors
+``openpi/dataconfig`` (no hard-coded ``TrainConfig`` registry).
 """
-
-from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_data_loader import (
-    BehaviorSftDataConfig,
-    BehaviorSftDataLoader,
-    collate_behavior_sft_items,
-    create_behavior_sft_data_loader,
-)
-from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_dataset import (
-    BehaviorSftDataset,
-)
-from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
-    BehaviorSftTransform,
-    transform_behavior_sft_item,
-)
-
-__all__ = [
-    "BehaviorSftDataConfig",
-    "BehaviorSftDataLoader",
-    "BehaviorSftDataset",
-    "BehaviorSftTransform",
-    "collate_behavior_sft_items",
-    "create_behavior_sft_data_loader",
-    "transform_behavior_sft_item",
-]

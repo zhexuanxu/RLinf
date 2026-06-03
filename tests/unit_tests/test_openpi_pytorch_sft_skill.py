@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import random
 
-from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_dataset import (
+from rlinf.data.datasets.behavior.behavior_sft_dataset import (
     BehaviorSftDataset,
 )
 

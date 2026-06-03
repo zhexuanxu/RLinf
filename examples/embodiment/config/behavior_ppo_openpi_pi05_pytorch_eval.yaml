@@ -104,7 +104,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    # NEW-format checkpoint produced by openpi_pytorch.convert_checkpoint from
+    # NEW-format checkpoint produced by openpi_pytorch.utils.old_to_new from
     # the old BEHAVIOR eval checkpoint (jax_task0000_sft_29999).
     model_path: /mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew
     precision: ${actor.model.precision}
