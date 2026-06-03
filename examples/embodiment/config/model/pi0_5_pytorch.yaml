@@ -17,7 +17,9 @@ action_dim: 23
 use_proprio: True
 
 # Number of flow-matching denoising steps for eval action sampling.
-num_steps: 10
+# Must match the old eval (pi0_5.yaml uses 5) — the model is tuned for this
+# step count, and the action-parity gate holds at equal num_steps.
+num_steps: 5
 
 # No value head in the Phase 1 eval model.
 add_value_head: False
