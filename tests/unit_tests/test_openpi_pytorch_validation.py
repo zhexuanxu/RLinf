@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validation guardrails for the Phase 1 OpenPI PyTorch eval-only model."""
+"""Validation guardrails for the OpenPI PyTorch eval-only model."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from rlinf.config import (
-    _validate_openpi_pytorch_phase1_cfg,
+    _validate_openpi_pytorch_eval_cfg,
     validate_sft_cfg,
 )
 
@@ -50,7 +50,7 @@ def _embodied_cfg(**overrides):
 
 
 def test_openpi_pytorch_validation_accepts_behavior_eval_only():
-    _validate_openpi_pytorch_phase1_cfg(_embodied_cfg(), task_type="embodied")
+    _validate_openpi_pytorch_eval_cfg(_embodied_cfg(), task_type="embodied")
 
 
 @pytest.mark.parametrize(
@@ -69,7 +69,7 @@ def test_openpi_pytorch_validation_rejects_unsupported_embodied_paths(
 ):
     cfg = _embodied_cfg(**{path: value})
     with pytest.raises(AssertionError, match=match):
-        _validate_openpi_pytorch_phase1_cfg(cfg, task_type="embodied")
+        _validate_openpi_pytorch_eval_cfg(cfg, task_type="embodied")
 
 
 def test_validate_sft_cfg_rejects_openpi_pytorch():
@@ -84,5 +84,5 @@ def test_validate_sft_cfg_rejects_openpi_pytorch():
             "runner": {},
         }
     )
-    with pytest.raises(AssertionError, match="SFT is reserved"):
+    with pytest.raises(AssertionError, match="SFT training is not supported"):
         validate_sft_cfg(cfg)

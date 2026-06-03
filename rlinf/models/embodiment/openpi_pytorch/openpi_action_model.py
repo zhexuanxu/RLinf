@@ -14,9 +14,9 @@
 
 """Entry point for the self-contained PyTorch OpenPI 0.5 BEHAVIOR model.
 
-This model focuses on exactly two responsibilities (per the migration design):
-eval action sampling (implemented here) and SFT loss (reserved for Phase 2). Its
-high-level interface mirrors the old ``OpenPi0ForRLActionPrediction`` so the eval
+This model focuses on exactly two responsibilities: eval action sampling
+(implemented here) and SFT loss (reserved for a future training implementation).
+Its high-level interface mirrors the old ``OpenPi0ForRLActionPrediction`` so the eval
 rollout worker can call it unchanged via the OpenPI dispatch path:
 
     actions, result = model.predict_action_batch(env_obs=env_obs, mode="eval")
@@ -82,15 +82,15 @@ class OpenPiPytorchActionModel(nn.Module):
         }
         return actions, result
 
-    # --- Reserved for Phase 2 (SFT training); not implemented in the eval plan. ---
+    # --- Reserved for a future training implementation (SFT); not implemented here. ---
     def compute_loss(self, *args, **kwargs):
         raise NotImplementedError(
-            "SFT loss computation is reserved for Phase 2 of the migration; this "
-            "Phase 1 model implements eval action sampling only."
+            "SFT loss computation is not implemented for this eval-only model; "
+            "it is reserved for a future training implementation."
         )
 
     def sft_forward(self, *args, **kwargs):
         raise NotImplementedError(
-            "SFT training is reserved for Phase 2 of the migration; this Phase 1 "
-            "model implements eval action sampling only."
+            "SFT training is not implemented for this eval-only model; it is "
+            "reserved for a future training implementation."
         )

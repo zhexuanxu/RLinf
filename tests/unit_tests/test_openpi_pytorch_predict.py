@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""End-to-end contract test for the BEHAVIOR pi05 action model (AC-4, AC-10, AC-11).
+"""End-to-end contract test for the BEHAVIOR pi05 action model.
 
 Builds the model from the converted checkpoint via ``get_model`` and runs
 ``predict_action_batch`` on a synthetic BEHAVIOR-shaped observation, asserting
@@ -87,7 +87,7 @@ def test_get_model_rejects_unsupported_paths():
 
     from rlinf.models.embodiment.openpi_pytorch import get_model
 
-    # full_pi05 must fail loudly (reserved out of Phase 1).
+    # full_pi05 must fail loudly (unsupported by the eval-only model).
     cfg = OmegaConf.create(
         {
             "model_path": str(_NEW_CKPT),

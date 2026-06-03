@@ -21,7 +21,7 @@ use_proprio: True
 # step count, and the action-parity gate holds at equal num_steps.
 num_steps: 5
 
-# No value head in the Phase 1 eval model.
+# No value head in the eval-only model.
 add_value_head: False
 
 # openpi_pytorch parameters (clean/minimal: no full_pi05, dsrl, value-head, or RL fields).

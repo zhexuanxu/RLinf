@@ -14,7 +14,7 @@
 
 """Deterministic action-parity gate: new self-contained Pi0 vs the old path.
 
-This is the primary correctness gate for the BEHAVIOR pi05 migration (AC-6). It
+This is the primary correctness gate for the BEHAVIOR pi05 migration. It
 loads the new vendored ``Pi0`` (from the converted checkpoint) and the old
 ``openpi`` ``PI0Pytorch`` (from the original checkpoint), feeds both the *same*
 fixed observation, the *same* injected flow-matching noise, and the *same*
@@ -22,7 +22,7 @@ number of denoising steps, then asserts the sampled actions match within a tight
 fp32 tolerance — both over the full 32-dim model output and the env-relevant
 first 23 dims.
 
-Parity contract (task9 — pinned):
+Parity contract (pinned):
 - batch 1; images: seed-0 uint8 (1,224,224,3) for base/left_wrist/right_wrist;
 - state: seed-0 uniform[-1,1] (1,32); prompt "turn on radio";
 - tokenizer: PaligemmaTokenizer(max_len=200) — MUST fit the full pi05 prompt;

@@ -141,7 +141,7 @@ def get_model(cfg, torch_dtype=None):
             value = OmegaConf.select(cfg, path)
         return default if value is None else value
 
-    # Phase 1 eval supports only the minimal BEHAVIOR path; fail loudly otherwise.
+    # This eval-only model supports only the minimal BEHAVIOR path; fail loudly otherwise.
     for unsupported in (
         "add_value_head",
         "openpi.full_pi05",
@@ -150,24 +150,24 @@ def get_model(cfg, torch_dtype=None):
     ):
         if bool(_select(unsupported, False)):
             raise ValueError(
-                f"openpi_pytorch (Phase 1 eval) does not support '{unsupported}'. "
+                f"openpi_pytorch (eval-only) does not support '{unsupported}'. "
                 "Use the old 'openpi' model for full_pi05/DSRL/value-head paths."
             )
     if torch_dtype not in (None, torch.bfloat16):
         raise ValueError(
-            "openpi_pytorch (Phase 1 eval) supports only precision=null or bf16. "
+            "openpi_pytorch (eval-only) supports only precision=null or bf16. "
             f"Got torch_dtype={torch_dtype}."
         )
     precision = _select("precision", None)
     if precision not in (None, "null", "bf16", "bf16-mixed"):
         raise ValueError(
-            "openpi_pytorch (Phase 1 eval) supports only precision=null or bf16. "
+            "openpi_pytorch (eval-only) supports only precision=null or bf16. "
             f"Got precision={precision!r}."
         )
     config_name = _select("openpi.config_name", "pi05_behavior")
     if "behavior" not in str(config_name):
         raise ValueError(
-            f"openpi_pytorch (Phase 1) supports only the BEHAVIOR env; got "
+            f"openpi_pytorch supports only the BEHAVIOR env; got "
             f"config_name={config_name!r}."
         )
 

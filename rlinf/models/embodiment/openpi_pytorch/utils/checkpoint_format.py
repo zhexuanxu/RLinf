@@ -10,12 +10,12 @@ old-format conversion logic.  This module provides:
 
 Pi0.<load_state_dict/state_dict> overrides call these helpers so that
 ``safetensors.torch.{load_model,save_model}`` work transparently.
-export PYTHONPATH=.../src                                                                                                          
-  python -m openpi.models_pytorch_new.checkpoint_format \                                                                            
-      --input_ckpt .../model.pt \                                                                                                    
-      --output_dir .../output \                             
-      --reference_model /mnt/public/xzxuan/models/pi05_base_pytorch \                                                                
-      --norm_stats .../norm_stats.json 
+export PYTHONPATH=.../src
+  python -m openpi.models_pytorch_new.checkpoint_format \
+      --input_ckpt .../model.pt \
+      --output_dir .../output \
+      --reference_model /mnt/public/xzxuan/models/pi05_base_pytorch \
+      --norm_stats .../norm_stats.json
 
 """
 
@@ -467,4 +467,3 @@ if __name__ == "__main__":
         reference_model=args.reference_model,
         norm_stats=args.norm_stats,
     )
-

@@ -14,7 +14,7 @@
 
 """Self-containment and smoke tests for the vendored PyTorch OpenPI 0.5 core.
 
-These tests guard the Phase 1 invariant that ``openpi_pytorch`` runs the eval /
+These tests guard the invariant that ``openpi_pytorch`` runs the eval /
 action-generation path without the externally installed ``openpi`` package:
 
 * import isolation: an AST scan finds zero external ``openpi`` imports;
