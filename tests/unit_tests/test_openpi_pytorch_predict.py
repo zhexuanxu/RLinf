@@ -55,11 +55,13 @@ def test_sft_forward_cpu_dummy():
             self.dummy = nn.Parameter(torch.zeros(1))
             self.gc = False
             self.last_actions = None
+            self.last_train = None
 
         def compute_loss(self, observation, actions, *, train=False):
             # (B, action_horizon) per-timestep loss; depends on a param so the
             # reduced scalar is differentiable.
             self.last_actions = actions
+            self.last_train = train
             return (actions.float() ** 2).mean(dim=-1) + self.dummy
 
         def gradient_checkpointing_enable(self):
@@ -89,7 +91,14 @@ def test_sft_forward_cpu_dummy():
     # Tuple form -> finite differentiable scalar.
     loss = model.sft_forward((obs, actions))
     assert loss.ndim == 0 and torch.isfinite(loss)
+    assert model.model.last_train is True
     loss.backward()
+
+    # SFT loss semantics remain training-mode even if the wrapper is in eval mode.
+    model.eval()
+    loss_eval_wrapper = model.sft_forward((obs, actions))
+    assert loss_eval_wrapper.ndim == 0 and torch.isfinite(loss_eval_wrapper)
+    assert model.model.last_train is True
 
     # Dict form via forward(ForwardType.SFT).
     loss2 = model(

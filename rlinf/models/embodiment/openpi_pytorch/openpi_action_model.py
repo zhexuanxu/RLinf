@@ -119,9 +119,7 @@ class OpenPiPytorchActionModel(nn.Module):
         observation, actions = self._unpack_sft_batch(data)
         observation = self._observation_to_device(observation)
         actions = self._actions_to_device(actions)
-        per_timestep_loss = self.model.compute_loss(
-            observation, actions, train=self.training
-        )
+        per_timestep_loss = self.model.compute_loss(observation, actions, train=True)
         return per_timestep_loss.mean()
 
     def compute_loss(self, data: Any) -> torch.Tensor:
