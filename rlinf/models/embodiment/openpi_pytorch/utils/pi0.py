@@ -424,3 +424,8 @@ class Pi0(model.BaseModel):
         """Enable gradient checkpointing for memory efficiency."""
         self.llm.gradient_checkpointing = True
         self.img.encoder.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing (used by the eval / no-recompute path)."""
+        self.llm.gradient_checkpointing = False
+        self.img.encoder.gradient_checkpointing = False
