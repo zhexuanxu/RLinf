@@ -31,12 +31,12 @@ import pathlib
 import numpy as np
 import pytest
 
-from rlinf.models.embodiment.openpi_pytorch.normalize import (
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
     load_norm_stats,
     normalize_quantile,
     unnormalize_quantile,
 )
-from rlinf.models.embodiment.openpi_pytorch.tokenizer import PaligemmaTokenizer
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
 
 _NORM_STATS_DIR = pathlib.Path(
     "/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999/physical-intelligence/behavior"

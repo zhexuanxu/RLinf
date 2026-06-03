@@ -179,10 +179,6 @@ class Attention(nn.Module):
     def __init__(self, configs: Sequence[Config]):
         super().__init__()
         self.configs = configs
-        assert all(c.head_dim == configs[0].head_dim for c in configs)
-        assert all(c.num_heads == configs[0].num_heads for c in configs)
-        assert all(c.num_kv_heads == configs[0].num_kv_heads for c in configs)
-
         self.num_heads = configs[0].num_heads
         self.num_kv_heads = configs[0].num_kv_heads
         self.head_dim = configs[0].head_dim
@@ -467,9 +463,6 @@ class Module(nn.Module):
             adarms = [adarms] * len(configs)
         self.adarms = list(adarms)
 
-        # All experts must have the same depth
-        assert all(c.depth == configs[0].depth for c in configs)
-
         self.embedder = Embedder(
             vocab_size=PALIGEMMA_VOCAB_SIZE,
             embed_dim=configs[0].width,
@@ -567,17 +560,14 @@ def _apply_rope(x: torch.Tensor, *, positions: torch.Tensor, max_wavelength: flo
     timescale = max_wavelength**freq_exponents
     radians = positions[..., None].float() / timescale[None, None, :]
     radians = radians[..., None, :]  # (B, T, 1, head_dim//2)
-    assert radians.dtype == torch.float32
 
     sin, cos = torch.sin(radians), torch.cos(radians)
     x1, x2 = torch.chunk(x, 2, dim=-1)
     res = torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
-    assert res.dtype == torch.float32
     return res.to(x.dtype)
 
 
 def _gated_residual(x, y, gate):
-    assert (x is None) == (y is None)
     if x is None:
         return None
     if gate is None:

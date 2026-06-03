@@ -47,8 +47,8 @@ from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform im
     BehaviorSftTransform,
     transform_behavior_sft_item,
 )
-from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats, load_norm_stats
-from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats, load_norm_stats
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 
 logger = logging.getLogger(__name__)
 

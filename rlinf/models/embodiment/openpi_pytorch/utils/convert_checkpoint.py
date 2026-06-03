@@ -22,7 +22,7 @@ directory containing ``model.safetensors`` plus the original ``config.json`` and
 the norm-stats asset tree (so the new directory is self-sufficient for eval).
 
 Usage:
-    python -m rlinf.models.embodiment.openpi_pytorch.convert_checkpoint \
+    python -m rlinf.models.embodiment.openpi_pytorch.utils.convert_checkpoint \
         --input  /path/to/old_ckpt_dir \
         --output /path/to/new_ckpt_dir
 """

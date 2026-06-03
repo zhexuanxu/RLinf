@@ -30,7 +30,7 @@ import pytest
 
 
 def _stats():
-    from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats
 
     # q01=0, q99=1 -> normalize_quantile maps x in [0,1] to [-1,1].
     s = NormStats(
@@ -49,11 +49,11 @@ def test_sft_transform_matches_eval_processor():
         BehaviorSftTransform,
         transform_behavior_sft_item,
     )
-    from rlinf.models.embodiment.openpi_pytorch.normalize import normalize_quantile
-    from rlinf.models.embodiment.openpi_pytorch.processing import (
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import normalize_quantile
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.processing import (
         BehaviorEvalProcessor,
     )
-    from rlinf.models.embodiment.openpi_pytorch.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
 
     norm_stats = _stats()
     tokenizer = PaligemmaTokenizer(max_len=200)

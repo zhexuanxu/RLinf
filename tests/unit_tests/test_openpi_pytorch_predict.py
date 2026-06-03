@@ -41,11 +41,11 @@ def test_sft_forward_cpu_dummy():
     import torch.nn as nn
 
     from rlinf.models.embodiment.base_policy import ForwardType
-    from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
-    from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 
     class _FakeCore(nn.Module):
         action_dim = 32

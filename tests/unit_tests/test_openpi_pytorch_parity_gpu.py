@@ -55,7 +55,7 @@ _BF16_TOL = 8e-2
 
 def _raw_observation():
     np.random.seed(0)
-    from rlinf.models.embodiment.openpi_pytorch.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
 
     images = {
         k: np.random.randint(0, 256, (1, 224, 224, 3), dtype=np.uint8)
@@ -105,8 +105,8 @@ def test_action_parity_new_vs_old_path(dtype_name, config_dtype, tolerance):
     noise = torch.randn(1, 32, 32, generator=torch.Generator().manual_seed(123)).to(dev)
 
     # New self-contained model from the converted checkpoint.
-    from rlinf.models.embodiment.openpi_pytorch.utils import model as vmodel
-    from rlinf.models.embodiment.openpi_pytorch.utils.pi0_config import Pi0Config
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model import model as vmodel
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
 
     new_model = Pi0Config(
         pi05=True, action_horizon=32, action_dim=32, dtype=config_dtype, pcd=False

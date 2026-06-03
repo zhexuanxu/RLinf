@@ -124,13 +124,13 @@ def get_model(cfg, torch_dtype=None):
     import safetensors.torch
     from omegaconf import OmegaConf
 
-    from rlinf.models.embodiment.openpi_pytorch.normalize import load_norm_stats
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import load_norm_stats
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
-    from rlinf.models.embodiment.openpi_pytorch.processing import BehaviorEvalProcessor
-    from rlinf.models.embodiment.openpi_pytorch.tokenizer import PaligemmaTokenizer
-    from rlinf.models.embodiment.openpi_pytorch.utils.pi0_config import Pi0Config
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.processing import BehaviorEvalProcessor
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
 
     def _select(path, default=None):
         if isinstance(cfg, dict):

@@ -31,7 +31,7 @@ import pytest
 import torch
 
 from rlinf.models.embodiment.openpi_pytorch.utils import checkpoint_format as cf
-from rlinf.models.embodiment.openpi_pytorch.utils.pi0_config import Pi0Config
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
 
 _SIGLIP_OLD = "paligemma_with_expert.paligemma.model.vision_tower.vision_model."
 _OLD_CKPT = pathlib.Path(
@@ -58,7 +58,7 @@ def test_convert_checkpoint_overwrites_stale_assets(tmp_path):
 
     import safetensors.torch
 
-    from rlinf.models.embodiment.openpi_pytorch.convert_checkpoint import (
+    from rlinf.models.embodiment.openpi_pytorch.utils.convert_checkpoint import (
         convert_checkpoint,
     )
 

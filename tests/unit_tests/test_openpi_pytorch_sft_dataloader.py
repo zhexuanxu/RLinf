@@ -19,9 +19,9 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats
-from rlinf.models.embodiment.openpi_pytorch.tokenizer import PaligemmaTokenizer
-from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 
 
 def _norm_stats():

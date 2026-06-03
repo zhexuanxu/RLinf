@@ -24,6 +24,7 @@ against the installed ``openpi`` tokenizer).
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 
 import numpy as np
@@ -31,10 +32,18 @@ import sentencepiece
 
 logger = logging.getLogger(__name__)
 
-# The SentencePiece model bundled with this package (md5-identical to the
-# upstream gs://big_vision/paligemma_tokenizer.model asset openpi downloads).
-_DEFAULT_TOKENIZER_PATH = (
-    pathlib.Path(__file__).resolve().parent / "assets" / "paligemma_tokenizer.model"
+# The SentencePiece model lives OUTSIDE the code repository (model files do not
+# belong in source control). Resolution order: an explicit ``model_path``
+# argument, then the ``RLINF_PALIGEMMA_TOKENIZER_PATH`` environment override,
+# then this default external location (md5-identical to the upstream
+# gs://big_vision/paligemma_tokenizer.model asset openpi downloads).
+_DEFAULT_EXTERNAL_TOKENIZER_PATH = pathlib.Path(
+    "/mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model"
+)
+_DEFAULT_TOKENIZER_PATH = pathlib.Path(
+    os.environ.get(
+        "RLINF_PALIGEMMA_TOKENIZER_PATH", str(_DEFAULT_EXTERNAL_TOKENIZER_PATH)
+    )
 )
 
 
