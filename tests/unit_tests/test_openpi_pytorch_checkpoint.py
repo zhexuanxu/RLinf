@@ -103,6 +103,87 @@ def test_checkpoint_validation_rejects_dtype_mismatch():
         )
 
 
+def test_training_build_accepts_fp32_new_format_and_eval_rejects(tmp_path):
+    import json
+
+    import safetensors.torch
+    from omegaconf import OmegaConf
+
+    from rlinf.models.embodiment.openpi_pytorch import get_model
+
+    cfg = Pi0Config(
+        dtype="bfloat16",
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        pi05=True,
+        action_horizon=4,
+        action_dim=32,
+        pcd=False,
+    )
+    state_dict = cfg.create().state_dict()
+    assert {tensor.dtype for tensor in state_dict.values() if tensor.is_floating_point()} == {
+        torch.float32
+    }
+
+    safetensors.torch.save_file(state_dict, str(tmp_path / "model.safetensors"))
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "action_horizon": 4,
+                "action_dim": 32,
+                "paligemma_variant": "dummy",
+                "action_expert_variant": "dummy",
+            }
+        )
+    )
+
+    train_cfg = OmegaConf.create(
+        {
+            "model_path": str(tmp_path),
+            "precision": "bf16",
+            "load_for_training": True,
+            "num_action_chunks": 4,
+            "action_dim": 23,
+            "openpi": {"config_name": "pi05_behavior"},
+        }
+    )
+    model = get_model(train_cfg)
+    assert model.processor is None
+    assert {param.dtype for param in model.parameters()} == {torch.bfloat16}
+    assert model.model.llm.gradient_checkpointing is True
+    assert model.model.img.encoder.gradient_checkpointing is True
+
+    # Eval remains bf16-strict, proving the fp32 training path is distinct.
+    stats_dir = tmp_path / "physical-intelligence" / "behavior"
+    stats_dir.mkdir(parents=True)
+    stats_dir.joinpath("norm_stats.json").write_text(
+        json.dumps(
+            {
+                "norm_stats": {
+                    key: {
+                        "mean": [0.0] * 32,
+                        "std": [1.0] * 32,
+                        "q01": [0.0] * 32,
+                        "q99": [1.0] * 32,
+                    }
+                    for key in ("state", "actions")
+                }
+            }
+        )
+    )
+    eval_cfg = OmegaConf.create(
+        {
+            "model_path": str(tmp_path),
+            "precision": "bf16",
+            "num_action_chunks": 4,
+            "action_dim": 23,
+            "openpi": {"config_name": "pi05_behavior"},
+        }
+    )
+    with pytest.raises(ValueError, match="dtype mismatch"):
+        get_model(eval_cfg)
+
+
 @pytest.mark.skipif(
     not _OLD_CKPT.exists(), reason="real BEHAVIOR checkpoint not available"
 )

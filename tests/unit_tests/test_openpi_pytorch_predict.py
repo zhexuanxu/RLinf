@@ -43,7 +43,9 @@ def test_sft_forward_cpu_dummy():
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
+    from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats
     from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
+    import numpy as np
 
     class _FakeCore(nn.Module):
         action_dim = 32
@@ -52,10 +54,12 @@ def test_sft_forward_cpu_dummy():
             super().__init__()
             self.dummy = nn.Parameter(torch.zeros(1))
             self.gc = False
+            self.last_actions = None
 
         def compute_loss(self, observation, actions, *, train=False):
             # (B, action_horizon) per-timestep loss; depends on a param so the
             # reduced scalar is differentiable.
+            self.last_actions = actions
             return (actions.float() ** 2).mean(dim=-1) + self.dummy
 
         def gradient_checkpointing_enable(self):
@@ -63,6 +67,14 @@ def test_sft_forward_cpu_dummy():
 
         def gradient_checkpointing_disable(self):
             self.gc = False
+
+    class _FakeProcessor:
+        action_stats = NormStats(
+            mean=np.zeros(32),
+            std=np.ones(32),
+            q01=np.zeros(32),
+            q99=np.ones(32),
+        )
 
     model = OpenPiPytorchActionModel(
         _FakeCore(),
@@ -97,10 +109,29 @@ def test_sft_forward_cpu_dummy():
         model.sft_forward((obs,))
     with pytest.raises(ValueError):
         model.sft_forward({"observation": obs})
-    with pytest.raises(ValueError):  # env-dim actions (23) not padded to 32
+    with pytest.raises(ValueError):  # no processor means no action stats
         model.sft_forward((obs, torch.randn(2, 32, 23)))
     with pytest.raises(TypeError):
         model.sft_forward(42)
+
+    # Env-dim raw actions normalize before zero-padding when action stats exist.
+    model_with_stats = OpenPiPytorchActionModel(
+        _FakeCore(),
+        processor=_FakeProcessor(),
+        num_steps=10,
+        action_chunk=32,
+        action_env_dim=23,
+    )
+    raw_actions = torch.ones(2, 32, 23)
+    loss3 = model_with_stats.sft_forward((obs, raw_actions))
+    assert loss3.ndim == 0 and torch.isfinite(loss3)
+    assert tuple(model_with_stats.model.last_actions.shape) == (2, 32, 32)
+    torch.testing.assert_close(
+        model_with_stats.model.last_actions[..., :23], torch.ones(2, 32, 23)
+    )
+    torch.testing.assert_close(
+        model_with_stats.model.last_actions[..., 23:], torch.zeros(2, 32, 9)
+    )
 
 
 def test_predict_action_batch_contract():
