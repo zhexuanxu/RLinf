@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Self-contained PyTorch OpenPI 0.5 model package for embodied BEHAVIOR eval.
+"""Self-contained PyTorch OpenPI 0.5 model package for embodied BEHAVIOR.
 
 This package vendors the optimized PyTorch OpenPI 0.5 implementation so that the
 eval / action-generation path is fully self-contained: it does not import the
@@ -25,7 +25,7 @@ Layout:
   tokenizer.py            PaliGemma tokenizer (bundled SentencePiece asset).
   image_tools.py          PIL resize-with-pad (matches the old eval).
   processing.py           BehaviorEvalProcessor (env_obs -> model.Observation).
-  openpi_action_model.py  high-level entry point preserving the old interface.
+  openpi_action_model.py  eval action sampling and SFT-loss entry point.
   convert_checkpoint.py   old-format -> new-format checkpoint converter.
 """
 
@@ -112,12 +112,14 @@ def _validate_checkpoint_state_dict(
 
 
 def get_model(cfg, torch_dtype=None):
-    """Build the BEHAVIOR pi05 eval model from a model config (factory entry).
+    """Build the BEHAVIOR pi05 model from a model config (factory entry).
 
     Expects ``cfg.model_path`` to point at a *new-format* checkpoint directory
-    (produced by ``convert_checkpoint``) containing ``model.safetensors``,
-    ``config.json``, and the ``physical-intelligence/behavior/norm_stats.json``
-    asset tree.
+    containing ``model.safetensors`` and ``config.json``. Eval builds also
+    require the ``physical-intelligence/behavior/norm_stats.json`` asset tree.
+    Training builds set ``load_for_training=True`` (or
+    ``openpi.load_for_training=True``), load fp32 new-format weights strictly,
+    then cast to bf16 for SFT.
     """
     import safetensors.torch
     from omegaconf import OmegaConf
@@ -141,7 +143,12 @@ def get_model(cfg, torch_dtype=None):
             value = OmegaConf.select(cfg, path)
         return default if value is None else value
 
-    # This eval-only model supports only the minimal BEHAVIOR path; fail loudly otherwise.
+    load_for_training = bool(
+        _select("load_for_training", False)
+        or _select("openpi.load_for_training", False)
+    )
+
+    # This model supports only the minimal BEHAVIOR path; fail loudly otherwise.
     for unsupported in (
         "add_value_head",
         "openpi.full_pi05",
@@ -150,18 +157,18 @@ def get_model(cfg, torch_dtype=None):
     ):
         if bool(_select(unsupported, False)):
             raise ValueError(
-                f"openpi_pytorch (eval-only) does not support '{unsupported}'. "
+                f"openpi_pytorch does not support '{unsupported}'. "
                 "Use the old 'openpi' model for full_pi05/DSRL/value-head paths."
             )
     if torch_dtype not in (None, torch.bfloat16):
         raise ValueError(
-            "openpi_pytorch (eval-only) supports only precision=null or bf16. "
+            "openpi_pytorch supports only precision=null or bf16. "
             f"Got torch_dtype={torch_dtype}."
         )
     precision = _select("precision", None)
     if precision not in (None, "null", "bf16", "bf16-mixed"):
         raise ValueError(
-            "openpi_pytorch (eval-only) supports only precision=null or bf16. "
+            "openpi_pytorch supports only precision=null or bf16. "
             f"Got precision={precision!r}."
         )
     config_name = _select("openpi.config_name", "pi05_behavior")
@@ -178,7 +185,7 @@ def get_model(cfg, torch_dtype=None):
     )
     if not weights_path.exists():
         raise FileNotFoundError(f"openpi_pytorch checkpoint not found: {weights_path}")
-    if not norm_stats_path.exists():
+    if not load_for_training and not norm_stats_path.exists():
         raise FileNotFoundError(
             f"openpi_pytorch norm stats not found: {norm_stats_path}"
         )
@@ -197,36 +204,47 @@ def get_model(cfg, torch_dtype=None):
     )
     model = pi0_config.create()
     state_dict = safetensors.torch.load_file(str(weights_path), device="cpu")
+    expected_dtype = torch.float32 if load_for_training else torch.bfloat16
     _validate_checkpoint_state_dict(
-        state_dict, model.state_dict(), expected_dtype=torch.bfloat16
+        state_dict, model.state_dict(), expected_dtype=expected_dtype
     )
     model.load_state_dict(state_dict, strict=True)
     n_params = sum(p.numel() for p in model.parameters())
+    norm_stats_digest = (
+        _file_digest(norm_stats_path) if norm_stats_path.exists() else "missing"
+    )
     logger.info(
-        "openpi_pytorch: loaded %s (%.2fB params) strict from %s "
+        "openpi_pytorch: loaded %s (%.2fB params) strict from %s for %s "
         "state_metadata_digest=%s norm_stats_digest=%s",
         config_json or pi0_config,
         n_params / 1e9,
         weights_path,
+        "training" if load_for_training else "eval",
         _state_dict_metadata_digest(state_dict),
-        _file_digest(norm_stats_path),
+        norm_stats_digest,
     )
-    model = model.to(torch_dtype if torch_dtype is not None else torch.bfloat16)
+    target_dtype = torch_dtype if torch_dtype is not None else torch.bfloat16
+    model = model.to(target_dtype)
+    if load_for_training:
+        model.gradient_checkpointing_enable()
 
-    norm_stats = load_norm_stats(norm_stats_path.parent)
-    tokenizer = PaligemmaTokenizer(max_len=pi0_config.max_token_len)
-
+    norm_stats = (
+        load_norm_stats(norm_stats_path.parent) if norm_stats_path.exists() else None
+    )
     action_chunk = int(_select("num_action_chunks", pi0_config.action_horizon))
     action_env_dim = int(_select("action_dim", 23))
     num_steps = int(_select("num_steps", 10))
 
-    processor = BehaviorEvalProcessor(
-        norm_stats,
-        tokenizer,
-        action_chunk=action_chunk,
-        action_env_dim=action_env_dim,
-        model_action_dim=pi0_config.action_dim,
-    )
+    processor = None
+    if norm_stats is not None:
+        tokenizer = PaligemmaTokenizer(max_len=pi0_config.max_token_len)
+        processor = BehaviorEvalProcessor(
+            norm_stats,
+            tokenizer,
+            action_chunk=action_chunk,
+            action_env_dim=action_env_dim,
+            model_action_dim=pi0_config.action_dim,
+        )
     return OpenPiPytorchActionModel(
         model,
         processor,
