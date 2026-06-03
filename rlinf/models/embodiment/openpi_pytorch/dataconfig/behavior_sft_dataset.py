@@ -787,8 +787,8 @@ class BehaviorSftDataset(LeRobotDataset):
         skill_list: list[str] | None = None,
         skill_labels: dict[int, str] | None = None,
         enable_gap: bool = True,
-        allow_left: bool = True,
-        allow_right: bool = True,
+        allow_left: int = 0,
+        allow_right: int = 0,
     ):
         import packaging.version
 
@@ -812,9 +812,11 @@ class BehaviorSftDataset(LeRobotDataset):
         self.train_rgb_type = train_rgb_type
         self.skill_list = skill_list
         self.skill_labels = skill_labels
-        # Skill-mode knobs are carried through verbatim; the gap/boundary logic is
-        # a port of the old structure and is aligned to the reference semantics
-        # by `_build_skill_boundaries` / `_get_skill_label` (see those methods).
+        # Skill-mode windowing, aligned with the JAX openpi-comet semantics:
+        # `enable_gap` absorbs a true gap into both adjacent skills (so the gap
+        # region overlaps and is shared); `allow_left` / `allow_right` are frame
+        # counts that extend contiguous skill boundaries outward (also creating
+        # overlap). See `_build_skill_boundaries` / `_get_skill_label`.
         self.enable_gap = enable_gap
         self.allow_left = allow_left
         self.allow_right = allow_right
@@ -952,68 +954,86 @@ class BehaviorSftDataset(LeRobotDataset):
     # left/right inclusion semantics to the reference openpi-comet dataset.
 
     def _build_skill_boundaries(self):
-        """Build per-episode skill boundary lookup from annotations.
+        """Build per-episode *effective* skill windows, aligned with openpi-comet.
 
-        Stores ``skill_start_frames`` and ``skill_end_frames`` per episode so
-        that :meth:`_is_gap_frame` and :meth:`_get_skill_label` can use bisect to
-        map any frame index to a skill (or identify it as a gap).
+        For each skill, the effective window extends a contiguous (no-gap)
+        boundary outward by ``allow_left`` / ``allow_right`` frames, and — when
+        ``enable_gap`` is set — absorbs a true gap into both adjacent skills so
+        the gap region overlaps and is shared. Windows are clamped to the
+        episode's valid duration. Frames inside more than one window are resolved
+        per-sample by a random choice in :meth:`_get_skill_label`.
         """
         self.skill_start_frames: dict[int, list[int]] = {}
         self.skill_end_frames: dict[int, list[int]] = {}
         for ep_id in self.episodes:
             if ep_id not in self.meta.annotations:
                 continue
+            annotation = self.meta.annotations[ep_id]
             skills = sorted(
-                self.meta.annotations[ep_id]["skill_annotation"],
+                annotation["skill_annotation"],
                 key=lambda s: s["skill_idx"],
             )
-            self.skill_start_frames[ep_id] = [s["frame_duration"][0] for s in skills]
-            self.skill_end_frames[ep_id] = [s["frame_duration"][1] for s in skills]
+            starts = [s["frame_duration"][0] for s in skills]
+            ends = [s["frame_duration"][1] for s in skills]
+            valid = annotation["meta_data"]["valid_duration"]
+            valid_start, valid_end = valid[0], valid[1]
+            n = len(skills)
+            eff_s = list(starts)
+            eff_e = list(ends)
+            for i in range(n):
+                # Left boundary: absorb a true gap (enable_gap) or extend a
+                # contiguous boundary by allow_left frames.
+                if i > 0 and ends[i - 1] < starts[i]:
+                    if self.enable_gap:
+                        eff_s[i] = ends[i - 1]
+                else:
+                    eff_s[i] = starts[i] - self.allow_left
+                # Right boundary: symmetric.
+                if i < n - 1 and ends[i] < starts[i + 1]:
+                    if self.enable_gap:
+                        eff_e[i] = starts[i + 1]
+                else:
+                    eff_e[i] = ends[i] + self.allow_right
+                eff_s[i] = max(eff_s[i], valid_start)
+                eff_e[i] = min(eff_e[i], valid_end)
+            self.skill_start_frames[ep_id] = eff_s
+            self.skill_end_frames[ep_id] = eff_e
 
     def _is_gap_frame(self, ep_idx: int, frame_index: int) -> bool:
-        """Return True if ``frame_index`` falls in a gap between skill ranges."""
+        """Return True if ``frame_index`` falls outside every effective window."""
         start_frames = self.skill_start_frames.get(ep_idx)
         end_frames = self.skill_end_frames.get(ep_idx)
         if start_frames is None or end_frames is None:
             return False
-        skill_idx = bisect.bisect_right(start_frames, frame_index) - 1
-        if skill_idx < 0:
-            return True
-        skill_idx = min(skill_idx, len(start_frames) - 1)
-        return frame_index >= end_frames[skill_idx]
+        for start, end in zip(start_frames, end_frames):
+            if start <= frame_index < end:
+                return False
+        return True
 
     def _get_skill_label(self, item: dict) -> str:
-        """Resolve the current frame to a skill-level label using annotations.
+        """Resolve a frame to a skill label, aligned with openpi-comet.
 
-        Gap frames (between the end of one skill and the start of the next) are
-        split in half: the first half is assigned to the previous skill, the
-        second half to the next skill.
+        A frame may fall inside more than one skill's effective window (overlap
+        from gap absorption or boundary extension); in that case one candidate
+        is chosen at random per sample. A frame inside exactly one window takes
+        that skill; a frame outside all windows falls back to the nearest
+        preceding skill.
         """
         ep_idx = item["episode_index"].item()
         frame_index = round(item["timestamp"].item() * self.fps)
         start_frames = self.skill_start_frames[ep_idx]
         end_frames = self.skill_end_frames[ep_idx]
-
+        candidates = [
+            i
+            for i in range(len(start_frames))
+            if start_frames[i] <= frame_index < end_frames[i]
+        ]
+        if len(candidates) == 1:
+            return self.skill_labels[candidates[0]]
+        if len(candidates) > 1:
+            return self.skill_labels[random.choice(candidates)]
         skill_idx = bisect.bisect_right(start_frames, frame_index) - 1
-        skill_idx = max(0, min(skill_idx, len(start_frames) - 1))
-
-        # Frame is within the skill's actual range.
-        if frame_index < end_frames[skill_idx]:
-            return self.skill_labels[skill_idx]
-
-        # Frame is in a gap between skill[skill_idx] and skill[skill_idx+1].
-        # Split the gap in half: first half -> previous skill, second half -> next.
-        if skill_idx + 1 < len(start_frames):
-            gap_start = end_frames[skill_idx]
-            gap_end = start_frames[skill_idx + 1]
-            midpoint = (gap_start + gap_end) // 2
-            if frame_index < midpoint:
-                return self.skill_labels[skill_idx]
-            else:
-                return self.skill_labels[skill_idx + 1]
-
-        # After the last skill, assign to last skill.
-        return self.skill_labels[skill_idx]
+        return self.skill_labels[max(0, skill_idx)]
 
     # -------------------------------------------------------------------------
 

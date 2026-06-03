@@ -205,8 +205,8 @@ def create_behavior_sft_data_loader(
     norm_stats: dict[str, NormStats] | None = None,
     skill_labels: dict[int, str] | None = None,
     enable_gap: bool = True,
-    allow_left: bool = True,
-    allow_right: bool = True,
+    allow_left: int = 0,
+    allow_right: int = 0,
 ) -> "BehaviorSftDataLoader":
     """Build the BEHAVIOR-1K SFT data loader yielding ``(Observation, actions)``.
 
@@ -231,9 +231,9 @@ def create_behavior_sft_data_loader(
         seed: Base seed for the streaming chunk partition.
         norm_stats: Pre-loaded norm stats; loaded from disk when ``None``.
         skill_labels: Optional per-skill labels enabling skill mode.
-        enable_gap: Skill mode — skip frames falling in skill gaps.
-        allow_left: Skill mode — include left-boundary frames (carried through).
-        allow_right: Skill mode — include right-boundary frames (carried through).
+        enable_gap: Skill mode — absorb a true gap into both adjacent skills.
+        allow_left: Skill mode — frames to extend a contiguous skill start left.
+        allow_right: Skill mode — frames to extend a contiguous skill end right.
 
     Returns:
         A loader whose iteration yields ``(Observation, actions)`` 2-tuples.
