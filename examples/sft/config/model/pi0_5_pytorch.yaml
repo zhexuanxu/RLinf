@@ -30,3 +30,11 @@ openpi:
   num_images_in_input: 3
   action_chunk: ${actor.model.num_action_chunks}
   action_env_dim: ${actor.model.action_dim}
+  # Model action dim (state/actions are padded to this) and prompt token budget.
+  model_action_dim: 32
+  max_token_len: 200
+  # Quantile-normalization stats for the 2025-challenge-demos BEHAVIOR data,
+  # resolved as {assets_dir}/{asset_id}/norm_stats.json. The fp32 base
+  # checkpoint does not bundle norm stats, so point at the dataset assets.
+  assets_dir: "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets"
+  asset_id: "behavior-1k/2025-challenge-demos"
