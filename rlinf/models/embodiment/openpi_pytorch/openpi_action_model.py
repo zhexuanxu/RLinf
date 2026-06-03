@@ -14,8 +14,8 @@
 
 """Entry point for the self-contained PyTorch OpenPI 0.5 BEHAVIOR model.
 
-This model focuses on exactly two responsibilities: eval action sampling
-(implemented here) and SFT loss (reserved for a future training implementation).
+This model focuses on exactly two responsibilities: eval action sampling and
+SFT flow-matching loss.
 Its high-level interface mirrors the old ``OpenPi0ForRLActionPrediction`` so the eval
 rollout worker can call it unchanged via the OpenPI dispatch path:
 
@@ -28,10 +28,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+import numpy as np
 import torch
 import torch.nn as nn
 
 from rlinf.models.embodiment.base_policy import ForwardType
+from rlinf.models.embodiment.openpi_pytorch.normalize import normalize_quantile
 from rlinf.models.embodiment.openpi_pytorch.processing import BehaviorEvalProcessor
 from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.utils.pi0 import Pi0
@@ -43,7 +45,7 @@ class OpenPiPytorchActionModel(nn.Module):
     def __init__(
         self,
         pi0_model: Pi0,
-        processor: BehaviorEvalProcessor,
+        processor: BehaviorEvalProcessor | None,
         *,
         num_steps: int,
         action_chunk: int,
@@ -69,6 +71,11 @@ class OpenPiPytorchActionModel(nn.Module):
         **kwargs,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         """Sample env actions for a batch of observations (eval / action generation)."""
+        if self.processor is None:
+            raise RuntimeError(
+                "predict_action_batch requires a BehaviorEvalProcessor; "
+                "the current model was built for SFT training only."
+            )
         observation = self.processor.build_observation(env_obs, self.device)
         model_actions = self.model.sample_actions(observation, num_steps=self.num_steps)
         actions = self.processor.postprocess_actions(model_actions).to(self.device)
@@ -102,10 +109,12 @@ class OpenPiPytorchActionModel(nn.Module):
         """Compute the flow-matching SFT loss for one batch.
 
         ``data`` is either a ``(observation, actions)`` tuple or a dict with
-        ``observation`` and ``actions``. ``actions`` must already be normalized
-        and padded to the model action dim (done in the data pipeline so it
-        matches the reference loader). Returns the scalar mean of the
-        ``(B, action_horizon)`` per-timestep loss from :meth:`Pi0.compute_loss`.
+        ``observation`` and ``actions``. Preferred actions are already
+        normalized and padded to the model action dim by the dataloader. If raw
+        env-dim actions are supplied and action stats are available, this method
+        normalizes before zero-padding to match the reference transform order.
+        Returns the scalar mean of the ``(B, action_horizon)`` per-timestep
+        loss from :meth:`Pi0.compute_loss`.
         """
         observation, actions = self._unpack_sft_batch(data)
         observation = self._observation_to_device(observation)
@@ -168,15 +177,37 @@ class OpenPiPytorchActionModel(nn.Module):
     def _actions_to_device(self, actions: Any) -> torch.Tensor:
         if not isinstance(actions, torch.Tensor):
             actions = torch.as_tensor(actions)
-        actions = actions.to(device=self.device, dtype=torch.float32)
         model_action_dim = self.model.action_dim
-        if actions.dim() != 3 or actions.shape[-1] != model_action_dim:
+        if actions.dim() != 3:
             raise ValueError(
-                "SFT actions must have shape [B, action_horizon, "
-                f"{model_action_dim}] (normalized + padded in the data "
-                f"pipeline); got {tuple(actions.shape)}."
+                "SFT actions must have shape [B, action_horizon, D]; "
+                f"got {tuple(actions.shape)}."
             )
-        return actions
+        if actions.shape[-1] == model_action_dim:
+            return actions.to(device=self.device, dtype=torch.float32)
+        if actions.shape[-1] == self.action_env_dim:
+            return self._normalize_and_pad_env_actions(actions)
+        raise ValueError(
+            "SFT actions must have shape [B, action_horizon, "
+            f"{model_action_dim}] (normalized + padded) or [B, action_horizon, "
+            f"{self.action_env_dim}] (raw env actions); got {tuple(actions.shape)}."
+        )
+
+    def _normalize_and_pad_env_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        if self.processor is None:
+            raise ValueError(
+                "SFT actions were provided at env action dim, but this model "
+                "has no action normalization stats. Supply normalized/padded "
+                "actions from the dataloader or build the model with a processor."
+            )
+        actions_np = actions.detach().cpu().numpy()
+        normalized = normalize_quantile(
+            actions_np.astype(np.float32), self.processor.action_stats
+        )
+        pad_width = [(0, 0)] * normalized.ndim
+        pad_width[-1] = (0, self.model.action_dim - normalized.shape[-1])
+        padded = np.pad(normalized, pad_width, constant_values=0.0)
+        return torch.as_tensor(padded, device=self.device, dtype=torch.float32)
 
     # --- Gradient checkpointing pass-through (used by the FSDP training path) ---
     def gradient_checkpointing_enable(self, **kwargs) -> None:
