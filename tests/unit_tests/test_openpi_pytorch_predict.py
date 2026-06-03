@@ -37,15 +37,15 @@ def test_sft_forward_cpu_dummy():
     gradient-checkpointing pass-through) is exercised without a GPU/checkpoint.
     """
     torch = pytest.importorskip("torch")
+    import numpy as np
     import torch.nn as nn
 
     from rlinf.models.embodiment.base_policy import ForwardType
+    from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
-    from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats
     from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
-    import numpy as np
 
     class _FakeCore(nn.Module):
         action_dim = 32
