@@ -1,0 +1,32 @@
+model_type: "openpi_pytorch"
+
+# New-format fp32 base checkpoint (exactly what the reference trainer loads).
+# The SFT build loads it strictly as fp32, then casts params to bfloat16.
+model_path: "/mnt/public/xzxuan/models/pi05_base_pytorch_new"
+
+# Load the fp32 new-format base for training. This selects the training build
+# path (strict fp32 load + bf16 cast + gradient checkpointing), distinct from
+# the bf16-strict eval loader.
+load_for_training: True
+
+# bfloat16 training (the self-contained model casts its params to bf16).
+precision: "bf16"
+
+# LoRA is not used, but the shared model factory reads these keys.
+is_lora: False
+lora_rank: 32
+
+# Action and chunk settings (BEHAVIOR pi05): 23-dim env actions, 32-step chunk.
+num_action_chunks: 32
+action_dim: 23
+use_proprio: True
+
+# No value head in the SFT model.
+add_value_head: False
+
+# openpi_pytorch parameters (clean/minimal: no full_pi05, dsrl, value-head, RL).
+openpi:
+  config_name: "pi05_behavior_b1k_local"
+  num_images_in_input: 3
+  action_chunk: ${actor.model.num_action_chunks}
+  action_env_dim: ${actor.model.action_dim}

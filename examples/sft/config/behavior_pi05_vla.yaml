@@ -1,5 +1,5 @@
 defaults:
-  - model/pi0_5@actor.model
+  - model/pi0_5_pytorch@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - override hydra/job_logging: stdout
 
@@ -41,19 +41,9 @@ actor:
   global_batch_size: 256
   seed: 42
 
-  model:
-    precision: null
-    model_path: "/mnt/public/xzxuan/models/pi05_base_pytorch"
-    num_action_chunks: 32
-    action_dim: 23
-    add_value_head: False
-    openpi:
-      config_name: "pi05_behavior_b1k_local"
-      detach_critic_input: True
-      num_images_in_input: 3
-      train_expert_only: False
-      full_pi05: True
-      forward_mode: "vla"
+  # actor.model is provided by `defaults: model/pi0_5_pytorch@actor.model`
+  # (self-contained openpi_pytorch, fp32 new-format base cast to bf16). No
+  # full_pi05 / dsrl / value-head overrides here — those paths are unsupported.
 
   optim:
     lr: 2.5e-5
@@ -71,9 +61,12 @@ actor:
 
   fsdp_config:
     strategy: "fsdp"
-    sharding_strategy: "no_shard"
+    # FULL_SHARD across ranks, matching the reference trainer (degenerates to a
+    # single shard on 1 GPU). The model casts params to bf16; gradient
+    # checkpointing is enabled on the dual-expert Gemma + SigLIP.
+    sharding_strategy: "full_shard"
     use_orig_params: True
-    gradient_checkpointing: False
+    gradient_checkpointing: True
     mixed_precision:
       param_dtype: ${actor.model.precision}
       reduce_dtype: ${actor.model.precision}
