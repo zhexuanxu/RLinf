@@ -27,7 +27,31 @@ from PIL import Image
 
 
 def resize_with_pad(images: np.ndarray, height: int, width: int, method=Image.BILINEAR) -> np.ndarray:
-    """Resize a batch of ``[..., H, W, C]`` images to ``height x width`` with padding."""
+    """Resize a batch of ``[..., H, W, C]`` images to ``height x width`` with padding.
+
+    Validates the external contract: ``images`` must be a ``numpy`` array of rank
+    >= 3 with a PIL-convertible trailing channel axis (1, 3, or 4), and the target
+    ``height``/``width`` must be positive.
+    """
+    if not isinstance(images, np.ndarray):
+        raise TypeError(
+            f"resize_with_pad expects a numpy array, got {type(images).__name__}."
+        )
+    if images.ndim < 3:
+        raise ValueError(
+            f"resize_with_pad expects images of rank >= 3 ([..., H, W, C]); "
+            f"got shape {images.shape}."
+        )
+    if not (isinstance(height, int) and isinstance(width, int)) or height <= 0 or width <= 0:
+        raise ValueError(
+            f"resize_with_pad target (height, width) must be positive ints; "
+            f"got ({height!r}, {width!r})."
+        )
+    if images.shape[-1] not in (1, 3, 4):
+        raise ValueError(
+            f"resize_with_pad expects 1/3/4 image channels in the last axis; "
+            f"got shape {images.shape}."
+        )
     if images.shape[-3:-1] == (height, width):
         return images
     original_shape = images.shape
@@ -53,5 +77,4 @@ def _resize_with_pad_pil(image: Image.Image, height: int, width: int, method: in
     pad_height = max(0, int((height - resized_height) / 2))
     pad_width = max(0, int((width - resized_width) / 2))
     zero_image.paste(resized_image, (pad_width, pad_height))
-    assert zero_image.size == (width, height)
     return np.asarray(zero_image)

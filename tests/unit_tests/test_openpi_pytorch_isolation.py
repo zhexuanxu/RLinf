@@ -119,7 +119,10 @@ _CORE_MODULES = [
     "rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize",
     "rlinf.models.embodiment.openpi_pytorch.pi0_model.processing",
     "rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer",
-    "rlinf.models.embodiment.openpi_pytorch.utils.checkpoint_format",
+    "rlinf.models.embodiment.openpi_pytorch.utils.old_to_new",
+    "rlinf.models.embodiment.openpi_pytorch.utils.new_to_old",
+    "rlinf.models.embodiment.openpi_pytorch.utils.jax_to_new_pytorch",
+    "rlinf.models.embodiment.openpi_pytorch.utils.export_sft_checkpoint",
     "rlinf.models.embodiment.openpi_pytorch.utils.image_tools",
 ]
 

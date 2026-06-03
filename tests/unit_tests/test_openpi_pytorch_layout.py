@@ -23,6 +23,7 @@ anywhere references a pre-refactor import path.
 
 from __future__ import annotations
 
+import importlib
 import re
 from pathlib import Path
 
@@ -31,13 +32,33 @@ import rlinf.models.embodiment.openpi_pytorch as _pkg
 _PACKAGE_ROOT = Path(_pkg.__file__).resolve().parent
 _REPO_ROOT = _PACKAGE_ROOT.parents[3]
 
-# Pre-refactor import paths that must no longer appear anywhere in the source.
-# New valid paths interpose ``pi0_model.`` / ``utils.`` and so do not match.
+# The directional checkpoint converters + the SFT export + image tooling that
+# the new ``utils/`` package must expose (AC-1 layout end-state).
+_REQUIRED_UTILS_MODULES = (
+    "old_to_new",
+    "new_to_old",
+    "jax_to_new_pytorch",
+    "export_sft_checkpoint",
+    "image_tools",
+)
+
+# Pre-refactor / pre-rename import paths that must no longer appear anywhere in
+# the source. New valid paths interpose ``pi0_model.`` / the directional utility
+# names and so do not match.
 _FORBIDDEN_OLD_PATHS = re.compile(
     r"openpi_pytorch\.(?:normalize|processing|tokenizer|image_tools|"
     r"convert_checkpoint|export_checkpoint|_import_isolation)\b"
-    r"|openpi_pytorch\.utils\.(?:model|pi0|pi0_config|gemma|siglip|pointnet|lora|utils)\b"
+    r"|openpi_pytorch\.utils\.(?:model|pi0|pi0_config|gemma|siglip|pointnet|lora|utils|"
+    r"convert_checkpoint|export_checkpoint|checkpoint_format)\b"
 )
+
+
+def test_required_utility_modules_importable():
+    """The AC-1 directional converter + export + image-tool modules all import."""
+    for mod in _REQUIRED_UTILS_MODULES:
+        importlib.import_module(
+            f"rlinf.models.embodiment.openpi_pytorch.utils.{mod}"
+        )
 
 
 def test_top_level_is_only_action_model():

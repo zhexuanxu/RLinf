@@ -30,7 +30,7 @@ import pathlib
 import pytest
 import torch
 
-from rlinf.models.embodiment.openpi_pytorch.utils import checkpoint_format as cf
+from rlinf.models.embodiment.openpi_pytorch.utils.old_to_new import old_to_new_state_dict
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
 
 _SIGLIP_OLD = "paligemma_with_expert.paligemma.model.vision_tower.vision_model."
@@ -45,7 +45,7 @@ def test_converter_embedder_and_posembed_fixes():
         "paligemma_with_expert.gemma_expert.lm_head.weight": torch.zeros(10, 1024),
         _SIGLIP_OLD + "embeddings.position_embedding.weight": torch.zeros(256, 1152),
     }
-    new_sd = cf.old_to_new_state_dict(old_sd)
+    new_sd = old_to_new_state_dict(old_sd)
 
     # Embedder must be PaliGemma's 2048-wide embedding, not the 1024-wide expert head.
     assert tuple(new_sd["llm.embedder.embedding.weight"].shape) == (10, 2048)
@@ -53,21 +53,23 @@ def test_converter_embedder_and_posembed_fixes():
     assert tuple(new_sd["img.pos_embedding"].shape) == (1, 256, 1152)
 
 
-def test_convert_checkpoint_overwrites_stale_assets(tmp_path):
+def test_convert_old_to_new_writes_model_and_copies_norm_stats(tmp_path):
     import json
 
     import safetensors.torch
 
-    from rlinf.models.embodiment.openpi_pytorch.utils.convert_checkpoint import (
-        convert_checkpoint,
+    from rlinf.models.embodiment.openpi_pytorch.utils.old_to_new import (
+        convert_old_to_new,
     )
 
     input_dir = tmp_path / "old"
     output_dir = tmp_path / "new"
-    asset_dir = input_dir / "physical-intelligence" / "behavior"
-    stale_asset_dir = output_dir / "physical-intelligence" / "behavior"
-    asset_dir.mkdir(parents=True)
-    stale_asset_dir.mkdir(parents=True)
+    input_dir.mkdir(parents=True)
+    input_norm_stats = input_dir / "norm_stats.json"
+    # The four-parameter interface copies the input norm stats verbatim over the
+    # output path, replacing any stale file already there.
+    output_norm_stats = output_dir / "physical-intelligence" / "behavior" / "norm_stats.json"
+    output_norm_stats.parent.mkdir(parents=True)
 
     safetensors.torch.save_file(
         {
@@ -78,13 +80,17 @@ def test_convert_checkpoint_overwrites_stale_assets(tmp_path):
         str(input_dir / "model.safetensors"),
     )
     (input_dir / "config.json").write_text(json.dumps({"action_dim": 32}))
-    (asset_dir / "norm_stats.json").write_text(json.dumps({"fresh": True}))
-    (stale_asset_dir / "norm_stats.json").write_text(json.dumps({"stale": True}))
+    input_norm_stats.write_text(json.dumps({"fresh": True}))
+    output_norm_stats.write_text(json.dumps({"stale": True}))
 
-    convert_checkpoint(input_dir, output_dir)
+    convert_old_to_new(input_dir, input_norm_stats, output_dir, output_norm_stats)
 
-    copied = json.loads((stale_asset_dir / "norm_stats.json").read_text())
-    assert copied == {"fresh": True}
+    # The converted model + copied config.json + refreshed norm stats are written.
+    assert (output_dir / "model.safetensors").is_file()
+    assert json.loads((output_dir / "config.json").read_text()) == {"action_dim": 32}
+    assert json.loads(output_norm_stats.read_text()) == {"fresh": True}
+    new_sd = safetensors.torch.load_file(str(output_dir / "model.safetensors"))
+    assert "llm.embedder.embedding.weight" in new_sd
 
 
 def test_checkpoint_validation_rejects_dtype_mismatch():
@@ -197,7 +203,7 @@ def test_converted_checkpoint_matches_behavior_model_exactly():
         model_keys = cfg.create().state_dict()
 
     old_sd = safetensors.torch.load_file(str(_OLD_CKPT), device="cpu")
-    new_sd = cf.old_to_new_state_dict(old_sd)
+    new_sd = old_to_new_state_dict(old_sd)
 
     assert set(new_sd) == set(model_keys), "converted key set must match the model"
     mism = {
