@@ -1,0 +1,349 @@
+# Copyright 2026 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Self-contained BEHAVIOR-1K SFT data loader for the PyTorch pi05 path.
+
+Ports ``rlinf/models/embodiment/openpi/dataconfig/behavior_data_loader.py`` onto
+the vendored ``openpi_pytorch`` primitives, with zero installed-``openpi``
+imports. The loader streams the BEHAVIOR dataset
+(:class:`~.behavior_sft_dataset.BehaviorSftDataset`), applies the per-sample
+:func:`~.behavior_sft_transform.BehaviorSftTransform`, collates samples into a
+batched :class:`Observation` plus an actions tensor of shape
+``[batch, action_horizon, action_dim]``, and yields ``(Observation, actions)``.
+
+The streaming dataset partitions its keyframe chunks per ``(rank, worker)``
+internally (see :meth:`BehaviorSftDataset.__getitem__`), so a
+``DistributedSampler`` is intentionally *not* used: a sampler only reorders the
+ignored ``idx`` values and would otherwise give every distributed rank identical
+data.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+import multiprocessing
+import pathlib
+import typing
+
+import numpy as np
+import torch
+
+from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_dataset import (
+    BehaviorSftDataset,
+)
+from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_transform import (
+    BehaviorSftTransform,
+    transform_behavior_sft_item,
+)
+from rlinf.models.embodiment.openpi_pytorch.normalize import NormStats, load_norm_stats
+from rlinf.models.embodiment.openpi_pytorch.utils.model import Observation
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "BehaviorSftDataConfig",
+    "collate_behavior_sft_items",
+    "create_behavior_sft_data_loader",
+    "transform_behavior_sft_item",
+]
+
+# Default BEHAVIOR pi05 dataset repo (matches the old LeRobotB1KDataConfig).
+_DEFAULT_REPO_ID = "behavior-1k/2025-challenge-demos"
+# Camera views resolved by the BEHAVIOR pi05 transform.
+_IMAGE_KEYS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+
+
+@dataclasses.dataclass(frozen=True)
+class BehaviorSftDataConfig:
+    """Metadata describing the BEHAVIOR SFT data pipeline.
+
+    Exposed via :meth:`BehaviorSftDataLoader.data_config` so the SFT worker can
+    read the resolved repo id, action dimension, action horizon, and the
+    normalization statistics without reaching into the dataset internals.
+    """
+
+    repo_id: str
+    action_dim: int
+    action_horizon: int
+    max_token_len: int
+    norm_stats: dict[str, NormStats]
+
+
+class _TransformedStreamingDataset(torch.utils.data.Dataset):
+    """Wrap the streaming dataset, applying the per-sample SFT transform.
+
+    The transform holds a (non-picklable) SentencePiece tokenizer; it is built
+    lazily inside each ``spawn`` worker on first use, so only the lightweight
+    :class:`BehaviorSftTransform` config travels across the process boundary.
+    """
+
+    def __init__(self, dataset: BehaviorSftDataset, transform: BehaviorSftTransform):
+        self._dataset = dataset
+        self._transform = transform
+
+    def __getitem__(self, idx):
+        frame = self._dataset[idx]
+        return transform_behavior_sft_item(frame, self._transform)
+
+    def __len__(self) -> int:
+        # The streaming dataset ignores `idx` and partitions chunks internally;
+        # `len` only drives torch's default index sampler so iteration proceeds.
+        return len(self._dataset.hf_dataset)
+
+
+def collate_behavior_sft_items(
+    items: typing.Sequence[typing.Mapping[str, typing.Any]],
+) -> tuple[Observation, torch.Tensor]:
+    """Collate transformed items into ``(Observation, actions)``.
+
+    Images are stacked as ``uint8`` ``[B, H, W, C]`` tensors and converted to
+    ``float32`` in ``[-1, 1]`` by :meth:`Observation.from_dict` (matching the old
+    path). State/actions/tokens are stacked into the appropriate torch dtypes;
+    the returned actions tensor has shape ``[batch, action_horizon, action_dim]``.
+    """
+    if not items:
+        raise ValueError("Cannot collate an empty BEHAVIOR SFT batch.")
+
+    images = {
+        key: torch.from_numpy(
+            np.stack([np.asarray(item["image"][key]) for item in items])
+        )
+        for key in _IMAGE_KEYS
+    }
+    image_masks = {
+        key: torch.from_numpy(
+            np.stack(
+                [np.asarray(item["image_mask"][key], dtype=np.bool_) for item in items]
+            )
+        )
+        for key in _IMAGE_KEYS
+    }
+    batch = {
+        "image": images,
+        "image_mask": image_masks,
+        "state": torch.from_numpy(
+            np.stack([np.asarray(item["state"], dtype=np.float32) for item in items])
+        ),
+        "tokenized_prompt": torch.from_numpy(
+            np.stack(
+                [np.asarray(item["tokenized_prompt"], dtype=np.int64) for item in items]
+            )
+        ).long(),
+        "tokenized_prompt_mask": torch.from_numpy(
+            np.stack(
+                [
+                    np.asarray(item["tokenized_prompt_mask"], dtype=np.bool_)
+                    for item in items
+                ]
+            )
+        ),
+    }
+    actions = torch.from_numpy(
+        np.stack([np.asarray(item["actions"], dtype=np.float32) for item in items])
+    )
+    return Observation.from_dict(batch), actions
+
+
+def _worker_init_fn(worker_id: int) -> None:
+    """Per-worker init hook (placeholder for worker-local environment setup)."""
+    del worker_id
+
+
+def _resolve_norm_stats(
+    assets_dir: str | pathlib.Path,
+    asset_id: str | None,
+) -> dict[str, NormStats]:
+    """Load ``norm_stats.json`` from ``{assets_dir}/{asset_id}`` (or ``assets_dir``).
+
+    Mirrors the old asset layout: the BEHAVIOR norm stats live under
+    ``{assets_dir}/{asset_id}/norm_stats.json`` (e.g.
+    ``.../physical-intelligence/behavior/norm_stats.json``). Falls back to
+    ``assets_dir`` itself if the ``asset_id`` sub-directory has no stats file.
+    """
+    base = pathlib.Path(assets_dir).expanduser()
+    candidates = [base / asset_id] if asset_id else []
+    candidates.append(base)
+    for directory in candidates:
+        if (directory / "norm_stats.json").is_file():
+            logger.info("Loaded BEHAVIOR norm stats from %s", directory)
+            return load_norm_stats(directory)
+    raise FileNotFoundError(
+        f"BEHAVIOR SFT norm_stats.json not found under {[str(c) for c in candidates]}."
+    )
+
+
+def create_behavior_sft_data_loader(
+    *,
+    behavior_dataset_root: str,
+    assets_dir: str,
+    asset_id: str | None = "physical-intelligence/behavior",
+    repo_id: str = _DEFAULT_REPO_ID,
+    tasks: list[str] | None = None,
+    modalities: list[str] | None = None,
+    action_dim: int = 32,
+    action_horizon: int = 32,
+    max_token_len: int = 200,
+    batch_size: int = 1,
+    num_workers: int = 0,
+    fine_grained_level: int = 0,
+    tolerance_s: float = 1e-4,
+    shuffle: bool = True,
+    skip_norm_stats: bool = False,
+    seed: int = 0,
+    norm_stats: dict[str, NormStats] | None = None,
+    skill_labels: dict[int, str] | None = None,
+    enable_gap: bool = True,
+    allow_left: bool = True,
+    allow_right: bool = True,
+) -> "BehaviorSftDataLoader":
+    """Build the BEHAVIOR-1K SFT data loader yielding ``(Observation, actions)``.
+
+    Args:
+        behavior_dataset_root: Local root of the LeRobot BEHAVIOR dataset.
+        assets_dir: Directory holding the checkpoint assets (norm stats).
+        asset_id: Sub-directory under ``assets_dir`` for the norm stats
+            (``{assets_dir}/{asset_id}/norm_stats.json``).
+        repo_id: LeRobot dataset repo id (used for metadata bookkeeping).
+        tasks: BEHAVIOR task names to include (``None`` -> all tasks).
+        modalities: Observation modalities to load (``None`` -> ``["rgb"]``).
+        action_dim: Model action dimension to pad state/actions to.
+        action_horizon: Number of future action steps per sample.
+        max_token_len: Maximum tokenized-prompt length.
+        batch_size: Per-rank batch size.
+        num_workers: Number of ``DataLoader`` workers (``> 0`` uses ``spawn``).
+        fine_grained_level: Orchestrator level for the prompt task text.
+        tolerance_s: Frame-timestamp sync tolerance.
+        shuffle: Whether the streaming dataset shuffles its chunk order.
+        skip_norm_stats: Skip loading norm stats (requires ``norm_stats`` to be
+            supplied if normalization is still desired).
+        seed: Base seed for the streaming chunk partition.
+        norm_stats: Pre-loaded norm stats; loaded from disk when ``None``.
+        skill_labels: Optional per-skill labels enabling skill mode.
+        enable_gap: Skill mode — skip frames falling in skill gaps.
+        allow_left: Skill mode — include left-boundary frames (carried through).
+        allow_right: Skill mode — include right-boundary frames (carried through).
+
+    Returns:
+        A loader whose iteration yields ``(Observation, actions)`` 2-tuples.
+    """
+    if norm_stats is None and not skip_norm_stats:
+        norm_stats = _resolve_norm_stats(assets_dir, asset_id)
+    elif norm_stats is None:
+        raise ValueError(
+            "norm_stats must be provided when skip_norm_stats=True so the state "
+            "and actions can still be quantile-normalized."
+        )
+
+    dataset = BehaviorSftDataset(
+        repo_id=repo_id or _DEFAULT_REPO_ID,
+        root=behavior_dataset_root,
+        tolerance_s=tolerance_s,
+        tasks=tasks or None,
+        modalities=modalities or ["rgb"],
+        local_only=True,
+        delta_timestamps={"action": [t / 30.0 for t in range(action_horizon)]},
+        chunk_streaming_using_keyframe=True,
+        shuffle=shuffle,
+        seed=seed,
+        fine_grained_level=fine_grained_level,
+        skill_labels=skill_labels,
+        enable_gap=enable_gap,
+        allow_left=allow_left,
+        allow_right=allow_right,
+    )
+
+    transform = BehaviorSftTransform(
+        norm_stats=norm_stats,
+        action_dim=action_dim,
+        max_token_len=max_token_len,
+    )
+    transformed = _TransformedStreamingDataset(dataset, transform)
+
+    # The streaming dataset partitions chunks per (rank, worker) on its own, so a
+    # DistributedSampler is intentionally omitted: it would only reorder the
+    # ignored `idx` values and give every distributed rank identical data.
+    mp_context = multiprocessing.get_context("spawn") if num_workers > 0 else None
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    logger.info(
+        "BEHAVIOR SFT data loader: batch_size=%d, num_workers=%d, action_horizon=%d",
+        batch_size,
+        num_workers,
+        action_horizon,
+    )
+
+    torch_loader = torch.utils.data.DataLoader(
+        typing.cast(torch.utils.data.Dataset, transformed),
+        batch_size=batch_size,
+        shuffle=shuffle,
+        sampler=None,
+        num_workers=num_workers,
+        multiprocessing_context=mp_context,
+        persistent_workers=num_workers > 0,
+        collate_fn=collate_behavior_sft_items,
+        worker_init_fn=_worker_init_fn,
+        drop_last=True,
+        generator=generator,
+    )
+
+    data_config = BehaviorSftDataConfig(
+        repo_id=repo_id or _DEFAULT_REPO_ID,
+        action_dim=action_dim,
+        action_horizon=action_horizon,
+        max_token_len=max_token_len,
+        norm_stats=norm_stats,
+    )
+    return BehaviorSftDataLoader(torch_loader, data_config)
+
+
+class BehaviorSftDataLoader:
+    """Infinite ``(Observation, actions)`` loop over the BEHAVIOR SFT dataset.
+
+    Mirrors the old behavior data loader: it re-iterates the underlying ``torch``
+    ``DataLoader`` forever. Each batch is already collated into an
+    :class:`Observation` plus an actions tensor of shape
+    ``[batch, action_horizon, action_dim]`` by :func:`collate_behavior_sft_items`.
+    """
+
+    def __init__(
+        self,
+        torch_loader: torch.utils.data.DataLoader,
+        data_config: BehaviorSftDataConfig,
+    ):
+        self._torch_loader = torch_loader
+        self._data_config = data_config
+
+    def data_config(self) -> BehaviorSftDataConfig:
+        """Return the resolved data-pipeline metadata."""
+        return self._data_config
+
+    @property
+    def torch_loader(self) -> torch.utils.data.DataLoader:
+        """Expose the underlying ``torch`` ``DataLoader``."""
+        return self._torch_loader
+
+    def __iter__(self):
+        while True:
+            data_iter = iter(self._torch_loader)
+            while True:
+                try:
+                    yield next(data_iter)
+                except StopIteration:
+                    break
+
+    def __len__(self) -> int:
+        return len(self._torch_loader)
