@@ -7,6 +7,10 @@ model_path: "/path/to/model/openpi_pytorch"
 # The self-contained model runs its own bfloat16 mixed precision internally.
 precision: null
 
+# LoRA is not used for eval, but the shared model factory reads these keys.
+is_lora: False
+lora_rank: 32
+
 # Action and chunk settings (BEHAVIOR pi05).
 num_action_chunks: 32
 action_dim: 23
