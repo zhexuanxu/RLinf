@@ -23,12 +23,19 @@ outputs). This test then compares the new ``openpi_pytorch`` loader/tokenizer:
 * EXACT tokenizer parity (frame-independent): the new vendored
   ``PaligemmaTokenizer`` must produce byte-identical ids+mask to the reference
   tokenizer for fixed ``(prompt, state)`` inputs.
-* Reference-loader output-contract parity: the new loader's first batch must
-  match the real reference batch's shapes, normalize-then-pad layout (env dims in
+* EXACT fixed-sample transform parity: the SAME raw BEHAVIOR frame is fed through
+  both the reference per-sample transform (dumped via
+  ``TransformedDataset._dataset[0]`` + ``._transform``) and the new
+  ``BehaviorSftTransform``, asserting byte-identical tokenized prompt+mask, the
+  three resized images within rounding, and normalized+padded state and actions
+  within tolerance. This sidesteps streaming non-determinism by comparing the
+  transforms on one identical raw input.
+* Reference-loader output-contract parity: the new loader's first batch matches
+  the real reference batch's shapes, normalize-then-pad layout (env dims in
   ``[:23]``, exact-zero pad tail), token length, image resolution, and value
-  bands. (Exact frame-value parity is not asserted: the two streaming loaders are
-  independently seeded, so they do not stream the same frame; exact normalize+pad
-  values on a controlled input are covered by ``test_openpi_pytorch_sft_parity``.)
+  bands. (Batch-to-batch frame-value parity is not asserted here because the two
+  streaming loaders are independently seeded; the fixed-sample test above covers
+  exact transformed values.)
 
 Skip-gated when the reference venv / source / data is unavailable.
 """

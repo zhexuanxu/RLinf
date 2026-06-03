@@ -101,33 +101,23 @@ def test_old_openpi_behavior_sft_dataloader_smoke():
     # (pi05_base_pytorch/physical-intelligence/behavior); don't override repo_id
     # (that would rewrite asset_id and break norm-stats resolution). Force
     # num_workers=0 so the batch is built in-process (avoids spawn/pickling
-    # quirks under pytest).
+    # quirks under pytest), and use shuffle=True — the setting the production SFT
+    # worker uses (rlinf/workers/sft/fsdp_vla_sft_worker.py: shuffle=True).
     config = get_openpi_config("pi05_behavior_b1k_local", batch_size=2)
     config = dataclasses.replace(config, num_workers=0)
-    loader = create_behavior_data_loader(config, shuffle=False, seed=42)
-
-    # The old openpi BEHAVIOR SFT data path still BUILDS (config validation,
-    # dataset construction, and norm-stats loading all succeed) — proof the
-    # Phase-2 additions are additive and did not break the old path's setup.
+    loader = create_behavior_data_loader(config, shuffle=True, seed=42)
     assert loader is not None
 
     import numpy as np
 
-    try:
-        observation, actions = next(iter(loader))
-    except AttributeError as exc:
-        # `_active_chunks` is a pre-existing quirk in the OLD streaming dataset
-        # (rlinf/models/embodiment/openpi/dataconfig/behavior_dataset.py), which
-        # Phase 2 never touches (it added a separate openpi_pytorch package). It
-        # is therefore not a Phase-2 regression; record it as a skip.
-        if "_active_chunks" in str(exc):
-            pytest.skip(
-                "pre-existing old BehaviorLeRobotDataset _active_chunks quirk "
-                "(old openpi package is untouched by Phase 2)"
-            )
-        raise
+    # Pull one real batch from the old BEHAVIOR SFT path and assert its contract.
+    observation, actions = next(iter(loader))
+    actions = np.asarray(actions)
+    state = np.asarray(observation.state)
     assert observation is not None
-    assert np.asarray(actions).size > 0
+    assert actions.shape[1:] == (32, 32)  # [B, action_horizon, action_dim]
+    assert state.shape[-1] == 32
+    assert np.isfinite(actions).all()
 
 
 def test_unsupported_model_type_still_raises_keyerror():
