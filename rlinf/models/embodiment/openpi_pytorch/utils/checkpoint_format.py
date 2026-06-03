@@ -351,7 +351,6 @@ def convert_trained_ckpt(
             model.safetensors and config.json.
         norm_stats: Optional path to norm_stats.json to copy into the output.
     """
-    import json
     import os
     import shutil
 
@@ -406,7 +405,7 @@ def convert_trained_ckpt(
         if old_sd[k].shape != ref_sd[k].shape:
             shape_mismatches.append((k, ref_sd[k].shape, old_sd[k].shape))
 
-    print(f"\nValidation:")
+    print("\nValidation:")
     print(f"  Keys: {len(conv_keys)} converted, {len(ref_keys)} reference")
     print(f"  Missing: {len(missing)}")
     for k in sorted(missing):
@@ -437,7 +436,7 @@ def convert_trained_ckpt(
     out_config = os.path.join(output_dir, "config.json")
     if os.path.exists(ref_config):
         shutil.copy2(ref_config, out_config)
-        print(f"Copied config.json")
+        print("Copied config.json")
 
     # Copy norm_stats.json
     if norm_stats and os.path.exists(norm_stats):

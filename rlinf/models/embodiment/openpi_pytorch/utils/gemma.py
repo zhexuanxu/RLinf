@@ -10,9 +10,9 @@ Supports:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import dataclasses
 import math
+from collections.abc import Sequence
 from typing import Literal
 
 import torch

@@ -6,9 +6,7 @@ import dataclasses
 
 import torch
 
-from . import gemma
-from . import model
-from . import pointnet
+from . import gemma, model, pointnet
 
 
 @dataclasses.dataclass

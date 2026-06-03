@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import abc
-from collections.abc import Sequence
 import dataclasses
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np

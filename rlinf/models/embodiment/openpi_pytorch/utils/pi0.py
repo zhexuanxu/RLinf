@@ -12,10 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from . import gemma
-from . import model
-from . import pointnet
-from . import siglip
+from . import gemma, model, pointnet, siglip
 from .pi0_config import Pi0Config
 from .utils import _str_to_dtype
 
@@ -382,7 +379,6 @@ class Pi0(model.BaseModel):
 
         x_t = noise
         t = 1.0
-        prefix_len = prefix_tokens.shape[1]
 
         # Euler integration
         while t >= -dt / 2:
