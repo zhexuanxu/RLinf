@@ -46,84 +46,9 @@ class FSDPVlaSftWorker(FSDPSftWorker):
     def build_dataloader(self, data_paths: Any, eval_dataset: bool = False):
         model_type = SupportedModel(self.cfg.actor.model.model_type)
         if model_type == SupportedModel.OPENPI_PYTORCH:
-            from rlinf.models.embodiment.openpi_pytorch.dataconfig import (
-                create_behavior_sft_data_loader,
+            return self._build_openpi_pytorch_dataloader(
+                data_paths, eval_dataset=eval_dataset
             )
-
-            data_path = resolve_lerobot_repo_id(data_paths)
-            if data_path is None:
-                raise ValueError(
-                    "openpi_pytorch BEHAVIOR SFT requires data.train_data_paths."
-                )
-            model_cfg = self.cfg.actor.model
-            openpi_data = OmegaConf.select(self.cfg.actor, "openpi_data", default={})
-            if not isinstance(openpi_data, DictConfig):
-                openpi_data = OmegaConf.create(openpi_data)
-            norm_stats_path = OmegaConf.select(
-                model_cfg, "openpi.norm_stats_path", default=None
-            )
-            assets_dir = (
-                norm_stats_path
-                or OmegaConf.select(model_cfg, "openpi.assets_dir", default=None)
-                or OmegaConf.select(model_cfg, "model_path", default="")
-            )
-            asset_id = (
-                None
-                if norm_stats_path
-                else OmegaConf.select(
-                    model_cfg,
-                    "openpi.asset_id",
-                    default="physical-intelligence/behavior",
-                )
-            )
-            loader = create_behavior_sft_data_loader(
-                behavior_dataset_root=str(
-                    OmegaConf.select(
-                        openpi_data,
-                        "behavior_dataset_root",
-                        default=resolve_lerobot_dataset_root(str(data_path)),
-                    )
-                ),
-                assets_dir=str(assets_dir),
-                asset_id=asset_id,
-                repo_id=str(
-                    OmegaConf.select(
-                        openpi_data,
-                        "repo_id",
-                        default="behavior-1k/2025-challenge-demos",
-                    )
-                ),
-                tasks=list(
-                    OmegaConf.select(openpi_data, "tasks", default=["turning_on_radio"])
-                ),
-                modalities=list(
-                    OmegaConf.select(openpi_data, "modalities", default=["rgb"])
-                ),
-                action_dim=int(
-                    OmegaConf.select(model_cfg, "openpi.model_action_dim", default=32)
-                ),
-                action_horizon=int(
-                    OmegaConf.select(model_cfg, "num_action_chunks", default=32)
-                ),
-                max_token_len=int(
-                    OmegaConf.select(model_cfg, "openpi.max_token_len", default=200)
-                ),
-                batch_size=self.eval_batch_size
-                if eval_dataset
-                else self.micro_batch_size,
-                num_workers=int(
-                    OmegaConf.select(self.cfg.data, "num_workers", default=8)
-                ),
-                fine_grained_level=int(
-                    OmegaConf.select(openpi_data, "fine_grained_level", default=0)
-                ),
-                tolerance_s=float(
-                    OmegaConf.select(openpi_data, "tolerance_s", default=1e-4)
-                ),
-                shuffle=not eval_dataset,
-                seed=int(self.cfg.actor.get("seed", 42)),
-            )
-            return loader, loader.data_config()
 
         if model_type in [SupportedModel.OPENPI]:
             # Check for pi0.5 VLM-only mode — uses custom dataset instead of openpi data loader
@@ -230,6 +155,67 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             raise KeyError(
                 f"not support such model type {self.cfg.actor.model.model_type} for SFT right now."
             )
+
+    def _build_openpi_pytorch_dataloader(self, data_paths, eval_dataset: bool = False):
+        """Build the self-contained openpi_pytorch BEHAVIOR SFT data loader."""
+        from rlinf.models.embodiment.openpi_pytorch.dataconfig import (
+            create_behavior_sft_data_loader,
+        )
+
+        data_path = resolve_lerobot_repo_id(data_paths)
+        if data_path is None:
+            raise ValueError(
+                "openpi_pytorch BEHAVIOR SFT requires data.train_data_paths."
+            )
+
+        model_cfg = self.cfg.actor.model
+        openpi_data = OmegaConf.select(self.cfg.actor, "openpi_data", default={})
+        if not isinstance(openpi_data, DictConfig):
+            openpi_data = OmegaConf.create(openpi_data)
+
+        # Bound `OmegaConf.select` to the relevant config node to drop the repeated
+        # node argument; behavior (keys, defaults) is unchanged.
+        def model_select(key, default):
+            return OmegaConf.select(model_cfg, key, default=default)
+
+        def data_select(key, default):
+            return OmegaConf.select(openpi_data, key, default=default)
+
+        norm_stats_path = model_select("openpi.norm_stats_path", None)
+        assets_dir = (
+            norm_stats_path
+            or model_select("openpi.assets_dir", None)
+            or model_select("model_path", "")
+        )
+        asset_id = (
+            None
+            if norm_stats_path
+            else model_select("openpi.asset_id", "physical-intelligence/behavior")
+        )
+
+        loader = create_behavior_sft_data_loader(
+            behavior_dataset_root=str(
+                data_select(
+                    "behavior_dataset_root",
+                    resolve_lerobot_dataset_root(str(data_path)),
+                )
+            ),
+            assets_dir=str(assets_dir),
+            asset_id=asset_id,
+            repo_id=str(data_select("repo_id", "behavior-1k/2025-challenge-demos")),
+            tasks=list(data_select("tasks", ["turning_on_radio"])),
+            modalities=list(data_select("modalities", ["rgb"])),
+            action_dim=int(model_select("openpi.model_action_dim", 32)),
+            action_horizon=int(model_select("num_action_chunks", 32)),
+            max_token_len=int(model_select("openpi.max_token_len", 200)),
+            batch_size=self.eval_batch_size if eval_dataset else self.micro_batch_size,
+            num_workers=int(OmegaConf.select(self.cfg.data, "num_workers", default=8)),
+            fine_grained_level=int(data_select("fine_grained_level", 0)),
+            tolerance_s=float(data_select("tolerance_s", 1e-4)),
+            shuffle=not eval_dataset,
+            seed=int(self.cfg.actor.get("seed", 42)),
+        )
+        return loader, loader.data_config()
 
     def _build_pi05_vlm_dataloader(self, data_paths, eval_dataset: bool = False):
         """Build dataloader for pi0.5 VLM-only SFT (BEHAVIOR skill prediction)."""

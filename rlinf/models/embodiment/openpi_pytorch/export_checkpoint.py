@@ -59,13 +59,13 @@ def _strip_wrapper_prefix(state_dict: Mapping[str, torch.Tensor]) -> dict[str, t
     bare: dict[str, torch.Tensor] = {}
     for key, tensor in state_dict.items():
         bare_key = key
-        stripped = True
-        while stripped:
-            stripped = False
+        while True:
             for prefix in _WRAPPER_PREFIXES:
                 if bare_key.startswith(prefix):
                     bare_key = bare_key[len(prefix):]
-                    stripped = True
+                    break
+            else:
+                break
         if tensor.is_floating_point():
             tensor = tensor.to(torch.bfloat16)
         bare[bare_key] = tensor.detach().cpu().contiguous()

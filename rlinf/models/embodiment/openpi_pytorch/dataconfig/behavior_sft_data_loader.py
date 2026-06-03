@@ -246,8 +246,10 @@ def create_behavior_sft_data_loader(
             "and actions can still be quantile-normalized."
         )
 
+    repo_id = repo_id or _DEFAULT_REPO_ID
+
     dataset = BehaviorSftDataset(
-        repo_id=repo_id or _DEFAULT_REPO_ID,
+        repo_id=repo_id,
         root=behavior_dataset_root,
         tolerance_s=tolerance_s,
         tasks=tasks or None,
@@ -301,7 +303,7 @@ def create_behavior_sft_data_loader(
     )
 
     data_config = BehaviorSftDataConfig(
-        repo_id=repo_id or _DEFAULT_REPO_ID,
+        repo_id=repo_id,
         action_dim=action_dim,
         action_horizon=action_horizon,
         max_token_len=max_token_len,
@@ -338,12 +340,7 @@ class BehaviorSftDataLoader:
 
     def __iter__(self):
         while True:
-            data_iter = iter(self._torch_loader)
-            while True:
-                try:
-                    yield next(data_iter)
-                except StopIteration:
-                    break
+            yield from self._torch_loader
 
     def __len__(self) -> int:
         return len(self._torch_loader)
