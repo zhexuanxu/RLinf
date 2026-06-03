@@ -14,12 +14,13 @@
 
 """LR-schedule alignment for openpi_pytorch SFT.
 
-The reference trainer uses a warmup-then-cosine-to-zero schedule (warmup=1000,
-cosine decay over 30000 to 0, peak 2.5e-5). This test asserts RLinf's
-``cosine`` scheduler reproduces the same shape: linear warmup to the peak at the
-warmup boundary and a cosine decay to ~0, matching the reference cosine phase
-within tolerance. (The only divergence is the very first warmup step, where the
-reference starts at peak/(warmup+1) and RLinf/HF starts at 0 — a <0.1% effect.)
+The reference trainer (`openpi-comet-pytorch-mixed`) uses a warmup-then-cosine
+schedule where warmup starts at ``peak / (warmup_steps + 1)`` (NOT 0), ramps
+linearly to the peak at ``warmup_steps``, then cosine-decays to ``min_lr`` over
+``total_training_steps``. RLinf's ``openpi_cosine`` scheduler mode reproduces
+this exactly; the SFT config (`behavior_pi05_vla.yaml`) selects it. This test
+asserts the exact initial LR (``peak/(warmup+1) = 2.4975e-08`` for peak 2.5e-5)
+and exact agreement with the reference formula across warmup and decay.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ def _reference_lr(step: int, peak: float, warmup: int, decay: int, end: float = 
     return end + (peak - end) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-def test_sft_lr_schedule_matches_reference():
+def test_openpi_cosine_schedule_matches_reference_exactly():
     torch = pytest.importorskip("torch")
 
     from rlinf.hybrid_engines.fsdp.utils import get_lr_scheduler
@@ -47,7 +48,7 @@ def test_sft_lr_schedule_matches_reference():
     param = torch.nn.Parameter(torch.zeros(1))
     opt = torch.optim.AdamW([param], lr=peak)
     sched = get_lr_scheduler(
-        "cosine",
+        "openpi_cosine",
         opt,
         num_warmup_steps=warmup,
         num_training_steps=total,
@@ -60,16 +61,35 @@ def test_sft_lr_schedule_matches_reference():
         sched.step()
         lrs.append(opt.param_groups[0]["lr"])
 
-    # Warmup: starts near zero, monotonically increases, hits the peak at the boundary.
-    assert lrs[0] == pytest.approx(0.0, abs=1e-9)
-    assert lrs[warmup] == pytest.approx(peak, rel=1e-3)
-    assert all(lrs[i] <= lrs[i + 1] + 1e-12 for i in range(warmup))
+    # Exact initial LR: peak/(warmup+1), NOT 0.
+    assert lrs[0] == pytest.approx(peak / (warmup + 1), rel=1e-9)
+    assert lrs[0] == pytest.approx(2.4975e-08, rel=1e-4)
 
-    # Cosine decay phase matches the reference formula closely.
-    for step in (warmup, 5000, 15000, 29000):
+    # Warmup ramps linearly to exactly the peak at the boundary, monotonically.
+    assert lrs[warmup] == pytest.approx(peak, rel=1e-9)
+    assert all(lrs[i] < lrs[i + 1] for i in range(warmup))
+
+    # Exact agreement with the reference formula across warmup AND decay.
+    for step in (0, 1, 50, 100, 500, 999, 1000, 5000, 15000, 29000):
         assert lrs[step] == pytest.approx(
-            _reference_lr(step, peak, warmup, total), rel=0.02, abs=1e-8
+            _reference_lr(step, peak, warmup, total), rel=1e-9, abs=1e-15
         )
 
-    # Decays to ~0 by the end of training.
-    assert lrs[total] == pytest.approx(0.0, abs=1e-6)
+    # Decays to exactly min_lr (0) at the end of training.
+    assert lrs[total] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_default_hf_cosine_starts_at_zero():
+    # Guard the distinction: the plain HF ``cosine`` mode starts warmup at 0,
+    # which is why the SFT path uses ``openpi_cosine`` instead.
+    torch = pytest.importorskip("torch")
+
+    from rlinf.hybrid_engines.fsdp.utils import get_lr_scheduler
+
+    peak = 2.5e-5
+    opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=peak)
+    sched = get_lr_scheduler(
+        "cosine", opt, num_warmup_steps=1000, num_training_steps=30000, min_lr=0.0
+    )
+    assert opt.param_groups[0]["lr"] == pytest.approx(0.0, abs=1e-12)
+    del sched

@@ -99,6 +99,83 @@ def test_sft_checkpoint_exports_to_eval_format(tmp_path):
     assert {param.dtype for param in model.parameters()} == {torch.bfloat16}
 
 
+def test_sft_checkpoint_dir_exports_from_real_layout(tmp_path):
+    # Export from the actual RLinf FSDP save layout
+    # (checkpoints/global_step_<N>/actor/model_state_dict/full_weights.pt), then
+    # round-trip through the unchanged eval loader.
+    torch = pytest.importorskip("torch")
+    from omegaconf import OmegaConf
+
+    from rlinf.models.embodiment.openpi_pytorch import get_model
+    from rlinf.models.embodiment.openpi_pytorch.export_checkpoint import (
+        export_sft_checkpoint_dir_for_eval,
+    )
+    from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
+        OpenPiPytorchActionModel,
+    )
+    from rlinf.models.embodiment.openpi_pytorch.utils.pi0_config import Pi0Config
+
+    cfg = Pi0Config(
+        dtype="bfloat16",
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        pi05=True,
+        action_horizon=4,
+        action_dim=32,
+        pcd=False,
+    )
+    wrapper = OpenPiPytorchActionModel(
+        cfg.create(), processor=None, num_steps=10, action_chunk=4, action_env_dim=23
+    )
+
+    # Write the consolidated weights at the real saved-checkpoint path.
+    ckpt_dir = tmp_path / "checkpoints" / "global_step_150"
+    weights_path = ckpt_dir / "actor" / "model_state_dict" / "full_weights.pt"
+    weights_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(wrapper.state_dict(), str(weights_path))
+
+    out = tmp_path / "exported"
+    export_sft_checkpoint_dir_for_eval(
+        ckpt_dir,
+        out,
+        config_json={
+            "action_horizon": 4,
+            "action_dim": 32,
+            "paligemma_variant": "dummy",
+            "action_expert_variant": "dummy",
+        },
+        norm_stats=_norm_stats_json(),
+    )
+    assert (out / "model.safetensors").is_file()
+
+    eval_cfg = OmegaConf.create(
+        {
+            "model_path": str(out),
+            "precision": "bf16",
+            "num_action_chunks": 4,
+            "action_dim": 23,
+            "openpi": {"config_name": "pi05_behavior"},
+        }
+    )
+    model = get_model(eval_cfg)
+    assert model.processor is not None
+    assert {param.dtype for param in model.parameters()} == {torch.bfloat16}
+
+
+def test_export_dir_missing_weights_fails_loud(tmp_path):
+    from rlinf.models.embodiment.openpi_pytorch.export_checkpoint import (
+        export_sft_checkpoint_dir_for_eval,
+    )
+
+    with pytest.raises(FileNotFoundError, match="full_weights.pt"):
+        export_sft_checkpoint_dir_for_eval(
+            tmp_path / "empty",
+            tmp_path / "o",
+            config_json={},
+            norm_stats=_norm_stats_json(),
+        )
+
+
 def test_export_requires_exactly_one_norm_stats_source(tmp_path):
     from rlinf.models.embodiment.openpi_pytorch.export_checkpoint import (
         export_sft_checkpoint_for_eval,

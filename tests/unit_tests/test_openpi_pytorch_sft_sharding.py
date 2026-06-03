@@ -24,9 +24,46 @@ rank-independent partition would have given every rank identical data.
 
 from __future__ import annotations
 
+from rlinf.models.embodiment.openpi_pytorch.dataconfig import behavior_sft_dataset
 from rlinf.models.embodiment.openpi_pytorch.dataconfig.behavior_sft_dataset import (
+    BehaviorSftDataset,
     partition_chunk_indices,
 )
+
+
+class _FakeDist:
+    """Stand-in for ``torch.distributed`` reporting a fixed rank / world size."""
+
+    def __init__(self, rank, world_size):
+        self._rank = rank
+        self._world_size = world_size
+
+    def is_available(self):
+        return True
+
+    def is_initialized(self):
+        return True
+
+    def get_rank(self):
+        return self._rank
+
+    def get_world_size(self):
+        return self._world_size
+
+
+def _select_under_rank(monkeypatch, rank, world_size, num_chunks=8, seed=42):
+    """Run the real streaming chunk selection as a given distributed rank."""
+    monkeypatch.setattr(
+        behavior_sft_dataset, "dist", _FakeDist(rank, world_size)
+    )
+    ds = BehaviorSftDataset.__new__(BehaviorSftDataset)
+    # chunks are (start_frame, end_frame, keyframe_start) tuples.
+    ds.chunks = [(i * 100, i * 100 + 50, i * 100) for i in range(num_chunks)]
+    ds.seed = seed
+    ds.current_streaming_chunk_idx = None
+    ds._active_chunks = None
+    ds._select_streaming_chunk()
+    return ds
 
 
 def test_partition_is_disjoint_and_complete_across_ranks():
@@ -117,3 +154,36 @@ def test_rank_independent_partition_would_duplicate_data():
     )
     assert fixed_rank0.isdisjoint(fixed_rank1)
     assert fixed_rank0 | fixed_rank1 == set(range(num_chunks))
+
+
+def test_effective_streaming_selection_distinct_per_rank(monkeypatch):
+    # Exercise the real ``_select_streaming_chunk`` (the path ``__getitem__``
+    # uses) under two simulated ranks; each must stream a disjoint chunk set and
+    # start on a different frame -> the first batches differ across ranks.
+    ds0 = _select_under_rank(monkeypatch, rank=0, world_size=2)
+    ds1 = _select_under_rank(monkeypatch, rank=1, world_size=2)
+
+    chunks0 = set(ds0._active_chunks)
+    chunks1 = set(ds1._active_chunks)
+    assert chunks0.isdisjoint(chunks1)
+    assert chunks0 | chunks1 == set(ds0.chunks)
+    # First streamed frame (the first-batch identity) differs across ranks.
+    assert ds0.current_streaming_frame_idx != ds1.current_streaming_frame_idx
+
+
+def test_effective_global_batch_has_no_rank_duplication(monkeypatch):
+    # Eight ranks over eight chunks: each rank streams exactly one distinct
+    # chunk, so a global batch built one-sample-per-rank is 8 unique samples,
+    # not one sample replicated 8x (the DEC-1 failure mode).
+    world_size = 8
+    first_frames = []
+    chunk_sets = []
+    for rank in range(world_size):
+        ds = _select_under_rank(monkeypatch, rank=rank, world_size=world_size)
+        first_frames.append(ds.current_streaming_frame_idx)
+        chunk_sets.append(frozenset(ds._active_chunks))
+
+    for i in range(world_size):
+        for j in range(i + 1, world_size):
+            assert chunk_sets[i].isdisjoint(chunk_sets[j])
+    assert len(set(first_frames)) == world_size

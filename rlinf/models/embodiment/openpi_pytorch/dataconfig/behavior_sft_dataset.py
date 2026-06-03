@@ -1103,6 +1103,47 @@ class BehaviorSftDataset(LeRobotDataset):
         hf_dataset.set_transform(hf_transform_to_torch)
         return hf_dataset
 
+    def _select_streaming_chunk(self) -> None:
+        """Pick this ``(rank, worker)``'s active chunk set and starting frame.
+
+        Reads the distributed ``rank`` / ``world_size`` and the data-loader
+        ``worker_id`` / ``num_workers``, folds them into the keyframe-chunk
+        partition (via :func:`partition_chunk_indices`), shuffles the resulting
+        chunks with a per-``(rank, worker)`` seed, and sets the streaming cursor
+        to the start of the chosen chunk. Folding the rank in is what makes each
+        distributed rank stream a disjoint set of chunks (a ``DistributedSampler``
+        cannot, since this dataset ignores ``idx``).
+        """
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        world_size = (
+            dist.get_world_size()
+            if dist.is_available() and dist.is_initialized()
+            else 1
+        )
+        worker_info = get_worker_info()
+        worker_id = 0 if worker_info is None else worker_info.id
+        num_workers = 1 if worker_info is None else worker_info.num_workers
+        global_worker_id = rank * num_workers + worker_id
+        if not hasattr(self, "_active_chunks") or self._active_chunks is None:
+            indices = partition_chunk_indices(
+                len(self.chunks),
+                rank=rank,
+                world_size=world_size,
+                worker_id=worker_id,
+                num_workers=num_workers,
+            )
+            worker_chunks = [self.chunks[i] for i in indices]
+            rng = np.random.default_rng(self.seed + global_worker_id)
+            rng.shuffle(worker_chunks)
+            self._active_chunks = worker_chunks
+        rng = np.random.default_rng(self.seed + global_worker_id)
+        self.current_streaming_chunk_idx = rng.integers(
+            0, len(self._active_chunks)
+        ).item()
+        self.current_streaming_frame_idx = self._active_chunks[
+            self.current_streaming_chunk_idx
+        ][0]
+
     def __getitem__(self, idx) -> dict:
         """Return the next streamed frame (the ``idx`` argument is ignored).
 
@@ -1127,41 +1168,7 @@ class BehaviorSftDataset(LeRobotDataset):
 
         # Streaming mode
         if self.current_streaming_chunk_idx is None:
-            # Fold both the distributed rank and the per-rank worker id into the
-            # chunk partition so every (rank, worker) pair streams a disjoint set
-            # of chunks. The stride spans the whole (world_size * num_workers)
-            # grid; the RNG seed is per-(rank, worker) so shuffles differ too.
-            rank = (
-                dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-            )
-            world_size = (
-                dist.get_world_size()
-                if dist.is_available() and dist.is_initialized()
-                else 1
-            )
-            worker_info = get_worker_info()
-            worker_id = 0 if worker_info is None else worker_info.id
-            num_workers = 1 if worker_info is None else worker_info.num_workers
-            global_worker_id = rank * num_workers + worker_id
-            if not hasattr(self, "_active_chunks") or self._active_chunks is None:
-                indices = partition_chunk_indices(
-                    len(self.chunks),
-                    rank=rank,
-                    world_size=world_size,
-                    worker_id=worker_id,
-                    num_workers=num_workers,
-                )
-                worker_chunks = [self.chunks[i] for i in indices]
-                rng = np.random.default_rng(self.seed + global_worker_id)
-                rng.shuffle(worker_chunks)
-                self._active_chunks = worker_chunks
-            rng = np.random.default_rng(self.seed + global_worker_id)
-            self.current_streaming_chunk_idx = rng.integers(
-                0, len(self._active_chunks)
-            ).item()
-            self.current_streaming_frame_idx = self._active_chunks[
-                self.current_streaming_chunk_idx
-            ][0]
+            self._select_streaming_chunk()
 
         if (
             self.current_streaming_frame_idx

@@ -35,19 +35,37 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-_WRAPPER_PREFIX = "model."
+# Wrapper / FSDP prefixes that may sit in front of the bare ``Pi0`` keys in a
+# saved checkpoint. ``OpenPiPytorchActionModel`` adds ``model.`` (the vendored
+# Pi0 lives at ``wrapper.model``); FSDP/compile may add the others. No bare Pi0
+# key begins with any of these, so stripping them is safe.
+_WRAPPER_PREFIXES = (
+    "_fsdp_wrapped_module.",
+    "_orig_mod.",
+    "module.",
+    "model.",
+)
 _NORM_STATS_SUBDIR = pathlib.Path("physical-intelligence") / "behavior"
 
 
 def _strip_wrapper_prefix(state_dict: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Drop the ``model.`` wrapper prefix and cast float tensors to bf16.
+    """Drop wrapper/FSDP key prefixes and cast float tensors to bf16.
 
-    The eval loader validates that every checkpoint tensor is bf16, so float
-    parameters are cast; integer/bool buffers (if any) are passed through.
+    Removes any leading combination of the known wrapper/FSDP prefixes from each
+    key so the result has bare ``Pi0`` keys. The eval loader validates that every
+    checkpoint tensor is bf16, so float parameters are cast; integer/bool buffers
+    (if any) are passed through.
     """
     bare: dict[str, torch.Tensor] = {}
     for key, tensor in state_dict.items():
-        bare_key = key[len(_WRAPPER_PREFIX):] if key.startswith(_WRAPPER_PREFIX) else key
+        bare_key = key
+        stripped = True
+        while stripped:
+            stripped = False
+            for prefix in _WRAPPER_PREFIXES:
+                if bare_key.startswith(prefix):
+                    bare_key = bare_key[len(prefix):]
+                    stripped = True
         if tensor.is_floating_point():
             tensor = tensor.to(torch.bfloat16)
         bare[bare_key] = tensor.detach().cpu().contiguous()
@@ -111,3 +129,75 @@ def export_sft_checkpoint_for_eval(
         len(bare_state),
     )
     return output_dir
+
+
+def _as_state_dict(loaded: Any) -> Mapping[str, torch.Tensor]:
+    """Unwrap common checkpoint containers down to a key->tensor mapping."""
+    obj = loaded
+    for _ in range(4):
+        if isinstance(obj, Mapping) and obj and all(
+            isinstance(v, torch.Tensor) for v in obj.values()
+        ):
+            return obj
+        if isinstance(obj, Mapping):
+            for wrapper_key in ("model", "state_dict", "module"):
+                if wrapper_key in obj and isinstance(obj[wrapper_key], Mapping):
+                    obj = obj[wrapper_key]
+                    break
+            else:
+                break
+        else:
+            break
+    if isinstance(obj, Mapping) and obj:
+        return obj
+    raise TypeError(
+        f"Could not extract a state dict from the checkpoint (got {type(loaded)!r})."
+    )
+
+
+def export_sft_checkpoint_dir_for_eval(
+    checkpoint_dir: str | pathlib.Path,
+    output_dir: str | pathlib.Path,
+    *,
+    config_json: Mapping[str, Any],
+    norm_stats_dir: str | pathlib.Path | None = None,
+    norm_stats: Mapping[str, Any] | None = None,
+    weights_subpath: str = "actor/model_state_dict/full_weights.pt",
+) -> pathlib.Path:
+    """Export a saved RLinf SFT checkpoint *directory* into the eval format.
+
+    Loads the consolidated full weights from ``{checkpoint_dir}/{weights_subpath}``
+    — the RLinf FSDP save layout, e.g.
+    ``checkpoints/global_step_<N>/actor/model_state_dict/full_weights.pt`` — then
+    writes the Phase-1 eval directory via :func:`export_sft_checkpoint_for_eval`.
+
+    Args:
+        checkpoint_dir: A saved checkpoint directory (the ``global_step_<N>`` dir,
+            its ``actor`` subdir, or a dir directly containing ``full_weights.pt``).
+        output_dir: Destination eval-format directory.
+        config_json / norm_stats_dir / norm_stats: As in
+            :func:`export_sft_checkpoint_for_eval`.
+        weights_subpath: Relative path to the consolidated weights file.
+    """
+    checkpoint_dir = pathlib.Path(checkpoint_dir)
+    candidates = [
+        checkpoint_dir / weights_subpath,
+        checkpoint_dir / "model_state_dict" / "full_weights.pt",
+        checkpoint_dir / "full_weights.pt",
+    ]
+    weights_path = next((c for c in candidates if c.is_file()), None)
+    if weights_path is None:
+        raise FileNotFoundError(
+            f"No full_weights.pt found under {checkpoint_dir} "
+            f"(looked at {[str(c) for c in candidates]})."
+        )
+    loaded = torch.load(str(weights_path), map_location="cpu", weights_only=False)
+    state_dict = _as_state_dict(loaded)
+    logger.info("Loaded SFT checkpoint weights from %s", weights_path)
+    return export_sft_checkpoint_for_eval(
+        state_dict,
+        output_dir,
+        config_json=config_json,
+        norm_stats_dir=norm_stats_dir,
+        norm_stats=norm_stats,
+    )
