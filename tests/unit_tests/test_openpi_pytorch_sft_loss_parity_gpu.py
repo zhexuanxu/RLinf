@@ -121,7 +121,11 @@ def _rlinf_per_batch_losses(out):
             },
         }
     )
-    model = get_model(model_cfg).to("cuda")
+    # The training factory keeps fp32 master weights; FSDP MixedPrecision casts to
+    # bf16 for compute in production. There is no FSDP wrapper here, so cast the
+    # model to bf16 to reproduce the production bf16 forward (and the model's
+    # bf16 embed_dtype) for this same-batch forward-parity check.
+    model = get_model(model_cfg).to("cuda").to(torch.bfloat16)
     model.train()
     inner = model.model
 

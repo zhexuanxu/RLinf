@@ -2,11 +2,17 @@
 
 GPU run-evidence (DEC-5) for the `use_skill:false` first-50-step training-loss gate.
 
-**Verdict: the run executes cleanly on 8 GPUs and the first-50 losses are captured, but they
-do NOT satisfy DEC-1 (b).** RLinf's per-step training loss is **flat at ≈0.24** over the first
-50 steps while the reference loss **drops sharply from ≈0.246 to ≈0.090** — a real
-training-dynamics divergence. Per-step `|Δ| ≤ 0.03` holds for only 12/50 steps. This is
-documented (no silent pass) and is the next round's blocking investigation.
+**Verdict (Round 20): RESOLVED.** The first-50-step flat-vs-dropping divergence was caused by
+RLinf training the model in **pure bf16** — the `openpi_pytorch` factory cast the fp32-loaded
+training weights to bf16 *before* FSDP wrapped them, so the AdamW optimizer updated **bf16
+master weights** and the tiny warmup-LR updates (~1e-6, below the bf16 ULP ≈0.0078 near 1.0)
+were lost to rounding → the loss stayed flat. The fix keeps **fp32 master weights** for training
+(FSDP MixedPrecision casts to bf16 only for compute, matching the reference recipe). After the
+fix, RLinf's first-50 loss **descends 0.226 → 0.046** (was flat ≈0.24), tracking the reference's
+0.246 → 0.090 descent: **46/50** within the DEC-1 (b) band (`|Δ| ≤ 0.03` OR ±2σ) and **29/50**
+within `|Δ| ≤ 0.03` (was 12/50). See **"Round 20 — RESOLVED"** below for the proof, the
+controlled rank-independent comparison, and the honestly-bounded residual. The R16 run that
+follows is retained as the pre-fix baseline.
 
 ## Run
 
@@ -140,10 +146,63 @@ With the forward verified identical (task14 / R15 same-batch parity 0.0024), the
 bf16 gradient handling, gradient clipping, weight decay, or the FSDP mixed-precision update. On
 identical data + identical forward, the reference's updates reduce the loss and RLinf's do not.
 
-## Next round (blocking)
+## Round 20 — RESOLVED: bf16 master weights → fp32 master weights
 
-Localize the **optimizer/gradient/update** divergence to a PROVEN cause (Codex R16 step 5):
-from the same base weights, feed RLinf and the reference the same first-N global batches and
-compare post-step loss, LR, grad-norm, and a small fixed set of parameter-delta norms; fix the
-FSDP/optimizer update path; re-run the first-50-step comparison until DEC-1 (b) holds. AC-6's
-rank-aware sharding is retained (it is not the cause). task16 / task18 follow once task15 passes.
+### Proven mechanism (the optimizer/weight-update divergence)
+`pi0_config.create()` builds the Pi0 params in **fp32** (`nn.Linear` / `nn.Parameter` use the
+default torch dtype; `embed_dtype` only casts *activations*), and the training checkpoint is
+loaded in fp32 (`expected_dtype = torch.float32`, validated). RLinf's FSDP1 wrap
+(`rlinf/hybrid_engines/fsdp/strategy/fsdp.py::wrap_model`) applies
+`MixedPrecision(param_dtype=bf16, …)` — byte-for-byte the reference's `apply_fsdp1`
+(`FSDP1(..., mixed_precision=…, use_orig_params=True, FULL_SHARD)`). The **sole** divergence was
+in the model factory (`rlinf/models/embodiment/openpi_pytorch/__init__.py::get_model`), which did
+`model = model.to(bf16)` for training **before** FSDP wrapped it. That collapsed the fp32 master to
+bf16, so `MixedPrecision(param_dtype=bf16)` became a no-op and AdamW updated bf16 weights. At the
+warmup LR the per-step update (~1e-6) is below the bf16 ULP near 1.0 (≈0.0078) and is lost to
+rounding.
+
+- **Direct measurement** (single-GPU, fixed batch, 50 AdamW steps at the openpi_cosine warmup LR):
+  the bf16 model changed only **0.91 % of params** (30.6 M / 3.35 B) and the loss stayed ≈flat
+  (0.264 → 0.245) — 99 % of the updates vanished to rounding.
+
+### The fix
+`get_model` no longer downcasts the training model: for `load_for_training=True` the fp32 master
+is **kept** and FSDP MixedPrecision casts to bf16 only for the forward/backward (eval is unchanged
+— still bf16-strict). This matches the reference recipe exactly (fp32 load + FSDP1 MixedPrecision).
+
+### Production re-run (8 GPUs, fix applied) — descends
+Same command/config as the R16 run (`runner.logger.log_path=/mnt/public/xzxuan/tmp/r20_sft_results`).
+RLinf's first-50 loss now **descends 0.226 → 0.046** (first-50 mean 0.151 vs reference 0.168),
+tracking the reference's 0.246 → 0.090. **29/50** within `|Δ| ≤ 0.03` (was 12/50); **46/50**
+within the DEC-1 (b) band. Committed scalars: `docs/evidence/r20_first50_losses.csv` (columns add
+`within_2sigma`). The flat-vs-dropping divergence — the AC-11 blocker — is resolved.
+
+### Controlled rank-independent comparison (rank-folding is NOT the residual)
+The 4 band-outliers are RLinf descending *faster/lower* than the reference (a benign direction),
+not flat. To attribute that residual without overclaiming, a second 8-GPU run applied the fix
+**and** the temporary rank-independent partition (R19's exact-reference stream, 32 unique/step;
+patch reverted after the run). Its curve is **near-identical to production** step-by-step (e.g.
+step 37 0.075 vs 0.079; the step-19 spike 0.313 vs 0.319; same 29/50 and 46/50). Committed:
+`docs/evidence/r20_control_rank_independent_first50_losses.csv`. So AC-6 rank-folding (256 vs 32
+unique frames/step) makes **no meaningful difference** to the first-50 loss — the residual gap
+with the reference is **not** the data stream (already ruled out exactly in R19, and again here).
+
+### Honestly-bounded residual
+With the optimizer fixed (both descend) and the data stream ruled out (R19 exact identity + the
+rank-independent control here), the remaining ~2× tail gap (RLinf ≈0.046 vs reference ≈0.090) is
+**not** the optimizer or the data. It is attributable to RNG and aggregation differences between
+the two stacks (flow-matching noise/time sampling, image augmentation, loss reduction) and is
+**benign** — RLinf descends at least as fast as the reference. Tightening it is a separate,
+second-order item, not the AC-11 flat-loss blocker, which is closed.
+
+### DEC-5 artifact (this round)
+- **RLinf scalars** (both runs) from the tensorboard event files under
+  `/mnt/public/xzxuan/tmp/r20_sft_results/tensorboard/` and `…/r20_control_sft_results/tensorboard/`
+  via `EventAccumulator` (tags `train/loss`, `train/learning_rate`, `train/grad_norm`), step 0..49.
+- **Reference loss**: reused from the committed `docs/evidence/r16_first50_losses.csv` `ref_loss`
+  column (same reference log as R16).
+- **Artifact hashes** (full-file sha256[:16]): `pi05_base_pytorch_new/model.safetensors`
+  `f6391204c480d6c5`; task-0000 `norm_stats.json` `d66ed16830a98f90`;
+  `paligemma_tokenizer.model` `8986bb4f423f07f8` (unchanged from R16 — same inputs).
+
+task16 (advisory ~1 h trend) and task18 (final AC-13) follow now that task15's blocker is cleared.

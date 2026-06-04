@@ -30,8 +30,10 @@ import pathlib
 import pytest
 import torch
 
-from rlinf.models.embodiment.openpi_pytorch.utils.old_to_new import old_to_new_state_dict
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+from rlinf.models.embodiment.openpi_pytorch.utils.old_to_new import (
+    old_to_new_state_dict,
+)
 
 _SIGLIP_OLD = "paligemma_with_expert.paligemma.model.vision_tower.vision_model."
 _OLD_CKPT = pathlib.Path(
@@ -68,7 +70,9 @@ def test_convert_old_to_new_writes_model_and_copies_norm_stats(tmp_path):
     input_norm_stats = input_dir / "norm_stats.json"
     # The four-parameter interface copies the input norm stats verbatim over the
     # output path, replacing any stale file already there.
-    output_norm_stats = output_dir / "physical-intelligence" / "behavior" / "norm_stats.json"
+    output_norm_stats = (
+        output_dir / "physical-intelligence" / "behavior" / "norm_stats.json"
+    )
     output_norm_stats.parent.mkdir(parents=True)
 
     safetensors.torch.save_file(
@@ -127,9 +131,9 @@ def test_training_build_accepts_fp32_new_format_and_eval_rejects(tmp_path):
         pcd=False,
     )
     state_dict = cfg.create().state_dict()
-    assert {tensor.dtype for tensor in state_dict.values() if tensor.is_floating_point()} == {
-        torch.float32
-    }
+    assert {
+        tensor.dtype for tensor in state_dict.values() if tensor.is_floating_point()
+    } == {torch.float32}
 
     safetensors.torch.save_file(state_dict, str(tmp_path / "model.safetensors"))
     (tmp_path / "config.json").write_text(
@@ -161,7 +165,11 @@ def test_training_build_accepts_fp32_new_format_and_eval_rejects(tmp_path):
     )
     model = get_model(train_cfg)
     assert model.processor is None
-    assert {param.dtype for param in model.parameters()} == {torch.bfloat16}
+    # Training keeps fp32 master weights (NOT downcast to bf16): FSDP MixedPrecision
+    # casts params to the bf16 compute dtype for the forward/backward while the
+    # optimizer updates the retained fp32 master, so tiny warmup-LR AdamW updates are
+    # not lost to bf16 rounding (the first-50-step flat-loss divergence).
+    assert {param.dtype for param in model.parameters()} == {torch.float32}
     assert model.model.llm.gradient_checkpointing is True
     assert model.model.img.encoder.gradient_checkpointing is True
 

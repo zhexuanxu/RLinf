@@ -121,7 +121,9 @@ def get_model(cfg, torch_dtype=None):
     ``openpi.assets_dir`` + ``openpi.asset_id`` (the same canonical task-0000 stats
     the SFT data loader resolves). Training builds set ``load_for_training=True``
     (or ``openpi.load_for_training=True``), load fp32 new-format weights strictly,
-    then cast to bf16 for SFT (norm stats are left to the data loader).
+    and keep them in fp32 as the FSDP master (norm stats are left to the data
+    loader); compute precision is governed by FSDP MixedPrecision, not by a cast
+    here.
     """
     import safetensors.torch
     from omegaconf import OmegaConf
@@ -256,10 +258,21 @@ def get_model(cfg, torch_dtype=None):
         _state_dict_metadata_digest(state_dict),
         norm_stats_digest,
     )
-    target_dtype = torch_dtype if torch_dtype is not None else torch.bfloat16
-    model = model.to(target_dtype)
     if load_for_training:
+        # Keep fp32 master weights for training. The checkpoint is loaded in fp32
+        # (expected_dtype above) and is deliberately NOT downcast here: FSDP
+        # MixedPrecision (fsdp_config.mixed_precision.param_dtype, e.g. bf16) casts
+        # params to the compute dtype for the forward/backward while the optimizer
+        # updates the retained fp32 master. Casting the model to bf16 here would
+        # collapse that master to bf16, so the tiny warmup-LR AdamW updates (~1e-6,
+        # below the bf16 ULP near 1.0) would be lost to rounding and the training
+        # loss would not descend (the first-50-step flat-loss divergence). This
+        # matches the reference recipe (fp32 load + FSDP1 MixedPrecision); compute
+        # precision stays governed by mixed_precision.param_dtype.
         model.gradient_checkpointing_enable()
+    else:
+        target_dtype = torch_dtype if torch_dtype is not None else torch.bfloat16
+        model = model.to(target_dtype)
 
     action_chunk = int(_select("num_action_chunks", pi0_config.action_horizon))
     action_env_dim = int(_select("action_dim", 23))
