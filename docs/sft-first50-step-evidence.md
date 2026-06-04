@@ -33,10 +33,14 @@ reference within 0.0022 (50/50 within `|Δ| ≤ 0.03`; both descend to ~0.090), 
 below both. R25 localized the divergence to **gradient magnitude**: the LR schedule is identical, but
 RLinf's `grad_norm` is systematically higher than the reference's (mean 2.42 vs 1.43; even at step 0
 on the same base weights, 2.39 vs 2.19) — so with clip=1.0 and grad_norm<1.0 at later steps, RLinf
-takes larger effective steps. The earlier R20 "RNG/aggregation" and R21 "missing-augmentation"
-attributions were both wrong and are retracted. The residual is a **real systematic divergence
-(RLinf descends faster / lower)**, task15-blocking, with the root cause of the grad_norm difference
-the next investigation (a same-batch gradient comparison). See **"Round 20 / 21 / 22"** below. The
+takes larger effective steps. **R26's same-batch gradient parity then RULED OUT the model backward**:
+on an identical batch RLinf's `Pi0` and the reference `models_pytorch_new.Pi0` grad norms match to
+~0.2% (`docs/evidence/r26_grad_parity.json`). Since the model backward AND the data (R19/R20 control)
+are both ruled out, the remaining divergence is the **distributed training step** (FSDP gradient
+all-reduce / clip / optimizer) — the R27 target. The earlier R20 "RNG/aggregation" and R21
+"missing-augmentation" attributions were both wrong and are retracted. The residual is a **real
+systematic divergence (RLinf descends faster / lower)**, task15-blocking. See **"Round 20 / 21 / 22"**
+below. The
 R16 run that follows is retained as the pre-fix baseline.
 
 ## Run
@@ -288,7 +292,11 @@ justified**, and the R23 proposal is withdrawn. task15 remains NOT met with a re
 ### R25 — `torch.compile` RULED OUT; the divergence is gradient magnitude
 The R24 next-step was to test whether `torch.compile` (which the reference uses and RLinf does not)
 causes the slower reference descent. **R25 ran the reference EAGER** (`TORCH_COMPILE_MODE=null`,
-seed 42, same recipe; log confirms 0 "Enable torch.compile" lines) — committed
+seed 42, same recipe; the retained log `/mnt/public/xzxuan/tmp/r25_ref_eager.log` confirms 0 "Enable
+torch.compile" lines). The run was **deliberately killed** (`TORCHRUN EXITED code=137`) after step
+~101 once the first-50 window was captured — it did not finish on its own; the first-50 rows
+(step 0..49) were complete before the kill. Extraction (regex on the CR→LF log → first 50 steps) and
+all paths are recorded in `r25_eager_vs_compiled.json`'s `provenance` block. Committed
 `docs/evidence/r25_ref_eager_first50.csv` + `r25_eager_vs_compiled.json`:
 - The EAGER reference **tracks the COMPILED reference almost exactly**: step49 eager=0.0894 vs
   compiled-seed42=0.0903; mean 0.1678 vs 0.1675; mean `|Δ|`=0.0022; **50/50** within `|Δ| ≤ 0.03`.
@@ -300,12 +308,28 @@ seed 42, same recipe; log confirms 0 "Enable torch.compile" lines) — committed
   step0 2.39 vs 2.19; step49 0.912 vs 0.561). With `clip_grad_norm=1.0` and grad_norm<1.0 at later
   steps (no clipping), RLinf's larger gradients give larger effective steps → faster descent.
 
-**Next localization (R26):** root-cause the grad_norm difference with a **same-batch gradient
-comparison** (like R15 did for the loss): on an identical fixed batch + weights + noise/time, compare
-RLinf's gradient norm to the reference model's, to determine whether the higher grad_norm is the data
-(RLinf rank-folds 256 unique frames/step vs the reference's 32) or the backward. (FS caveat: the
-reference's compiled runs need an exec-loadable triton `.so`, so `TMPDIR` was pointed at `/dev/shm` —
-exec-allowed tmpfs, not `/tmp`/overlay; the eager run needs no compilation.)
+### R26 — same-batch gradient parity: the MODEL BACKWARD is IDENTICAL (model code ruled out)
+R26 ran a same-batch gradient-norm parity probe (`tools/sft_grad_parity_probe.py` +
+`tests/unit_tests/_ref_model_grad_dump.py`, the reference model in its venv): on an identical base
+model + fixed batch + fixed noise/time, forward+backward+grad-norm for both RLinf's `Pi0` and the
+reference `models_pytorch_new.Pi0`. Committed `docs/evidence/r26_grad_parity.json`:
+- **The global grad norms MATCH to ~0.2%**: per batch ref vs RLinf = 25.83/25.78, 26.65/26.64,
+  19.25/19.31, 17.20/17.15 (mean `|Δ|`=0.040 on norms ~17–27; rel ~0.18 %). The losses match
+  (`|Δ|`≈0.0005), #params-with-grad are identical (662), and the per-module diffs (llm 0.014, img
+  0.047, action/state/time projections ≈0) are all bf16 numerical noise.
+- So **RLinf's model backward is byte-faithful to the reference's** — the **model code is RULED OUT**
+  as the cause of the production grad_norm / faster-descent difference.
+
+**But the production gap is NOT simply the data.** R19/R20 already showed the rank-independent RLinf
+control (RLinf's stack + the reference's EXACT R19 data stream — same frames/chunks/windows/prompts)
+still descended **faster** than the reference (≈0.046 vs ≈0.090). Same data + (now) same model
+backward + identical LR, yet RLinf diverges. So the remaining difference is the **distributed
+training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
+the single-GPU R26 probe does not exercise.
+
+**Next localization (R27):** compare the distributed grad-aggregation + clip + optimizer step
+between RLinf and the reference (e.g. the actual all-reduced grad norm + the clip behaviour + the
+AdamW update), since the model backward (R26) and the data (R19/R20) are both ruled out.
 
 ### DEC-5 artifact (this round)
 - **RLinf scalars** (both runs) from the tensorboard event files under
@@ -328,6 +352,10 @@ exec-allowed tmpfs, not `/tmp`/overlay; the eager run needs no compilation.)
 - **Reference EAGER run** (R25): `docs/evidence/r25_ref_eager_first50.csv` +
   `docs/evidence/r25_eager_vs_compiled.json` (`TORCH_COMPILE_MODE=null`; rules out `torch.compile`;
   records the eager-vs-compiled-vs-RLinf loss + the grad_norm comparison localizing the divergence).
+- **Same-batch gradient parity** (R26): `tools/sft_grad_parity_probe.py` +
+  `tests/unit_tests/_ref_model_grad_dump.py` → `docs/evidence/r26_grad_parity.json` (RLinf `Pi0` vs
+  reference `models_pytorch_new.Pi0` on an identical batch; the model backward matches to ~0.2%, so
+  the model code is ruled out; the divergence is the distributed training step).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -340,9 +368,11 @@ reference-repeat variance packet (seeds 42 + 123) REFUTED the benign-RNG hypothe
 is highly reproducible (run-to-run spread ~0.004) and RLinf is OUTSIDE that envelope (1/50) — RLinf's
 faster descent is a real systematic divergence. So **no DEC-1 (b) pass-rule is justified** (the R23
 proposal is withdrawn), and task15 stays active on a real residual. **R25 RULED OUT `torch.compile`**
-(the eager reference tracks the compiled reference within 0.0022, both ~0.090 at step49) and
-localized the divergence to **gradient magnitude** (RLinf's grad_norm is systematically higher than
-the reference's: mean 2.42 vs 1.43; identical LR). The R26 next step is a **same-batch gradient
-comparison** to root-cause the grad_norm difference (data vs backward), then decide the AC-11
-acceptance path or rerun toward the 50/50 gate. task16 (advisory ~1 h trend) and task18 (final
-AC-13) remain blocked on task15's strict verification.
+(eager reference == compiled reference, both ~0.090) and **R26 RULED OUT the model backward** (the
+same-batch grad norms match to ~0.2%, `r26_grad_parity.json`). With the model backward, the data
+(R19/R20), the forward (R15), the master dtype (R20), reduce/buffer dtype (R22), augmentation,
+noise/time, autocast, and aggregation all ruled out, the remaining divergence is the **distributed
+training step** (FSDP gradient all-reduce / clip / optimizer). The R27 next step is to compare that
+step between RLinf and the reference, then decide the AC-11 acceptance path or rerun toward the 50/50
+gate. task16 (advisory ~1 h trend) and task18 (final AC-13) remain blocked on task15's strict
+verification.

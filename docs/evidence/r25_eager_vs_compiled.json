@@ -1,6 +1,16 @@
 {
   "purpose": "R25 reference EAGER run (TORCH_COMPILE_MODE=null) to test whether torch.compile causes the reference's slower first-50 descent vs RLinf.",
   "command": "TMPDIR=/dev/shm/r25_tmp DIST_METHOD=fsdp1 USE_AUTOCAST=0 USE_PREFETCH=0 USE_CONSISTENT=0 TORCH_COMPILE_MODE=null torchrun --standalone --nproc_per_node=8 scripts/train_pytorch_new.py pi05_b1k-task0000_sft_pytorch_mixed --exp_name=r25_ref_eager --seed=42 --num_train_steps=200 --save_interval=100000 --log_interval=1 --checkpoint_base_dir=/mnt/public/xzxuan/tmp/r25_ref --no-wandb_enabled --overwrite",
+  "provenance": {
+    "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+    "venv": "/mnt/public/xzxuan/repos/openpi-comet/.venv (python 3.11.14)",
+    "log_path": "/mnt/public/xzxuan/tmp/r25_ref_eager.log",
+    "step_lines_path": "/mnt/public/xzxuan/tmp/r25_eager_steplines.txt (tr '\\r'->'\\n' of the log)",
+    "extraction_method": "regex on the CR->LF-translated log: 'Step (\\d+): grad_norm=([0-9.eE+-]+), learning_rate=([0-9.eE+-]+), loss=([0-9.eE+-]+)', first 50 steps -> docs/evidence/r25_ref_eager_first50.csv",
+    "checkpoint_output_dir": "/mnt/public/xzxuan/tmp/r25_ref (no checkpoints saved: save_interval=100000, num_train_steps=200, killed at step ~101)",
+    "torchrun_exit_code": 137,
+    "exit_note": "the run was deliberately KILLED (SIGKILL, code 137) after step ~101 once the first-50 window was captured -- it did NOT finish on its own. The first-50 rows (step 0..49) were fully logged before the kill; only the first 50 are used."
+  },
   "eager_confirmed": "log has 0 'Enable torch.compile' lines",
   "hashes_sha256_16": {
     "model.safetensors": "f6391204c480d6c5",

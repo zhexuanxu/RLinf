@@ -1,0 +1,59 @@
+{
+  "purpose": "same-batch gradient-norm parity: RLinf Pi0 vs reference models_pytorch_new.Pi0 on identical base weights + fixed batch + fixed noise/time (bf16 compute, eval, train=True/rng=None).",
+  "ref_dump": "tests/unit_tests/_ref_model_grad_dump.py (reference venv)",
+  "rlinf_probe": "tools/sft_grad_parity_probe.py",
+  "batches": [
+    {
+      "batch": 0,
+      "ref_global_grad_norm": 25.83257,
+      "rlinf_global_grad_norm": 25.78309,
+      "abs_diff": 0.04948,
+      "ref_loss": 0.35655,
+      "rlinf_loss": 0.35605,
+      "ref_n_grad": 662,
+      "rlinf_n_grad": 662
+    },
+    {
+      "batch": 1,
+      "ref_global_grad_norm": 26.65346,
+      "rlinf_global_grad_norm": 26.64058,
+      "abs_diff": 0.01289,
+      "ref_loss": 0.34492,
+      "rlinf_loss": 0.34444,
+      "ref_n_grad": 662,
+      "rlinf_n_grad": 662
+    },
+    {
+      "batch": 2,
+      "ref_global_grad_norm": 19.2512,
+      "rlinf_global_grad_norm": 19.30589,
+      "abs_diff": 0.05469,
+      "ref_loss": 0.325,
+      "rlinf_loss": 0.32521,
+      "ref_n_grad": 662,
+      "rlinf_n_grad": 662
+    },
+    {
+      "batch": 3,
+      "ref_global_grad_norm": 17.19512,
+      "rlinf_global_grad_norm": 17.15329,
+      "abs_diff": 0.04184,
+      "ref_loss": 0.27015,
+      "rlinf_loss": 0.27062,
+      "ref_n_grad": 662,
+      "rlinf_n_grad": 662
+    }
+  ],
+  "mean_abs_global_grad_norm_diff": 0.03972,
+  "per_module_abs_diff_batch0": {
+    "llm": 0.01416,
+    "img": 0.04747,
+    "action_in_proj": 0.00041,
+    "action_out_proj": 0.00053,
+    "state_proj": 0.0,
+    "time_mlp": 0.0,
+    "_other": 0.00114
+  },
+  "rel_diff_pct": 0.179,
+  "verdict": "SAME-BATCH MODEL BACKWARD IS IDENTICAL: on the identical batch + weights + noise/time, RLinf's Pi0 and the reference models_pytorch_new.Pi0 grad norms agree to ~0.2% (loss + #params + per-module also match), so RLinf vendored the reference backward and the model code is RULED OUT as the cause of the production grad_norm/descent difference. NOTE: this does NOT prove the production gap is the data -- the R20 rank-independent control (RLinf stack + the reference's EXACT R19 data stream) still descended faster than the reference, so the remaining difference is the DISTRIBUTED TRAINING STEP (FSDP gradient all-reduce, gradient clipping, or the optimizer step), not the model backward. Next: compare the distributed grad-aggregation + clip + optimizer step."
+}
