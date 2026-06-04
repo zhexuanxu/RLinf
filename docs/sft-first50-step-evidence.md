@@ -82,7 +82,7 @@ step20 0.239|0.167|0.072; step30 0.236|0.133|0.103; step40 0.257|0.111|0.146; st
   rounds (task12 audit, task14 fixed-batch parity, task13 LR-logging fix). step-0 agreement
   (0.229 vs 0.246) reconfirms the forward.
 
-## Round 17–18 — matched-topology stream comparison; data-stream RULED OUT (from committed artifacts)
+## Round 17–19 — matched-topology + exact per-sample stream comparison; data-stream RULED OUT
 
 ### Observed facts (committed under `docs/evidence/`)
 **RLinf single-process stream is contiguous** (R17 observation): the RLinf loader streams long
@@ -106,15 +106,32 @@ the distributed rank into the partition (`partition_chunk_indices` / `global_wor
 unique frames/step; the reference does not (`range(worker_id, n, num_workers)`, seed `+
 worker_id`) → 32 unique frames/step.
 
+### Exact per-sample stream identity (R19) — rank-independent RLinf == reference
+Coverage equality (256 vs 32) is weaker than stream identity, so R19 added the EXACT per-sample
+comparison. `tools/sft_stream_identity_probe.py` (RLinf) and `tests/unit_tests/_ref_stream_dump.py`
+(reference) dump, for the first 50 global steps, every accepted sample's full identity via the
+REAL helpers (`_select_streaming_chunk`, `_get_query_indices`, `_get_fine_grained_task`):
+`episode_index, frame_index, chunk tuple, action_query_start/end, action_is_pad, prompt`.
+
+- `docs/evidence/r19_identity_comparison.md` + `r19_{rlinf,ref}_identity_hashes.json`: the
+  per-worker sha256 over the full first-50-step identity stream is **identical for all 8 workers**
+  between RLinf-made-rank-independent and the reference (e.g. worker 0 `270aec08ec65` on both).
+  So RLinf with the rank-independent partition emits the EXACT same frames, keyframe chunks,
+  action query windows, and prompts as the reference loader — not merely the same coverage count.
+- Production RLinf (rank-folding) differs (256 vs 32 unique/step; per-`(rank0,worker0)` sha256
+  differs from the reference); `r19_rlinf_perworker_identity.csv` / `r19_ref_perworker_identity.csv`
+  are the human-auditable per-sample samples.
+
 ### The data-stream difference is NOT causal (auditable rerun)
 `docs/evidence/r17_rank_independent_rerun.md` (the exact source override + command + output path)
 and `docs/evidence/r17_rank_independent_first50_losses.csv` record an 8-GPU rerun with RLinf's
-partition made rank-independent — i.e. identical to the reference's (per-step coverage 32, see
-above). The first-50 loss stayed **flat** (mean 0.234, step0 0.226 → step49 0.210, **12/50**
-within `|Δ| ≤ 0.03` — unchanged from the production R16 run). So making RLinf's data stream match
-the reference's does **not** fix the flat-vs-dropping loss. The patch was reverted (no committed
-`rlinf/` source change). **Conclusion (supported by the committed artifacts): the data-stream
-partition is RULED OUT as the cause.** AC-6's rank-aware sharding is retained.
+partition made rank-independent — i.e. emitting the EXACT reference stream identity (above). The
+first-50 loss stayed **flat** (mean 0.234, step0 0.226 → step49 0.210, **12/50** within
+`|Δ| ≤ 0.03` — unchanged from the production R16 run). So feeding RLinf the reference's exact data
+stream (frames, action windows, prompts) does **not** fix the flat-vs-dropping loss. The patch was
+reverted (no committed `rlinf/` source change). **Conclusion (supported by the committed
+exact-identity artifacts): the data stream is RULED OUT as the cause.** AC-6's rank-aware sharding
+is retained.
 
 ### Narrowed cause (next round)
 With the forward verified identical (task14 / R15 same-batch parity 0.0024), the recipe aligned
