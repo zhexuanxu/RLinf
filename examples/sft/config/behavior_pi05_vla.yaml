@@ -31,10 +31,19 @@ runner:
 data:
   train_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
   # BEHAVIOR task-0000. `use_skill: false` trains on the main-task text;
-  # `true` trains on the per-frame skill text (the end-to-end plumbing for
-  # `true` lands with the skill-text path).
+  # `true` trains on the per-frame REFERENCE skill text selected by the window
+  # logic from `task_subtasks` below (mirrors the `pi05_b1k-task0000_sft_local_skill`
+  # TrainConfig). The dataset's collapsed orchestrators are NOT a valid label source.
   tasks: ["turning_on_radio"]
   use_skill: false
+  # Reference per-task skill labels (same as env/behavior_skill_library.yaml). When
+  # `use_skill: true`, the builder maps task_subtasks[<task>] -> {0: label0, ...}.
+  task_subtasks:
+    turning_on_radio:
+      - "move to radio"
+      - "pick up radio from coffee table"
+      - "press radio"
+      - "place radio on coffee table"
 
 algorithm:
   adv_type: gae

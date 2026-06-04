@@ -814,9 +814,9 @@ class BehaviorSftDataset(LeRobotDataset):
         self.skill_list = skill_list
         self.skill_labels = skill_labels
         # When `use_skill` is set, the training prompt is the per-frame SKILL text
-        # (resolved by the window logic) instead of the main-task text; if no
-        # explicit `skill_labels` were supplied they are derived from the level-1
-        # ("skill") orchestrators below, once the metadata is loaded.
+        # (resolved by the window logic) instead of the main-task text; explicit
+        # `skill_labels` are required in that case (the production builder sources
+        # them from config), otherwise the constructor raises below.
         self.use_skill = use_skill
         # Skill-mode windowing, aligned with the JAX openpi-comet semantics:
         # `enable_gap` absorbs a true gap into both adjacent skills (so the gap
@@ -933,10 +933,16 @@ class BehaviorSftDataset(LeRobotDataset):
 
         self.prepare_task(fine_grained_level)
 
-        # Skill mode: derive skill labels from the level-1 orchestrators when the
-        # caller asked for `use_skill` but supplied none, then build the windows.
+        # Skill mode requires explicit REFERENCE skill_labels (sourced from config by
+        # the builder). Deriving them from this dataset's orchestrators is unsafe —
+        # the real 2025-challenge-demos collapses every orchestrator level to the full
+        # task text, so derived labels would equal the task prompt — hence fail loudly.
         if self.use_skill and self.skill_labels is None:
-            self.skill_labels = self._derive_skill_labels()
+            raise ValueError(
+                "BehaviorSftDataset(use_skill=True) requires explicit skill_labels "
+                "(the reference per-task subtask labels); none were supplied. The "
+                "production builder sources them from data.task_subtasks."
+            )
         if self.skill_labels is not None:
             self._build_skill_boundaries()
 
@@ -1008,35 +1014,6 @@ class BehaviorSftDataset(LeRobotDataset):
                 eff_e[i] = min(eff_e[i], valid_end)
             self.skill_start_frames[ep_id] = eff_s
             self.skill_end_frames[ep_id] = eff_e
-
-    def _derive_skill_labels(self) -> dict[int, str]:
-        """Derive skill-position -> skill text from the level-1 ("skill") orchestrators.
-
-        Each skill in ``annotation["skill_annotation"]`` (sorted by ``skill_idx``) is
-        mapped to the level-1 orchestrator task text covering its start frame, using
-        the same frame->sub-task bisect as the prompt lookups. Returns the labels of
-        the first episode that has both annotations and level-1 orchestrators (the
-        production single-task set has a consistent skill sequence). Used when
-        ``use_skill`` is requested but no explicit ``skill_labels`` were supplied.
-        """
-        for ep_id in self.episodes:
-            annotation = self.meta.annotations.get(ep_id)
-            orch = self.meta.orchestrators.get(ep_id)
-            if not annotation or not orch or 1 not in orch:
-                continue
-            level1 = orch[1]
-            end_frames = [entry["end_frame"] for entry in level1]
-            skills = sorted(
-                annotation["skill_annotation"], key=lambda s: s["skill_idx"]
-            )
-            labels: dict[int, str] = {}
-            for pos, skill in enumerate(skills):
-                start = skill["frame_duration"][0]
-                sub_idx = bisect.bisect_right(end_frames, start, hi=len(level1) - 1)
-                labels[pos] = level1[sub_idx]["task"]
-            if labels:
-                return labels
-        return {}
 
     def _is_gap_frame(self, ep_idx: int, frame_index: int) -> bool:
         """Return True if ``frame_index`` falls outside every effective window."""

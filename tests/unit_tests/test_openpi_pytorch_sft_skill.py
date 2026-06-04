@@ -120,31 +120,20 @@ def test_enable_gap_false_does_not_absorb_gaps():
 
 
 # --------------------------------------------------------------------------- #
-# AC-10/AC-12: use_skill plumbing — skill_labels derivation + prompt switch.
+# AC-10/AC-12: use_skill prompt switch (skill text comes from EXPLICIT reference
+# skill_labels, supplied by the builder from config — NOT derived from the
+# dataset's orchestrators, which collapse to the full task text on real data).
 # --------------------------------------------------------------------------- #
-# Level-1 ("skill") orchestrators provide the skill descriptions; level-0 is the
-# main task. _derive_skill_labels maps each skill (by start frame) to its level-1
-# task text via the same end-frame bisect the prompt lookups use.
-_ORCHESTRATORS = {
-    0: {
-        0: [{"task": "turn on the radio", "end_frame": 1000}],
-        1: [
-            {"task": "move to radio", "end_frame": 150},
-            {"task": "pick up radio", "end_frame": 400},
-            {"task": "press radio", "end_frame": 1000},
-        ],
-    }
-}
-
-
 class _MetaFull:
+    # Level-0 orchestrators give the fine-grained main-task text (used by
+    # _get_fine_grained_task); skill text comes from explicit skill_labels.
     annotations = {0: _ANNOTATION}
-    orchestrators = _ORCHESTRATORS
+    orchestrators = {0: {0: [{"task": "turn on the radio", "end_frame": 1000}]}}
     tasks = {0: "turn on the radio"}
     fps = 30
 
 
-def _make_full_dataset(use_skill, *, skill_labels=None):
+def _make_full_dataset(use_skill, *, skill_labels=_LABELS):
     ds = BehaviorSftDataset.__new__(BehaviorSftDataset)
     ds.enable_gap = True
     ds.allow_left = 100
@@ -156,8 +145,6 @@ def _make_full_dataset(use_skill, *, skill_labels=None):
     ds.task_sizes = {0: [1000]}  # level-0 cumulative end frames
     ds.use_skill = use_skill
     ds.skill_labels = skill_labels
-    if use_skill and ds.skill_labels is None:
-        ds.skill_labels = ds._derive_skill_labels()
     if ds.skill_labels is not None:
         ds._build_skill_boundaries()
     return ds
@@ -171,23 +158,13 @@ def _full_item(frame, fps=30):
     }
 
 
-def test_derive_skill_labels_from_orchestrators():
-    ds = _make_full_dataset(use_skill=True)
-    # Each skill (by start frame 10/200/500) maps to its level-1 orchestrator text.
-    assert ds.skill_labels == {
-        0: "move to radio",
-        1: "pick up radio",
-        2: "press radio",
-    }
-
-
 def test_set_prompt_uses_skill_text_when_use_skill_true():
     ds = _make_full_dataset(use_skill=True)
     item = _full_item(250)  # inside skill 1's effective window [110, 500)
     ds._set_prompt(item)
     # The main-task text is still set, but the PROMPT is the per-frame skill text.
     assert item["task"] == "turn on the radio"
-    assert item["prompt"] == "pick up radio"
+    assert item["prompt"] == _LABELS[1]  # "pick up radio"
     assert item["prompt"] != item["task"]
 
 

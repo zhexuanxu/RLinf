@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pytest
 import torch
@@ -24,6 +26,15 @@ from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import NormStats
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
     PaligemmaTokenizer,
 )
+
+# Reference per-frame skill labels for the turning_on_radio task-0000 local-skill
+# recipe (== examples/sft/config/env/behavior_skill_library.yaml).
+_REFERENCE_SUBTASKS = [
+    "move to radio",
+    "pick up radio from coffee table",
+    "press radio",
+    "place radio on coffee table",
+]
 
 
 def _norm_stats():
@@ -87,42 +98,6 @@ def test_behavior_sft_transform_and_collate_contract():
         assert observation.images[key].dtype == torch.float32
         assert tuple(observation.image_masks[key].shape) == (2,)
         assert observation.image_masks[key].dtype == torch.bool
-
-
-def test_skill_mode_yields_valid_skill_text_batch():
-    """use_skill:true is functional at the loader level: a frame carrying a skill
-    prompt (set by the dataset in skill mode) tokenizes to a well-formed
-    (Observation, actions) batch whose prompt is the SKILL text, distinct from the
-    main-task text (AC-12 + AC-10 prompt source)."""
-    from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
-        collate_behavior_sft_items,
-    )
-    from rlinf.data.datasets.behavior.behavior_sft_transform import (
-        BehaviorSftTransform,
-        transform_behavior_sft_item,
-    )
-
-    transform = BehaviorSftTransform(
-        norm_stats=_norm_stats(),
-        action_dim=32,
-        tokenizer=PaligemmaTokenizer(max_len=200),
-    )
-    # The dataset sets item["prompt"] to the skill text in skill mode; the transform
-    # prefers it over item["task"].
-    skill_frame = _raw_item()
-    skill_frame["prompt"] = "pick up radio"
-    task_item = transform_behavior_sft_item(_raw_item(), transform)
-    skill_item = transform_behavior_sft_item(skill_frame, transform)
-
-    observation, actions = collate_behavior_sft_items([skill_item, skill_item])
-    assert isinstance(observation, Observation)
-    assert tuple(actions.shape) == (2, 32, 32)
-    assert tuple(observation.tokenized_prompt.shape) == (2, 200)
-    # The skill prompt tokenizes differently from the main-task prompt.
-    assert not np.array_equal(
-        np.asarray(skill_item["tokenized_prompt"]),
-        np.asarray(task_item["tokenized_prompt"]),
-    )
 
 
 def test_behavior_sft_transform_rejects_missing_required_field():
@@ -241,15 +216,110 @@ def test_fsdp_vla_worker_use_skill_true_propagates(monkeypatch):
 
     worker = _openpi_pytorch_sft_worker(
         {"assets_dir": "/data/assets", "asset_id": "behavior-1k/2025-challenge-demos"},
-        data={"use_skill": True, "tasks": ["turning_on_radio"]},
+        data={
+            "use_skill": True,
+            "tasks": ["turning_on_radio"],
+            "task_subtasks": {"turning_on_radio": _REFERENCE_SUBTASKS},
+        },
     )
     worker.build_dataloader("/data/behavior")
     assert calls["use_skill"] is True
-    # Reference skill recipe (pi05_b1k-task0000_sft_local_skill).
+    # The skill labels are the REFERENCE subtask list from config, NOT derived.
+    assert calls["skill_labels"] == dict(enumerate(_REFERENCE_SUBTASKS))
+    # Fixed reference skill recipe (pi05_b1k-task0000_sft_local_skill).
     assert calls["enable_gap"] is True
     assert calls["allow_left"] == 100
     assert calls["allow_right"] == 100
     assert calls["tasks"] == ["turning_on_radio"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # use_skill:true but NO configured subtask labels -> raise (no orchestrator
+        # fallback to task text).
+        {"use_skill": True, "tasks": ["turning_on_radio"]},
+        {
+            "use_skill": True,
+            "tasks": ["turning_on_radio"],
+            "task_subtasks": {"some_other_task": _REFERENCE_SUBTASKS},
+        },
+        # use_skill:true with more than one task is unsupported (task-0000 recipe).
+        {
+            "use_skill": True,
+            "tasks": ["turning_on_radio", "extra_task"],
+            "task_subtasks": {"turning_on_radio": _REFERENCE_SUBTASKS},
+        },
+    ],
+)
+def test_sft_builder_use_skill_requires_reference_labels(data):
+    """use_skill:true without configured reference labels (or with >1 task) raises
+    loudly instead of silently deriving task-text labels (AC-10/AC-12)."""
+    worker = _openpi_pytorch_sft_worker(
+        {"assets_dir": "/data/assets", "asset_id": "behavior-1k/2025-challenge-demos"},
+        data=data,
+    )
+    with pytest.raises(ValueError, match="use_skill"):
+        worker.build_dataloader("/data/behavior")
+
+
+# Real BEHAVIOR dataset + canonical task-0000 norm stats for the integrated AC-12 gate.
+_DATA_ROOT = pathlib.Path("/mnt/public/xzxuan/data/2025-challenge-demos")
+_ASSETS_DIR = pathlib.Path("/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets")
+_NORM_STATS = _ASSETS_DIR / "behavior-1k/2025-challenge-demos/norm_stats.json"
+
+
+@pytest.mark.skipif(
+    not (_DATA_ROOT.is_dir() and _NORM_STATS.is_file()),
+    reason="real BEHAVIOR dataset / canonical task-0000 norm stats not available",
+)
+def test_use_skill_true_real_loader_emits_reference_skill_prompt():
+    """Integrated AC-10/AC-12 gate on the REAL dataset: the production
+    `use_skill: true` builder selects a REFERENCE skill label (not the task text) as
+    the per-frame prompt, and a built batch is a valid (Observation, actions)."""
+    from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
+        build_behavior_sft_dataloader,
+    )
+
+    cfg = OmegaConf.create(
+        {
+            "actor": {
+                "model": {
+                    "model_type": "openpi_pytorch",
+                    "num_action_chunks": 32,
+                    "openpi": {
+                        "assets_dir": str(_ASSETS_DIR),
+                        "asset_id": "behavior-1k/2025-challenge-demos",
+                        "model_action_dim": 32,
+                        "max_token_len": 200,
+                    },
+                },
+                "micro_batch_size": 1,
+                "eval_batch_size": 1,
+                "seed": 42,
+            },
+            "data": {
+                "train_data_paths": str(_DATA_ROOT),
+                "num_workers": 0,
+                "tasks": ["turning_on_radio"],
+                "use_skill": True,
+                "task_subtasks": {"turning_on_radio": _REFERENCE_SUBTASKS},
+            },
+        }
+    )
+    loader, _ = build_behavior_sft_dataloader(cfg, 1, 0, str(_DATA_ROOT))
+
+    # A raw frame from the underlying dataset carries a reference SKILL label as the
+    # prompt (window-resolved), distinct from the full main-task text.
+    raw = loader.torch_loader.dataset._dataset[0]
+    assert raw["prompt"] in set(_REFERENCE_SUBTASKS)
+    assert raw["prompt"] != raw["task"]
+
+    # Iterating yields a well-formed (Observation, actions) batch.
+    observation, actions = next(iter(loader))
+    assert isinstance(observation, Observation)
+    assert tuple(actions.shape)[1:] == (32, 32)
+    assert tuple(observation.tokenized_prompt.shape)[1:] == (200,)
 
 
 @pytest.mark.parametrize(

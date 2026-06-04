@@ -235,8 +235,7 @@ def create_behavior_sft_data_loader(
         norm_stats: Pre-loaded norm stats; loaded from disk when ``None``.
         skill_labels: Optional per-skill labels enabling skill mode.
         use_skill: Train on per-frame SKILL text (window-resolved) instead of the
-            main-task text; derives skill labels from the orchestrators when
-            ``skill_labels`` is not supplied.
+            main-task text; requires explicit ``skill_labels`` (raises otherwise).
         enable_gap: Skill mode — absorb a true gap into both adjacent skills.
         allow_left: Skill mode — frames to extend a contiguous skill start left.
         allow_right: Skill mode — frames to extend a contiguous skill end right.
@@ -403,10 +402,33 @@ def build_behavior_sft_dataloader(
     eval_batch_size = cfg.actor.get("eval_batch_size", 1)
 
     # `cfg.data` is the production source of truth for the BEHAVIOR task set and the
-    # prompt-source flag. `use_skill: true` trains on the per-frame SKILL text via
-    # the window logic, honoring the reference skill recipe (enable_gap=True,
-    # allow_left=100, allow_right=100); `false` trains on the main-task text.
+    # prompt-source flag. `use_skill: true` trains on the per-frame REFERENCE skill
+    # text; `false` trains on the main-task text.
     use_skill = bool(data_cfg_select("use_skill", False))
+    tasks = list(data_cfg_select("tasks", ["turning_on_radio"]))
+    skill_labels, enable_gap, allow_left, allow_right = None, True, 0, 0
+    if use_skill:
+        # The skill labels are the REFERENCE per-task subtask list from config (NOT
+        # the dataset's collapsed orchestrators, which equal the full task text). The
+        # task-0000 local-skill recipe is exactly one task with a configured subtask
+        # list and the fixed window recipe below.
+        if len(tasks) != 1:
+            raise ValueError(
+                "openpi_pytorch BEHAVIOR SFT use_skill:true supports exactly one task "
+                f"(the task-0000 skill recipe); got data.tasks={tasks}."
+            )
+        subtask_labels = data_cfg_select("task_subtasks", {})
+        labels = subtask_labels.get(tasks[0]) if subtask_labels else None
+        if not labels:
+            raise ValueError(
+                "openpi_pytorch BEHAVIOR SFT use_skill:true requires the reference "
+                f"skill labels at data.task_subtasks.{tasks[0]}; none was configured."
+            )
+        skill_labels = {i: str(label) for i, label in enumerate(labels)}
+        # Fixed reference skill-window recipe (pi05_b1k-task0000_sft_local_skill);
+        # not read from cfg.data so the AC-10 reference recipe cannot drift.
+        enable_gap, allow_left, allow_right = True, 100, 100
+
     loader = create_behavior_sft_data_loader(
         behavior_dataset_root=str(
             data_select(
@@ -417,7 +439,7 @@ def build_behavior_sft_dataloader(
         assets_dir=str(assets_dir),
         asset_id=asset_id,
         repo_id=str(data_select("repo_id", _DEFAULT_REPO_ID)),
-        tasks=list(data_cfg_select("tasks", ["turning_on_radio"])),
+        tasks=tasks,
         modalities=list(data_select("modalities", ["rgb"])),
         action_dim=int(model_select("openpi.model_action_dim", 32)),
         action_horizon=int(model_select("num_action_chunks", 32)),
@@ -428,9 +450,10 @@ def build_behavior_sft_dataloader(
         tolerance_s=float(data_select("tolerance_s", 1e-4)),
         shuffle=not eval_dataset,
         seed=int(cfg.actor.get("seed", 42)),
+        skill_labels=skill_labels,
         use_skill=use_skill,
-        enable_gap=bool(data_cfg_select("enable_gap", True)),
-        allow_left=int(data_cfg_select("allow_left", 100)),
-        allow_right=int(data_cfg_select("allow_right", 100)),
+        enable_gap=enable_gap,
+        allow_left=allow_left,
+        allow_right=allow_right,
     )
     return loader, loader.data_config()
