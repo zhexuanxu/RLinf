@@ -41,17 +41,45 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import subprocess
 
 import numpy as np
 import torch
 
 _REF_VENV_PY = "/mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python"
+_REF_SRC = "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed"
 _REF_DUMP = "tests/unit_tests/_ref_model_grad_dump.py"
 _WEIGHTS = "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors"
 _IMG = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
 _MODULES = ("llm", "img", "action_in_proj", "action_out_proj", "state_proj", "time_mlp")
+
+
+def _file_digest(path):
+    if not os.path.exists(path):
+        return "missing"
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def _row(side, g, loss):
+    """Full per-batch audit row for one side (ref or rlinf)."""
+    return {
+        f"{side}_loss": round(loss, 6),
+        f"{side}_lr": "not_applicable_single_batch_probe",
+        f"{side}_global_grad_norm": round(g["global_grad_norm"], 5),
+        f"{side}_clipped_grad_norm": round(g["clipped_grad_norm"], 5),
+        f"{side}_was_clipped": g["was_clipped"],
+        f"{side}_n_params_with_grad": g["n_params_with_grad"],
+        f"{side}_per_module_grad_norm": {
+            k: round(v, 5) for k, v in g["per_module_grad_norm"].items()
+        },
+    }
 
 
 def _grad_metrics(model):
@@ -160,40 +188,63 @@ def main():
 
     rows = []
     for i, (r, m) in enumerate(zip(ref["grad"], rl)):
-        rows.append(
-            {
-                "batch": i,
-                "ref_global_grad_norm": round(r["global_grad_norm"], 5),
-                "rlinf_global_grad_norm": round(m["global_grad_norm"], 5),
-                "abs_diff": round(
-                    abs(r["global_grad_norm"] - m["global_grad_norm"]), 5
-                ),
-                "ref_loss": round(ref["loss"][i], 5),
-                "rlinf_loss": round(m["loss"], 5),
-                "ref_n_grad": r["n_params_with_grad"],
-                "rlinf_n_grad": m["n_params_with_grad"],
-            }
-        )
-    mean_gn_diff = float(np.mean([row["abs_diff"] for row in rows]))
-    # per-module mean abs diff (batch 0) for localization
-    pm = {
-        mod: round(
-            abs(
-                ref["grad"][0]["per_module_grad_norm"][mod]
-                - rl[0]["per_module_grad_norm"][mod]
+        row = {
+            "batch": i,
+            "abs_global_grad_norm_diff": round(
+                abs(r["global_grad_norm"] - m["global_grad_norm"]), 5
             ),
-            5,
-        )
-        for mod in list(_MODULES) + ["_other"]
+        }
+        row.update(_row("ref", r, ref["loss"][i]))
+        row.update(_row("rlinf", m, m["loss"]))
+        rows.append(row)
+    mean_gn_diff = float(np.mean([row["abs_global_grad_norm_diff"] for row in rows]))
+    # per-module abs diff across ALL batches (mean + max), for localization
+    pm_keys = list(_MODULES) + ["_other"]
+    pm_diffs = {
+        k: [
+            abs(
+                ref["grad"][i]["per_module_grad_norm"][k]
+                - rl[i]["per_module_grad_norm"][k]
+            )
+            for i in range(len(rl))
+        ]
+        for k in pm_keys
     }
+    per_module = {
+        k: {"mean": round(float(np.mean(v)), 5), "max": round(float(max(v)), 5)}
+        for k, v in pm_diffs.items()
+    }
+    meta = ref.get("meta", {})
     result = {
         "purpose": "same-batch gradient-norm parity: RLinf Pi0 vs reference models_pytorch_new.Pi0 "
         "on identical base weights + fixed batch + fixed noise/time (bf16 compute, eval, train=True/rng=None).",
+        "provenance": {
+            "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 "
+            "PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_grad_parity_probe.py "
+            "--out docs/evidence/r26_grad_parity.json",
+            "repo_cwd": os.getcwd(),
+            "reference_venv": _REF_VENV_PY,
+            "reference_src": _REF_SRC,
+            "reference_dumper": _REF_DUMP,
+            "ref_subprocess_returncode": proc.returncode,
+            "base_weights": _WEIGHTS,
+            "base_weights_sha256_16": _file_digest(_WEIGHTS),
+            "config": meta.get("config"),
+            "n_batches": meta.get("n_batches"),
+            "batch_size": meta.get("batch_size"),
+            "seed": meta.get("seed"),
+            "model": meta.get("model"),
+            "batches_npz": meta.get("batches_npz"),
+            "batches_npz_sha256_16": _file_digest(meta.get("batches_npz", "")),
+            "noise_time_npz": meta.get("noise_time_npz"),
+            "noise_time_npz_sha256_16": _file_digest(meta.get("noise_time_npz", "")),
+            "output": args.out,
+        },
         "ref_dump": "tests/unit_tests/_ref_model_grad_dump.py (reference venv)",
         "rlinf_probe": "tools/sft_grad_parity_probe.py",
         "batches": rows,
         "mean_abs_global_grad_norm_diff": round(mean_gn_diff, 5),
-        "per_module_abs_diff_batch0": pm,
+        "per_module_abs_diff_all_batches": per_module,
         "rel_diff_pct": round(
             100.0
             * mean_gn_diff

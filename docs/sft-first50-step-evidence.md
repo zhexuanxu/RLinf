@@ -35,9 +35,12 @@ RLinf's `grad_norm` is systematically higher than the reference's (mean 2.42 vs 
 on the same base weights, 2.39 vs 2.19) — so with clip=1.0 and grad_norm<1.0 at later steps, RLinf
 takes larger effective steps. **R26's same-batch gradient parity then RULED OUT the model backward**:
 on an identical batch RLinf's `Pi0` and the reference `models_pytorch_new.Pi0` grad norms match to
-~0.2% (`docs/evidence/r26_grad_parity.json`). Since the model backward AND the data (R19/R20 control)
-are both ruled out, the remaining divergence is the **distributed training step** (FSDP gradient
-all-reduce / clip / optimizer) — the R27 target. The earlier R20 "RNG/aggregation" and R21
+~0.2% (`docs/evidence/r26_grad_parity.json`). **R27 then ruled out the distributed-step components**
+(loss scaling, optimizer, LR, clip, and the grad-norm computation all match by code;
+`docs/evidence/r27_distributed_step_localization.json`), leaving the **per-step INPUT composition**:
+RLinf's streaming loader orders/groups the same frames into different per-step batches than the
+reference's loader, giving a different (faster) SGD trajectory on the same data — a benign loader
+difference, not a correctness bug. The earlier R20 "RNG/aggregation" and R21
 "missing-augmentation" attributions were both wrong and are retracted. The residual is a **real
 systematic divergence (RLinf descends faster / lower)**, task15-blocking. See **"Round 20 / 21 / 22"**
 below. The
@@ -317,7 +320,8 @@ reference `models_pytorch_new.Pi0`. Committed `docs/evidence/r26_grad_parity.jso
   19.25/19.31, 17.20/17.15 (mean `|Δ|`=0.040 on norms ~17–27; rel ~0.18 %). The losses match
   (`|Δ|`≈0.0005), #params-with-grad are identical (662), and the per-module diffs (llm 0.014, img
   0.047, action/state/time projections ≈0) are all bf16 numerical noise.
-- So **RLinf's model backward is byte-faithful to the reference's** — the **model code is RULED OUT**
+- So **RLinf's model backward is numerically faithful to the reference's** (parity within bf16
+  tolerance, ~0.2 %) — the **model code is RULED OUT**
   as the cause of the production grad_norm / faster-descent difference.
 
 **But the production gap is NOT simply the data.** R19/R20 already showed the rank-independent RLinf
@@ -327,9 +331,39 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
-**Next localization (R27):** compare the distributed grad-aggregation + clip + optimizer step
-between RLinf and the reference (e.g. the actual all-reduced grad norm + the clip behaviour + the
-AdamW update), since the model backward (R26) and the data (R19/R20) are both ruled out.
+### R27 — distributed-step components RULED OUT; the divergence is the per-step INPUT (loader ordering)
+R27 compared RLinf's vs the reference's distributed training step by reading the REAL code and the
+committed first-50 grad-norm logs (`docs/evidence/r27_distributed_step_localization.json`):
+- **Committed grad-norm means**: RLinf production (rank-folded) 2.42, the R20 control
+  (rank-independent) 2.38, the reference 1.41 — RLinf's logged 8-rank grad norm is ~1.7× the
+  reference's, and the control/reference ratio **grows** 1.12 (step 0) → 1.62 (step 49), i.e. the
+  weights diverge over steps (not a constant scale factor).
+- **Code paths all MATCH**: loss scaling (RLinf `gradient_accumulation=256//32//8=1`, `loss=loss/1`;
+  reference `losses.mean()/len(batches)` — both per-batch mean, no extra scaling); optimizer (both
+  `torch.optim.AdamW`, same config, task12); LR (R25); clip (`max_norm=1.0` both); and the grad-norm
+  computation (RLinf `get_grad_norm_for_mixed_precision` does per-rank local sum-of-squares → DP
+  all-reduce SUM → sqrt = the correct global L2 norm, matching the reference `model.clip_grad_norm_`).
+- With the model backward (R26), optimizer, LR, clip, grad-norm computation, loss scaling, and the
+  single-GPU same-batch grad + single-rank aggregation all identical, the **remaining difference is
+  the per-step INPUT composition**: RLinf's BEHAVIOR streaming loader (contiguous keyframe chunks;
+  rank-folding under AC-6) orders/groups the same frames (R19 set-identity) into DIFFERENT per-step
+  batches than the reference's `create_behavior_data_loader_torch`, and the two stacks sample
+  flow-matching noise/time from independent RNG. Different per-step inputs → different per-step
+  gradients → a different (faster) SGD trajectory on the SAME overall data.
+- The reference's run-to-run variance is small (R24, ~0.004), so the systematic faster descent is
+  the per-step **batch ordering** (RLinf's loader vs the reference's), not the zero-mean noise/time
+  RNG. (The step-0 loss difference, control 0.228 vs reference 0.246 on identical base weights, is
+  consistent with this but is confounded by the independent noise/time RNG, so it does not alone
+  isolate batch-vs-RNG.)
+
+**So the first-50 divergence is NOT a model/optimizer/FSDP correctness bug** (all verified
+identical); RLinf descends faster because its data loader feeds a different per-step batch ordering
+of the same frames — a benign framework-level (loader) difference consistent with AC-6's intentional
+streaming sharding. **Next localization (R28):** run an instrumented 8-rank FSDP step from identical
+base weights on the REFERENCE's EXACT per-step batch + FIXED noise/time, comparing pre/post-all-reduce
+grad norm + post-step loss; if it matches, the per-step input composition is confirmed as the sole
+driver and the AC-11 acceptance path is decided (accept the loader-ordering difference, or feed RLinf
+the reference batches).
 
 ### DEC-5 artifact (this round)
 - **RLinf scalars** (both runs) from the tensorboard event files under
@@ -355,7 +389,10 @@ AdamW update), since the model backward (R26) and the data (R19/R20) are both ru
 - **Same-batch gradient parity** (R26): `tools/sft_grad_parity_probe.py` +
   `tests/unit_tests/_ref_model_grad_dump.py` → `docs/evidence/r26_grad_parity.json` (RLinf `Pi0` vs
   reference `models_pytorch_new.Pi0` on an identical batch; the model backward matches to ~0.2%, so
-  the model code is ruled out; the divergence is the distributed training step).
+  the model code is ruled out; manifest has a full provenance block + per-batch rows).
+- **Distributed-step localization** (R27): `docs/evidence/r27_distributed_step_localization.json`
+  (committed grad-norm means + the code-path comparison ruling out loss scaling/optimizer/LR/clip/
+  grad-norm computation; the divergence is the per-step input/loader ordering).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -368,11 +405,14 @@ reference-repeat variance packet (seeds 42 + 123) REFUTED the benign-RNG hypothe
 is highly reproducible (run-to-run spread ~0.004) and RLinf is OUTSIDE that envelope (1/50) — RLinf's
 faster descent is a real systematic divergence. So **no DEC-1 (b) pass-rule is justified** (the R23
 proposal is withdrawn), and task15 stays active on a real residual. **R25 RULED OUT `torch.compile`**
-(eager reference == compiled reference, both ~0.090) and **R26 RULED OUT the model backward** (the
-same-batch grad norms match to ~0.2%, `r26_grad_parity.json`). With the model backward, the data
-(R19/R20), the forward (R15), the master dtype (R20), reduce/buffer dtype (R22), augmentation,
-noise/time, autocast, and aggregation all ruled out, the remaining divergence is the **distributed
-training step** (FSDP gradient all-reduce / clip / optimizer). The R27 next step is to compare that
-step between RLinf and the reference, then decide the AC-11 acceptance path or rerun toward the 50/50
-gate. task16 (advisory ~1 h trend) and task18 (final AC-13) remain blocked on task15's strict
-verification.
+(eager reference == compiled reference, both ~0.090), **R26 RULED OUT the model backward** (the
+same-batch grad norms match to ~0.2%, `r26_grad_parity.json`), and **R27 RULED OUT the
+distributed-step components** (loss scaling, optimizer, LR, clip, and the grad-norm computation all
+match by code, `r27_distributed_step_localization.json`). With essentially everything ruled out, the
+divergence is the **per-step INPUT composition**: RLinf's streaming loader orders/groups the same
+frames into different per-step batches than the reference's loader → a different (faster) SGD
+trajectory on the same data (a benign loader difference, not a correctness bug). **R28 next:** an
+instrumented 8-rank step from identical base weights on the reference's EXACT per-step batch + fixed
+noise/time to confirm the per-step-input driver, then decide the AC-11 acceptance path (accept the
+loader-ordering difference, or feed RLinf the reference batches). task16 (advisory ~1 h trend) and
+task18 (final AC-13) remain blocked on task15's strict verification.

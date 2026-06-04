@@ -174,7 +174,22 @@ def main(out_dir):
             noise=np.stack(noises),
             time=np.stack(times),
         )
-        result.update(ok=True, loss=losses, grad=grads)
+        result.update(
+            ok=True,
+            loss=losses,
+            grad=grads,
+            meta={
+                "config": _CONFIG,
+                "weights": _WEIGHTS,
+                "n_batches": _N_BATCHES,
+                "batch_size": _BATCH_SIZE,
+                "seed": _SEED,
+                "ref_src": _REF_SRC,
+                "model": "openpi.models_pytorch_new.pi0.Pi0 (bf16, eval, train=True/rng=None)",
+                "batches_npz": f"{out_dir}/ref_grad_batches.npz",
+                "noise_time_npz": f"{out_dir}/ref_grad_noise_time.npz",
+            },
+        )
         with open(f"{out_dir}/ref_grad_dump.json", "w", newline="\n") as f:
             json.dump(result, f, indent=2)
             f.write("\n")

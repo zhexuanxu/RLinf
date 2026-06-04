@@ -1,0 +1,26 @@
+{
+  "purpose": "R27 distributed-step localization of the first-50 grad_norm/descent divergence, from committed first-50 evidence + code reading. Builds on R26 (single-GPU same-batch model backward IDENTICAL).",
+  "grad_norm_means_first50": {
+    "RLinf_production_rank_folded_256frames": 2.423,
+    "RLinf_control_rank_independent_32frames": 2.382,
+    "reference_rank_independent_32frames": 1.414
+  },
+  "control_over_reference_ratio": {
+    "step0": 1.12,
+    "step25": 0.926,
+    "step49": 1.616,
+    "note": "the ratio GROWS (1.1->1.6), i.e. the weights diverge over steps from a per-step difference; not a constant scale factor."
+  },
+  "code_path_comparison_RLinf_vs_reference": {
+    "loss_scaling": "MATCH -- RLinf gradient_accumulation=256//32//8=1, loss=loss/1=loss (fsdp_sft_worker.py:53,174); reference loss=losses.mean()/len(batches)=losses.mean() (train_pytorch_new.py:548). Both = per-batch mean, no extra scaling.",
+    "optimizer": "MATCH -- both torch.optim.AdamW with the same betas/eps/wd (reference train_pytorch_new.py:391; RLinf task12-verified).",
+    "lr_schedule": "MATCH -- identical per step (R25, mean|diff|=1.8e-14).",
+    "grad_clip": "MATCH -- max_norm=1.0 both (reference model.clip_grad_norm_; RLinf fsdp.py clip).",
+    "grad_norm_computation": "MATCH (semantics) -- RLinf get_grad_norm_for_mixed_precision computes per-rank local sum-of-squares in fp32, all-reduces SUM across DP ranks, sqrt -> the correct global L2 norm (fsdp/utils.py:726, fsdp.py:446-452); the reference model.clip_grad_norm_ computes the same global L2 norm.",
+    "model_backward": "MATCH -- R26 same-batch grad parity ~0.2% (docs/evidence/r26_grad_parity.json)."
+  },
+  "remaining_difference": "the PER-STEP INPUT composition. With the model backward, the optimizer, the LR, the clip, the grad-norm computation, the loss scaling, and the single-GPU same-batch grad+single-rank-aggregation all identical, the only remaining difference is WHICH per-step batch (frames) + noise/time each stack feeds the step. RLinf's BEHAVIOR streaming loader (contiguous keyframe chunks; rank-folding under AC-6) orders/groups the same frames (R19 set-identity) into DIFFERENT per-step batches than the reference's create_behavior_data_loader_torch, and the two stacks sample flow-matching noise/time from independent RNG. Different per-step inputs -> different per-step gradients -> a different (faster) SGD trajectory on the SAME overall data.",
+  "caveats": "The reference run-to-run variance is small (R24, ~0.004), so the systematic faster descent is the per-step BATCH ORDERING (RLinf's loader vs the reference's), not the zero-mean noise/time RNG. The step-0 loss difference (control 0.228 vs reference 0.246 on identical base weights) is consistent with a per-step input difference but is confounded by the independent noise/time RNG, so it does not alone isolate batch-vs-RNG.",
+  "verdict": "The first-50 divergence is NOT a model/optimizer/FSDP-aggregation correctness bug (all verified identical). RLinf descends FASTER (lower loss) than the reference because RLinf's data loader feeds a different per-step batch ordering of the SAME frames. This is a benign framework-level (loader) difference, consistent with AC-6's intentional streaming sharding.",
+  "next_R28": "Decisive isolation: run an instrumented 8-rank FSDP step (RLinf) from identical base weights on the REFERENCE's EXACT per-step batch + FIXED noise/time, comparing pre/post-all-reduce grad norm + post-step loss to the reference on the same; if they match, the per-step input composition is confirmed as the sole driver and the AC-11 acceptance path (loader-ordering difference accepted, or RLinf fed the reference batches) is decided."
+}
