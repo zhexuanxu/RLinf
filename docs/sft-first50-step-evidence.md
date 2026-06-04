@@ -20,11 +20,16 @@ consecutive first-differences = **0.0094 → 2σ = 0.019 < 0.03**, so the band r
 and the count is **29/50** (`docs/evidence/r21_production_band_corrected.csv`). The R20 "46/50"
 used the WRONG band (±2σ of the reference's *absolute-value* series, ≈0.11, inflated by the
 descent) and is corrected here. **task15's hard gate is therefore not met** (30/50 in the latest
-run). The residual (RLinf descends to ≈0.048 vs the reference ≈0.090, at least as fast) has been
-localized against the ACTUAL reference path (`openpi.models_pytorch_new`): augmentation, noise/time
-distribution, autocast, and `reduce_dtype`/`buffer_dtype` are all **ruled out** (the
-`reduce_dtype`/`buffer_dtype` mismatch was a real recipe divergence, now FIXED, but not causal). The
-earlier R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
+run). The residual (RLinf descends to ≈0.048 vs the reference ≈0.090) has been localized against the
+ACTUAL reference path (`openpi.models_pytorch_new`): augmentation, noise/time distribution,
+autocast, and `reduce_dtype`/`buffer_dtype` are all **ruled out** (the `reduce_dtype`/`buffer_dtype`
+mismatch was a real recipe divergence, now FIXED, but not causal). **R24 ran the external reference
+trainer twice (seeds 42, 123)** and found the reference is highly reproducible (run-to-run spread
+~0.004; both reach ~0.09 at step 49) while RLinf sits OUTSIDE that envelope (1/50) — so RLinf's
+faster descent is a **real systematic divergence, NOT benign run-to-run noise** (the R23 RNG
+hypothesis is REFUTED; no pass-rule is justified). The one untested difference is `torch.compile`
+(reference uses it, RLinf is eager) — the next localization step. The earlier R20 "RNG/aggregation"
+and R21 "missing-augmentation" attributions were both wrong and are
 retracted. The residual is benign and not localized to a correctness bug; no DEC-1 (b) pass-rule is
 accepted yet. See **"Round 20 / 21 / 22"** below. The R16 run that follows is retained as the
 pre-fix baseline.
@@ -254,15 +259,34 @@ fast**. The **logged-loss aggregation is identical**, not a residual source: the
 `dist.all_reduce(loss_acc, op=ReduceOp.AVG)` and logs `loss_acc.item()`, i.e. the AVG-all-reduced
 loss across all ranks — exactly as RLinf's worker does (the earlier "reference logs rank-0's
 32-sample loss" claim was wrong and is retracted; this was already established in the task12/13
-recipe audit). The one remaining un-ruled-out difference is the **noise/time RNG realization**: both
-stacks sample flow-matching noise/time from the same `Beta(1.5,1.0)·0.999+0.001` distribution but
-draw **different** per-step realizations (the global torch RNG state diverges), so the per-step
-losses and gradients differ within run-to-run variation. This is a benign, non-correctness residual,
-NOT a localized training bug; no single cause is asserted as proven. Because exact per-step matching
-is infeasible (DEC-1 itself forbids bitwise equality as a gate; the period-8 contiguous-streaming
-spikes at steps 19/27/… and per-step RNG keep ~20/50 steps just outside `|Δ| ≤ 0.03`), a corrected
-quantified DEC-1 (b) pass-rule (supported facts only) is proposed — see the R23 summary's Goal
-Tracker Update Request.
+recipe audit).
+
+### R24 — reference-repeat variance packet: the residual is a REAL divergence, not RNG
+To test whether RLinf's faster descent is just run-to-run noise (the R23 "noise/time RNG
+realization" hypothesis), the **external reference trainer was run twice** for the first 50 steps
+(its own venv, the documented `pi05_b1k-task0000_sft_pytorch_mixed` recipe, fsdp1/USE_AUTOCAST=0/
+USE_CONSISTENT=0, 8 GPUs): seed 42 and seed 123. Committed:
+`docs/evidence/r24_ref_seed{42,123}_first50.csv` + `r24_reference_variance_packet.json` (commands,
+hashes, paths). Result:
+- The reference is **highly reproducible**: seed-42 step49=0.0903 (mean 0.1675) — exactly the
+  committed R16 log; seed-123 step49=0.0928 (mean 0.1685). Run-to-run spread across the three
+  reference curves is **~0.0042 mean, ~0.0024 at step 49** — a NARROW envelope.
+- RLinf-postfix (step49 ≈0.048, mean 0.151) lies **OUTSIDE** that envelope: only **1/50** steps
+  inside the per-step [min,max] reference band (12/50 with ±0.01 pad). The pre-fix flat curve is also
+  outside (2/50), in the opposite direction.
+
+So the **"noise/time RNG realization" hypothesis is REFUTED**: the reference's run-to-run variance
+is tiny, and RLinf descending to ≈0.048 vs the reference ≈0.090 is a **real, systematic divergence**
+(RLinf learns faster), NOT benign run-to-run noise. **No variance-backed DEC-1 (b) pass-rule is
+justified**, and the R23 proposal is withdrawn. task15 remains NOT met with a real residual.
+
+**Next localization (the one untested difference):** the reference run (committed log + both
+replays) uses **`torch.compile`** (`TORCH_COMPILE_MODE=default`), while RLinf trains eager. A
+reference EAGER run (`TORCH_COMPILE_MODE=null`) to test whether compile causes the slower descent
+was attempted this round but did not complete (torchrun launch instability after the repeated runs);
+it is the next step. (Caveat from `r24_reference_variance_packet.json`: compile's triton `.so`
+cannot load from the `/mnt/public` network FS, so `TMPDIR` was pointed at `/dev/shm` — exec-allowed
+tmpfs, not `/tmp`/overlay — for the runs.)
 
 ### DEC-5 artifact (this round)
 - **RLinf scalars** (both runs) from the tensorboard event files under
@@ -279,17 +303,23 @@ Tracker Update Request.
 - **Corrected band** (R21): `docs/evidence/r21_{production,control}_band_corrected.csv` (σ_step =
   0.0094; band `max(0.03, 2σ_step)` = 0.03; 29/50). **Augmentation comparison**:
   `docs/evidence/r21_augmentation_comparison.md`.
+- **Reference-repeat variance packet** (R24): `docs/evidence/r24_ref_seed{42,123}_first50.csv` +
+  `docs/evidence/r24_reference_variance_packet.json` (the external reference trainer run twice;
+  commands, venv, recipe, hashes, the run-to-run envelope, and the RLinf-outside-envelope verdict).
 
-### task15 status and next step (R23)
+### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
 NOT met** (30/50 in the latest run; 29/50 in the R20 run). The residual has been localized against
 the real `models_pytorch_new` reference path: augmentation, noise/time distribution, autocast, and
 `reduce_dtype`/`buffer_dtype` are all **ruled out** — the `reduce_dtype`/`buffer_dtype` mismatch was
 a genuine recipe divergence (now FIXED) but the re-run shows it is not the residual. There is **no
-augmentation alignment to do** (the reference and RLinf both train with `rng=None`). The remaining
-residual is benign (RLinf descends at least as fast) and consistent with the noise/time RNG
-realization (same distribution, different per-step draws), not a localized bug. The next step is the
-**accepted-pass-rule decision**: a corrected quantified DEC-1 (b) pass-rule (supported facts only;
-no aggregation claim) is proposed in the R23 summary; task15 stays active until that is accepted or
-the original 50/50 gate is met. task16 (advisory ~1 h trend) and task18 (final AC-13) remain blocked
-on task15's strict verification.
+augmentation alignment to do** (the reference and RLinf both train with `rng=None`). **R24's
+reference-repeat variance packet (seeds 42 + 123) REFUTED the benign-RNG hypothesis**: the reference
+is highly reproducible (run-to-run spread ~0.004) and RLinf is OUTSIDE that envelope (1/50) — RLinf's
+faster descent is a real systematic divergence. So **no DEC-1 (b) pass-rule is justified** (the R23
+proposal is withdrawn), and task15 stays active on a real residual. The next localization step is to
+test **`torch.compile`** (the reference uses it; RLinf is eager) as the cause of the slower reference
+descent — a reference EAGER run, attempted in R24 but not completed (torchrun launch instability). If
+compile is the cause, RLinf may already match the reference's eager behavior; otherwise localize
+further or rerun toward the original 50/50 gate. task16 (advisory ~1 h trend) and task18 (final
+AC-13) remain blocked on task15's strict verification.
