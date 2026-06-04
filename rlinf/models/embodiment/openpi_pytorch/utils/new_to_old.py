@@ -101,7 +101,10 @@ def new_to_old_state_dict(new_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
     for suf in (".weight", ".bias"):
         nk = "img.head" + suf
         if nk in new_sd:
-            old_sd["paligemma_with_expert.paligemma.model.multi_modal_projector.linear" + suf] = new_sd[nk]
+            old_sd[
+                "paligemma_with_expert.paligemma.model.multi_modal_projector.linear"
+                + suf
+            ] = new_sd[nk]
 
     # --- PaliGemma LLM ---
     _PALI_LLM = "paligemma_with_expert.paligemma.model.language_model."
@@ -124,7 +127,10 @@ def new_to_old_state_dict(new_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
         if nk in new_sd:
             old_sd[f"{op}mlp.down_proj.weight"] = new_sd[nk].T.contiguous()
 
-        for old_n, new_n in [("input_layernorm", "pre_attention_norms"), ("post_attention_layernorm", "pre_ffw_norms")]:
+        for old_n, new_n in [
+            ("input_layernorm", "pre_attention_norms"),
+            ("post_attention_layernorm", "pre_ffw_norms"),
+        ]:
             nk = f"{np}{new_n}.0.scale"
             if nk in new_sd:
                 old_sd[f"{op}{old_n}.weight"] = new_sd[nk]
@@ -154,7 +160,10 @@ def new_to_old_state_dict(new_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
         if nk in new_sd:
             old_sd[f"{op}mlp.down_proj.weight"] = new_sd[nk].T.contiguous()
 
-        for old_n, new_n in [("input_layernorm", "pre_attention_norms"), ("post_attention_layernorm", "pre_ffw_norms")]:
+        for old_n, new_n in [
+            ("input_layernorm", "pre_attention_norms"),
+            ("post_attention_layernorm", "pre_ffw_norms"),
+        ]:
             for suf in (".weight", ".bias"):
                 nk = f"{np}{new_n}.1.ada_modulation{suf}"
                 if nk in new_sd:
@@ -165,15 +174,31 @@ def new_to_old_state_dict(new_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
         if nk in new_sd:
             old_sd[_GEMMA_EXP + "norm.dense" + suf] = new_sd[nk]
 
-    # --- embedder -> lm_head ---
+    # --- embedder -> PaliGemma lm_head ---
+    # The new format carries a SINGLE shared embedder (PaliGemma's, width 2048),
+    # tied to ``paligemma.lm_head``. The old format ALSO has a separate 1024-wide
+    # action-expert head (``gemma_expert.lm_head``) that ``old_to_new`` drops and
+    # the new format does NOT carry, so it cannot be reconstructed here — emitting
+    # the 2048-wide embedder for it would be a malformed (wrong-shape) tensor. The
+    # reference-backed ``convert_trained_ckpt`` sources the correct 1024-wide head
+    # from a reference model; the four-parameter ``convert_new_to_old`` legitimately
+    # omits this one old-only tensor.
     if "llm.embedder.embedding.weight" in new_sd:
-        old_sd["paligemma_with_expert.paligemma.lm_head.weight"] = new_sd["llm.embedder.embedding.weight"]
-        old_sd["paligemma_with_expert.gemma_expert.lm_head.weight"] = new_sd["llm.embedder.embedding.weight"]
+        old_sd["paligemma_with_expert.paligemma.lm_head.weight"] = new_sd[
+            "llm.embedder.embedding.weight"
+        ]
 
     # --- Action head (pass through) ---
     for k in new_sd:
         if k.startswith(
-            ("action_in_proj", "action_out_proj", "time_mlp_", "state_proj", "action_time_mlp_", "pointnet.")
+            (
+                "action_in_proj",
+                "action_out_proj",
+                "time_mlp_",
+                "state_proj",
+                "action_time_mlp_",
+                "pointnet.",
+            )
         ):
             old_sd[k] = new_sd[k]
 
@@ -212,13 +237,17 @@ def convert_trained_ckpt(
     ref_safetensors = os.path.join(reference_model, "model.safetensors")
     ref_sd = safetensors.torch.load_file(ref_safetensors)
 
-    # Fix gemma_expert.lm_head.weight — the new model only has a single 2048-dim
-    # embedding (PaliGemma's), but the old format needs a separate 1024-dim one
-    # for the action expert. This weight is not trained, so copy from reference.
+    # Source gemma_expert.lm_head.weight — the new model only has a single 2048-dim
+    # embedding (PaliGemma's), but the old format needs a separate 1024-dim one for
+    # the action expert. ``new_to_old_state_dict`` does NOT emit it (it cannot be
+    # reconstructed from the new format), so copy the correct 1024-wide weight from
+    # the reference when it is absent or shape-mismatched. It is not trained.
     expert_lm_head_key = "paligemma_with_expert.gemma_expert.lm_head.weight"
-    if expert_lm_head_key in ref_sd and expert_lm_head_key in old_sd:
-        if old_sd[expert_lm_head_key].shape != ref_sd[expert_lm_head_key].shape:
-            old_sd[expert_lm_head_key] = ref_sd[expert_lm_head_key].clone()
+    if expert_lm_head_key in ref_sd and (
+        expert_lm_head_key not in old_sd
+        or old_sd[expert_lm_head_key].shape != ref_sd[expert_lm_head_key].shape
+    ):
+        old_sd[expert_lm_head_key] = ref_sd[expert_lm_head_key].clone()
 
     for k in old_sd:
         if old_sd[k].dtype != torch.bfloat16:
@@ -289,13 +318,24 @@ def convert_new_to_old(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-model", required=True, help="new checkpoint dir or model.safetensors")
-    parser.add_argument("--input-norm-stats", required=True, help="norm_stats.json to copy across")
-    parser.add_argument("--output-model", required=True, help="output (old-format) checkpoint dir")
-    parser.add_argument("--output-norm-stats", required=True, help="destination norm_stats.json path")
+    parser.add_argument(
+        "--input-model", required=True, help="new checkpoint dir or model.safetensors"
+    )
+    parser.add_argument(
+        "--input-norm-stats", required=True, help="norm_stats.json to copy across"
+    )
+    parser.add_argument(
+        "--output-model", required=True, help="output (old-format) checkpoint dir"
+    )
+    parser.add_argument(
+        "--output-norm-stats", required=True, help="destination norm_stats.json path"
+    )
     args = parser.parse_args()
     convert_new_to_old(
-        args.input_model, args.input_norm_stats, args.output_model, args.output_norm_stats
+        args.input_model,
+        args.input_norm_stats,
+        args.output_model,
+        args.output_norm_stats,
     )
     return 0
 

@@ -293,6 +293,202 @@ def _ref_key(path, key):
         return f.get_tensor(key)
 
 
+# Full structural parity uses the safetensors HEADER only (shapes + dtypes, no
+# tensor data) plus `meta` tensors, so the converter runs over the FULL key set
+# without loading the 7-13GB models. The converter ops (cat/stack/transpose/
+# chunk/unsqueeze) are all shape/dtype-deterministic and work on meta tensors.
+_ST_DTYPE = {
+    "BF16": torch.bfloat16,
+    "F16": torch.float16,
+    "F32": torch.float32,
+    "F64": torch.float64,
+    "I64": torch.int64,
+    "I32": torch.int32,
+    "I16": torch.int16,
+    "I8": torch.int8,
+    "U8": torch.uint8,
+    "BOOL": torch.bool,
+}
+
+
+def _safetensors_header(path):
+    """Return ``{key: (shape_tuple, torch_dtype)}`` from the safetensors header."""
+    import struct
+
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        header = json.loads(f.read(n))
+    header.pop("__metadata__", None)
+    return {k: (tuple(v["shape"]), _ST_DTYPE[v["dtype"]]) for k, v in header.items()}
+
+
+def _meta_state_dict(header):
+    return {
+        k: torch.empty(shape, dtype=dtype, device="meta")
+        for k, (shape, dtype) in header.items()
+    }
+
+
+def _struct_diff(produced, ref_header):
+    """Return (missing, extra, shape_mismatches) comparing produced vs a header."""
+    produced_keys, ref_keys = set(produced), set(ref_header)
+    missing = sorted(ref_keys - produced_keys)
+    extra = sorted(produced_keys - ref_keys)
+    shape_mismatches = [
+        (k, tuple(produced[k].shape), ref_header[k][0])
+        for k in sorted(produced_keys & ref_keys)
+        if tuple(produced[k].shape) != ref_header[k][0]
+    ]
+    return missing, extra, shape_mismatches
+
+
+# The one old-format tensor that the new format does not carry: old_to_new keeps
+# only PaliGemma's 2048-wide embedder and drops the 1024-wide action-expert head,
+# so new_to_old cannot reconstruct it (sourced from a reference by
+# convert_trained_ckpt instead). It is excluded from the new->old structural gate.
+_ACTION_EXPERT_LM_HEAD = "paligemma_with_expert.gemma_expert.lm_head.weight"
+
+
+def test_new_to_old_omits_unreconstructible_action_expert_lm_head():
+    """new->old must NOT emit a malformed gemma_expert.lm_head (AC-7 regression).
+
+    Feeding the single 2048-wide shared embedder must produce the correct 2048-wide
+    paligemma.lm_head and NO gemma_expert.lm_head (the old format's 1024-wide
+    action-expert head is not represented in the new format).
+    """
+    new_sd = {"llm.embedder.embedding.weight": torch.zeros(20, 8)}
+    old_sd = new_to_old_state_dict(new_sd)
+    assert _ACTION_EXPERT_LM_HEAD not in old_sd
+    pali = old_sd["paligemma_with_expert.paligemma.lm_head.weight"]
+    assert tuple(pali.shape) == (20, 8)
+    assert torch.equal(pali, new_sd["llm.embedder.embedding.weight"])
+
+
+@pytest.mark.skipif(
+    not (_OLD_REF.is_file() and _NEW_REF.is_file()),
+    reason="reference base models pi05_base_pytorch{,_new} not available",
+)
+def test_old_to_new_full_structural_parity_vs_reference():
+    """old->new produces EXACTLY the new reference key set, shapes, and the
+    dtype-preserving (bf16 source) policy — full key/shape/dtype gate (AC-7)."""
+    old_header = _safetensors_header(_OLD_REF)
+    new_header = _safetensors_header(_NEW_REF)
+    produced = old_to_new_state_dict(_meta_state_dict(old_header))
+
+    missing, extra, shape_mismatches = _struct_diff(produced, new_header)
+    assert not missing, f"old->new missing new keys: {missing[:10]}"
+    assert not extra, f"old->new produced unexpected keys: {extra[:10]}"
+    assert not shape_mismatches, f"old->new shape mismatches: {shape_mismatches[:10]}"
+    # The old reference is bf16 and the converter is dtype-preserving.
+    assert {t.dtype for t in produced.values()} == {torch.bfloat16}
+
+
+@pytest.mark.skipif(
+    not (_OLD_REF.is_file() and _NEW_REF.is_file()),
+    reason="reference base models pi05_base_pytorch{,_new} not available",
+)
+def test_new_to_old_full_structural_parity_vs_reference():
+    """new->old produces the old reference key set (minus the documented
+    action-expert lm-head), matching shapes, with no malformed key (AC-7)."""
+    old_header = _safetensors_header(_OLD_REF)
+    new_header = _safetensors_header(_NEW_REF)
+    produced = new_to_old_state_dict(_meta_state_dict(new_header))
+
+    # The action-expert head is intentionally not reconstructed; exclude it.
+    expected = {k: v for k, v in old_header.items() if k != _ACTION_EXPERT_LM_HEAD}
+    missing, extra, shape_mismatches = _struct_diff(produced, expected)
+    assert not missing, f"new->old missing old keys: {missing[:10]}"
+    assert not extra, f"new->old produced unexpected keys: {extra[:10]}"
+    assert not shape_mismatches, f"new->old shape mismatches: {shape_mismatches[:10]}"
+    # The previously-malformed key must be absent (not a 2048-wide duplicate).
+    assert _ACTION_EXPERT_LM_HEAD not in produced
+    # The new reference is fp32 and the converter is dtype-preserving.
+    assert {t.dtype for t in produced.values()} == {torch.float32}
+
+
+@pytest.mark.skipif(
+    not (_OLD_REF.is_file() and _NEW_REF.is_file()),
+    reason="reference base models pi05_base_pytorch{,_new} not available",
+)
+def test_reference_round_trip_is_structurally_faithful():
+    """Round-trip over the FULL reference key universe (meta tensors): new->old->new
+    reproduces every new key/shape; old->new->old reproduces every old key/shape
+    except the documented action-expert lm-head (AC-7 round-trip)."""
+    old_header = _safetensors_header(_OLD_REF)
+    new_header = _safetensors_header(_NEW_REF)
+
+    # new -> old -> new must reproduce the new key universe exactly.
+    new_again = old_to_new_state_dict(
+        new_to_old_state_dict(_meta_state_dict(new_header))
+    )
+    missing, extra, shape_mismatches = _struct_diff(new_again, new_header)
+    assert not (missing or extra or shape_mismatches), (
+        f"new->old->new drift: missing={missing[:5]} extra={extra[:5]} "
+        f"shape={shape_mismatches[:5]}"
+    )
+
+    # old -> new -> old reproduces the old key universe except the action-expert head.
+    old_again = new_to_old_state_dict(
+        old_to_new_state_dict(_meta_state_dict(old_header))
+    )
+    expected = {k: v for k, v in old_header.items() if k != _ACTION_EXPERT_LM_HEAD}
+    missing, extra, shape_mismatches = _struct_diff(old_again, expected)
+    assert not (missing or extra or shape_mismatches), (
+        f"old->new->old drift: missing={missing[:5]} extra={extra[:5]} "
+        f"shape={shape_mismatches[:5]}"
+    )
+
+
+@pytest.mark.skipif(
+    not _OLD_REF.is_file(),
+    reason="reference base model pi05_base_pytorch not available",
+)
+def test_convert_trained_ckpt_sources_action_expert_lm_head_from_reference(tmp_path):
+    """convert_trained_ckpt produces a COMPLETE valid old checkpoint: the 1024-wide
+    bf16 action-expert lm-head is sourced from the reference (AC-7 reference-backed
+    path), and the reference key/shape validation passes."""
+    import safetensors.torch
+
+    from rlinf.models.embodiment.openpi_pytorch.utils.new_to_old import (
+        convert_trained_ckpt,
+    )
+
+    # A tiny synthetic reference whose old key set is {paligemma.lm_head (2048),
+    # gemma_expert.lm_head (1024), one passthrough}, all bf16.
+    ref = {
+        "paligemma_with_expert.paligemma.lm_head.weight": torch.zeros(
+            20, 8, dtype=torch.bfloat16
+        ),
+        _ACTION_EXPERT_LM_HEAD: torch.arange(20 * 4, dtype=torch.bfloat16).reshape(
+            20, 4
+        ),
+        "action_in_proj.weight": torch.zeros(4, 8, dtype=torch.bfloat16),
+    }
+    ref_dir = tmp_path / "ref"
+    ref_dir.mkdir()
+    safetensors.torch.save_file(ref, str(ref_dir / "model.safetensors"))
+
+    # A new-format trained checkpoint that maps to {paligemma.lm_head, action_in_proj}
+    # but CANNOT produce the 1024-wide action-expert head.
+    new_ckpt = tmp_path / "trained.pt"
+    torch.save(
+        {
+            "_orig_mod.llm.embedder.embedding.weight": torch.ones(20, 8),
+            "_orig_mod.action_in_proj.weight": torch.ones(4, 8),
+        },
+        str(new_ckpt),
+    )
+    out_dir = tmp_path / "out"
+    convert_trained_ckpt(str(new_ckpt), str(out_dir), str(ref_dir))
+
+    produced = safetensors.torch.load_file(str(out_dir / "model.safetensors"))
+    assert set(produced) == set(ref)  # complete: matches reference key set
+    head = produced[_ACTION_EXPERT_LM_HEAD]
+    assert tuple(head.shape) == (20, 4) and head.dtype == torch.bfloat16
+    assert torch.equal(head, ref[_ACTION_EXPERT_LM_HEAD])  # sourced from reference
+    assert {t.dtype for t in produced.values()} == {torch.bfloat16}  # bf16-cast
+
+
 @pytest.mark.skipif(
     not (_OLD_REF.is_file() and _NEW_REF.is_file()),
     reason="reference base models pi05_base_pytorch{,_new} not available",
@@ -314,7 +510,9 @@ def test_old_to_new_matches_reference_representative_keys():
         _PALI_LLM + "layers.0.mlp.down_proj.weight",
     ]
     produced = old_to_new_state_dict(_load_keys(_OLD_REF, old_in))
-    # Transform-sensitive keys: compare values within the bf16 band.
+    # Transform-sensitive keys: compare values within the bf16 band. The converter
+    # is dtype-preserving, so the produced dtype matches the old (bf16) source even
+    # though the new reference is stored as fp32 (hence the float-cast comparison).
     for key in (
         "img.encoder.layers.0.attn.in_proj_weight",
         "img.encoder.layers.0.attn.in_proj_bias",
@@ -325,6 +523,9 @@ def test_old_to_new_matches_reference_representative_keys():
         ref = _ref_key(_NEW_REF, key)
         got = produced[key]
         assert got.shape == ref.shape, f"{key}: shape {got.shape} vs {ref.shape}"
+        assert got.dtype == torch.bfloat16, (
+            f"{key}: dtype {got.dtype} (expected bf16 source)"
+        )
         torch.testing.assert_close(
             got.float(),
             ref.float(),
@@ -350,6 +551,8 @@ def test_new_to_old_matches_reference_representative_keys():
         "llm.layers.0.mlps.0.w_linear",
     ]
     produced = new_to_old_state_dict(_load_keys(_NEW_REF, new_in))
+    # dtype-preserving: produced matches the new (fp32) source; the old reference is
+    # stored as bf16, hence the float-cast value comparison.
     for key in (
         _SIG_OLD + "encoder.layers.0.self_attn.q_proj.weight",
         _SIG_OLD + "encoder.layers.0.self_attn.v_proj.weight",
@@ -361,6 +564,9 @@ def test_new_to_old_matches_reference_representative_keys():
         ref = _ref_key(_OLD_REF, key)
         got = produced[key]
         assert got.shape == ref.shape, f"{key}: shape {got.shape} vs {ref.shape}"
+        assert got.dtype == torch.float32, (
+            f"{key}: dtype {got.dtype} (expected fp32 source)"
+        )
         torch.testing.assert_close(
             got.float(),
             ref.float(),
