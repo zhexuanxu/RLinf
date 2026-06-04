@@ -95,6 +95,35 @@ def test_composed_sft_model_snapshot():
     assert merged.openpi.asset_id == "behavior-1k/2025-challenge-demos"
 
 
+def test_composed_eval_model_snapshot():
+    """Eval template (shape) + experiment override (paths) compose as expected.
+
+    Mirrors the SFT snapshot for the eval side so template/path drift in the eval
+    composition is caught too (AC-9). ``model_path`` is an interpolation supplied
+    by the experiment config, so it is checked unresolved.
+    """
+    template = _load(_EMB_MODEL)
+    override = _load(_EMB_EXP).actor.model
+    merged = OmegaConf.merge(template, override)
+    raw = OmegaConf.to_container(merged, resolve=False)
+
+    # Shape fields come from the template; action dims / num_steps preserved.
+    assert merged.openpi.model_action_dim == 32
+    assert merged.openpi.paligemma_variant == "gemma_2b"
+    assert merged.openpi.action_expert_variant == "gemma_300m"
+    assert merged.num_action_chunks == 32
+    assert merged.action_dim == 23
+    assert merged.num_steps == 5
+    # Paths come from the experiment config; model_path is wired by interpolation.
+    assert raw["model_path"] == "${rollout.model.model_path}"
+    assert (
+        merged.openpi.assets_dir == "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets"
+    )
+    assert merged.openpi.asset_id == "behavior-1k/2025-challenge-demos"
+    # config_name is fully removed from the openpi_pytorch path (DEC-2).
+    assert "config_name" not in merged.openpi
+
+
 # --------------------------------------------------------------------------- #
 # AC-4 / AC-5: no in-package TrainConfig registry; config_name fully removed.
 # --------------------------------------------------------------------------- #
@@ -165,6 +194,25 @@ def test_norm_stats_resolver_rejects_divergent_and_missing(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="norm_stats.json"):
         resolve_norm_stats_dir(tmp_path / "missing", "id")
+
+
+def test_norm_stats_resolver_no_bare_fallback_when_asset_id_given(tmp_path):
+    """A requested asset_id must resolve EXACTLY {assets_dir}/{asset_id}; a bare
+    {assets_dir}/norm_stats.json must NOT be silently substituted (AC-8 negative).
+    """
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        resolve_norm_stats_dir,
+    )
+
+    assets_dir = tmp_path / "assets"
+    # Root stats exist, but the requested asset_id sub-directory does NOT.
+    _write_norm_stats(assets_dir, 7.0)
+    assert (assets_dir / "norm_stats.json").is_file()
+    with pytest.raises(FileNotFoundError, match="norm_stats.json"):
+        resolve_norm_stats_dir(assets_dir, "behavior-1k/2025-challenge-demos")
+
+    # With asset_id=None the bare-directory form is the intended resolution.
+    assert resolve_norm_stats_dir(assets_dir, None) == assets_dir
 
 
 # --------------------------------------------------------------------------- #

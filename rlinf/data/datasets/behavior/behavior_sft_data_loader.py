@@ -373,17 +373,22 @@ def build_behavior_sft_dataloader(cfg, world_size, rank, data_paths, eval_datase
     def data_select(key, default):
         return OmegaConf.select(openpi_data, key, default=default)
 
-    norm_stats_path = model_select("openpi.norm_stats_path", None)
-    assets_dir = (
-        norm_stats_path
-        or model_select("openpi.assets_dir", None)
-        or model_select("model_path", "")
-    )
-    asset_id = (
-        None
-        if norm_stats_path
-        else model_select("openpi.asset_id", "physical-intelligence/behavior")
-    )
+    # Norm stats are resolved STRICTLY from YAML assets_dir + asset_id — the same
+    # canonical task-0000 distribution the eval model factory resolves (AC-8).
+    # No checkpoint-relative (model_path) or norm_stats_path fallback: those could
+    # silently load non-task-0000 stats, so a missing field fails loudly here.
+    assets_dir = model_select("openpi.assets_dir", None)
+    if assets_dir is None:
+        raise ValueError(
+            "openpi_pytorch BEHAVIOR SFT requires actor.model.openpi.assets_dir "
+            "(the canonical task-0000 norm-stats assets directory); none was set."
+        )
+    asset_id = model_select("openpi.asset_id", None)
+    if asset_id is None:
+        raise ValueError(
+            "openpi_pytorch BEHAVIOR SFT requires actor.model.openpi.asset_id "
+            "(e.g. 'behavior-1k/2025-challenge-demos'); none was set."
+        )
 
     micro_batch_size = cfg.actor.micro_batch_size
     eval_batch_size = cfg.actor.get("eval_batch_size", 1)

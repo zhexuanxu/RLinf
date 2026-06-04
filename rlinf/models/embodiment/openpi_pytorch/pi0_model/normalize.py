@@ -69,21 +69,23 @@ def resolve_norm_stats_dir(
 ) -> pathlib.Path:
     """Return the directory holding ``norm_stats.json`` for ``(assets_dir, asset_id)``.
 
-    Mirrors the BEHAVIOR asset layout: stats live under
-    ``{assets_dir}/{asset_id}/norm_stats.json`` (e.g.
-    ``.../behavior-1k/2025-challenge-demos/norm_stats.json``); falls back to
-    ``{assets_dir}/norm_stats.json``. Raising here (rather than silently
-    returning wrong stats) is the shared resolution both the eval model factory
-    and the SFT data loader use, so they always resolve the same file.
+    Mirrors the BEHAVIOR asset layout: when ``asset_id`` is given, the stats live
+    at EXACTLY ``{assets_dir}/{asset_id}/norm_stats.json`` (e.g.
+    ``.../behavior-1k/2025-challenge-demos/norm_stats.json``). There is NO
+    fallback to a bare ``{assets_dir}/norm_stats.json`` when an ``asset_id`` was
+    requested — that bare form is only used for direct-directory callers that
+    pass ``asset_id=None``. A missing artifact raises rather than silently
+    returning a different (non-task-0000) stats file. This is the shared
+    resolution both the eval model factory and the SFT data loader use, so they
+    always resolve the same canonical file (AC-8).
     """
     base = pathlib.Path(assets_dir).expanduser()
-    candidates = [base / asset_id] if asset_id else []
-    candidates.append(base)
-    for directory in candidates:
-        if (directory / "norm_stats.json").is_file():
-            return directory
+    directory = base / asset_id if asset_id else base
+    if (directory / "norm_stats.json").is_file():
+        return directory
     raise FileNotFoundError(
-        f"BEHAVIOR norm_stats.json not found under {[str(c) for c in candidates]}."
+        f"BEHAVIOR norm_stats.json not found at {directory / 'norm_stats.json'} "
+        f"(assets_dir={str(base)!r}, asset_id={asset_id!r})."
     )
 
 

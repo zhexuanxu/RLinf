@@ -107,9 +107,30 @@ def test_behavior_sft_transform_rejects_missing_required_field():
         )
 
 
+def _openpi_pytorch_sft_worker(openpi_overrides, *, world_size=1, rank=0):
+    """An OPENPI_PYTORCH SFT worker whose actor.model.openpi block is overridable."""
+    from rlinf.workers.sft.fsdp_vla_sft_worker import FSDPVlaSftWorker
+
+    worker = FSDPVlaSftWorker.__new__(FSDPVlaSftWorker)
+    worker.cfg = OmegaConf.create(
+        {
+            "actor": {
+                "model": {"model_type": "openpi_pytorch", "openpi": openpi_overrides},
+                "micro_batch_size": 32,
+                "eval_batch_size": 4,
+            },
+            "data": {"train_data_paths": "/data/behavior", "num_workers": 0},
+        }
+    )
+    worker._world_size = world_size
+    worker._rank = rank
+    worker.micro_batch_size = 32
+    worker.eval_batch_size = 4
+    return worker
+
+
 def test_fsdp_vla_worker_dispatches_openpi_pytorch_dataloader(monkeypatch):
     from rlinf.data.datasets.behavior import behavior_sft_data_loader
-    from rlinf.workers.sft.fsdp_vla_sft_worker import FSDPVlaSftWorker
 
     calls = {}
 
@@ -128,28 +149,24 @@ def test_fsdp_vla_worker_dispatches_openpi_pytorch_dataloader(monkeypatch):
         behavior_sft_data_loader, "create_behavior_sft_data_loader", _fake_loader
     )
 
-    worker = FSDPVlaSftWorker.__new__(FSDPVlaSftWorker)
-    worker.cfg = OmegaConf.create(
+    # Norm stats are resolved STRICTLY from YAML assets_dir + asset_id (AC-8): the
+    # experiment config supplies the canonical task-0000 asset location, which must
+    # propagate verbatim to the loader (no model_path/norm_stats_path fallback).
+    worker = _openpi_pytorch_sft_worker(
         {
-            "actor": {
-                "model": {"model_type": "openpi_pytorch"},
-                "micro_batch_size": 32,
-                "eval_batch_size": 4,
-            },
-            "data": {"train_data_paths": "/tmp/behavior", "num_workers": 0},
-        }
+            "assets_dir": "/data/assets",
+            "asset_id": "behavior-1k/2025-challenge-demos",
+        },
+        world_size=8,
+        rank=3,
     )
-    worker._world_size = 8
-    worker._rank = 3
-    worker.micro_batch_size = 32
-    worker.eval_batch_size = 4
 
-    loader, data_config = worker.build_dataloader("/tmp/behavior")
+    loader, data_config = worker.build_dataloader("/data/behavior")
     assert isinstance(loader, _FakeLoader)
     assert data_config == {"dataset": "behavior_b1k_direct"}
-    assert calls["behavior_dataset_root"] == "/tmp/behavior"
-    assert calls["assets_dir"] == ""
-    assert calls["asset_id"] == "physical-intelligence/behavior"
+    assert calls["behavior_dataset_root"] == "/data/behavior"
+    assert calls["assets_dir"] == "/data/assets"
+    assert calls["asset_id"] == "behavior-1k/2025-challenge-demos"
     assert calls["repo_id"] == "behavior-1k/2025-challenge-demos"
     assert calls["tasks"] == ["turning_on_radio"]
     assert calls["modalities"] == ["rgb"]
@@ -159,3 +176,17 @@ def test_fsdp_vla_worker_dispatches_openpi_pytorch_dataloader(monkeypatch):
     assert calls["batch_size"] == 32
     assert calls["num_workers"] == 0
     assert calls["shuffle"] is True
+
+
+@pytest.mark.parametrize(
+    ("openpi_overrides", "missing"),
+    [
+        ({"asset_id": "behavior-1k/2025-challenge-demos"}, "assets_dir"),
+        ({"assets_dir": "/data/assets"}, "asset_id"),
+    ],
+)
+def test_sft_builder_requires_assets_dir_and_asset_id(openpi_overrides, missing):
+    """Missing openpi.assets_dir or openpi.asset_id fails loudly (no fallback)."""
+    worker = _openpi_pytorch_sft_worker(openpi_overrides)
+    with pytest.raises(ValueError, match=missing):
+        worker.build_dataloader("/data/behavior")
