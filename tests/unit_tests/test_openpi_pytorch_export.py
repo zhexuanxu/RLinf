@@ -96,6 +96,7 @@ def test_sft_checkpoint_exports_to_eval_format(tmp_path):
                 "paligemma_variant": "dummy",
                 "action_expert_variant": "dummy",
                 "assets_dir": str(out),
+                "asset_id": "physical-intelligence/behavior",
             },
         }
     )
@@ -164,6 +165,7 @@ def test_sft_checkpoint_dir_exports_from_real_layout(tmp_path):
                 "paligemma_variant": "dummy",
                 "action_expert_variant": "dummy",
                 "assets_dir": str(out),
+                "asset_id": "physical-intelligence/behavior",
             },
         }
     )

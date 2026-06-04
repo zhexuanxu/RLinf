@@ -189,7 +189,7 @@ def create_behavior_sft_data_loader(
     *,
     behavior_dataset_root: str,
     assets_dir: str,
-    asset_id: str | None = "physical-intelligence/behavior",
+    asset_id: str | None,
     repo_id: str = _DEFAULT_REPO_ID,
     tasks: list[str] | None = None,
     modalities: list[str] | None = None,

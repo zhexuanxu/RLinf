@@ -304,3 +304,60 @@ def test_get_model_eval_requires_assets_dir(tmp_path):
     )
     with pytest.raises(FileNotFoundError, match="assets_dir"):
         get_model(cfg)
+
+
+def test_get_model_eval_requires_asset_id(tmp_path):
+    """Eval must require YAML openpi.asset_id — no hard-coded default (AC-8).
+
+    Reproduces the Codex Round-4 finding: norm stats present at the OLD default
+    location `{assets_dir}/physical-intelligence/behavior/norm_stats.json` but
+    `openpi.asset_id` omitted must FAIL, not silently load those stats.
+    """
+    torch = pytest.importorskip("torch")
+    import safetensors.torch
+
+    from rlinf.models.embodiment.openpi_pytorch import get_model
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+
+    base = Pi0Config(
+        dtype="bfloat16",
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        pi05=True,
+        action_horizon=4,
+        action_dim=32,
+        pcd=False,
+    )
+    safetensors.torch.save_file(
+        base.create().to(torch.bfloat16).state_dict(),
+        str(tmp_path / "model.safetensors"),
+    )
+    # Stats DO exist at the formerly-defaulted asset path...
+    _write_norm_stats(tmp_path / "physical-intelligence" / "behavior", 0.0)
+    cfg = OmegaConf.create(
+        {
+            "model_path": str(tmp_path),
+            "precision": "bf16",
+            "num_action_chunks": 4,
+            "action_dim": 23,
+            "openpi": {
+                "model_action_dim": 32,
+                "paligemma_variant": "dummy",
+                "action_expert_variant": "dummy",
+                "assets_dir": str(tmp_path),
+                # ...but asset_id is intentionally omitted -> must raise.
+            },
+        }
+    )
+    with pytest.raises(FileNotFoundError, match="asset_id"):
+        get_model(cfg)
+
+
+def test_init_factory_has_no_hardcoded_asset_path():
+    """AC-9: the eval model factory hard-codes no BEHAVIOR asset path; the asset
+    location is sourced entirely from YAML openpi.assets_dir + openpi.asset_id."""
+    text = (_PACKAGE / "__init__.py").read_text(encoding="utf-8")
+    assert "physical-intelligence" not in text, (
+        "openpi_pytorch/__init__.py must not hard-code a BEHAVIOR asset path "
+        "(e.g. 'physical-intelligence/behavior'); resolve it from YAML asset_id."
+    )

@@ -164,6 +164,7 @@ def test_predict_action_batch_contract():
                 "paligemma_variant": "gemma_2b",
                 "action_expert_variant": "gemma_300m",
                 "assets_dir": str(_NEW_CKPT),
+                "asset_id": "physical-intelligence/behavior",
             },
         }
     )
