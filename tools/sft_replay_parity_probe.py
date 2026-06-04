@@ -29,13 +29,15 @@ a MEASURED same-input comparison:
    batches + noise/time.
 3. Compares the per-step loss trajectories.
 
-If the trajectories MATCH within tolerance, the model+optimizer+clip+LR stacks are
-identical on identical inputs (R26 proved the single-step backward matches; this
-extends it to the multi-step optimizer loop), so the production first-50 divergence
-is the per-step INPUT each loader/RNG feeds, NOT a stack bug -- the next step is to
-replay the reference's exact production batch/noise sequence through RLinf. If they
-DIFFER, a real multi-step stack mechanism is localized (compare per-step grad/clip/
-update to find where). Single-GPU; does NOT exercise 8-rank FSDP sharding (R29).
+If the trajectories MATCH within tolerance, this rules out ONLY the single-GPU
+model+optimizer+clip+LR replay loop as a standalone cause (R26 proved the single-step
+backward matches; this extends it to the multi-step optimizer loop). It does NOT prove
+the production mechanism: this probe is single-GPU at batch 8 and does NOT exercise the
+8-rank FSDP sharding/all-reduce, nor the production per-rank-32/global-256 recipe, nor
+the reference's exact production batch/noise sequence. The production first-50 divergence
+remains unresolved until (R29) the 8-rank FSDP same-input comparison and (R30) the exact
+production-sequence replay through RLinf are run. If the trajectories DIFFER, a real
+multi-step stack mechanism is localized (compare per-step grad/clip/update to find where).
 GPU-only; all output under ``/mnt/public/xzxuan/tmp`` (set TMPDIR).
 
 Usage:
@@ -175,12 +177,18 @@ def main():
     ap.add_argument("--out", default="/mnt/public/xzxuan/tmp/r28_replay_parity.json")
     args = ap.parse_args()
 
+    # Stale-output guard: delete any prior dump so a failed subprocess cannot feed
+    # stale tmp output into the comparison.
+    dump_path = f"{args.tmp}/ref_replay_dump.json"
+    if os.path.exists(dump_path):
+        os.remove(dump_path)
     print("Running the reference N-step replay (reference venv) ...", flush=True)
     proc = subprocess.run(
         [_REF_VENV_PY, _REF_DUMP, args.tmp], capture_output=True, text=True, timeout=3600
     )
     print(proc.stdout[-1500:], proc.stderr[-700:], flush=True)
-    with open(f"{args.tmp}/ref_replay_dump.json") as f:
+    assert proc.returncode == 0, f"reference subprocess returned {proc.returncode}"
+    with open(dump_path) as f:
         ref = json.load(f)
     assert ref.get("ok"), f"reference replay failed: {ref.get('err')}"
 

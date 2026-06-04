@@ -44,9 +44,13 @@ experiment** (`docs/evidence/r28_replay_parity.json`): RLinf's and the reference
 IDENTICAL 20 fixed batches + noise/time from identical base weights with the same fp32-master+bf16
 AdamW+clip+warmup-LR loop, produce the **same trajectory** (mean |Δloss|=0.0006, max 0.0025). So the
 single-GPU **model+optimizer+clip+LR stack is RULED OUT** (measured) — given truly identical inputs
-the stacks descend identically. The two **remaining** candidates are the per-step **INPUT** each
-loader/RNG feeds and the **8-rank FSDP sharding** (not exercised single-GPU); R29 tests both. The
-earlier R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
+the stacks descend identically. **R29 then ruled out the last untested piece, the 8-rank FSDP step**
+(`docs/evidence/r29_fsdp_consistency.json`): on an identical 32-frame batch RLinf's 8-rank FSDP
+all-reduced grad norm (21.174) matches its single-GPU grad norm (21.125) to **0.23 %**, so RLinf's
+FSDP sharding/all-reduce/clip is numerically correct → RLinf's full production stack equals the
+reference on identical inputs. The **one remaining** candidate is the per-step **INPUT** each
+loader/RNG feeds in production; R30 proves it by replaying the reference's exact production sequence
+through RLinf. The earlier R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
 retracted. The residual is a **real systematic divergence (RLinf descends faster / lower)**,
 task15-blocking. See **"Round 20 / 21 / 22"** below. The
 R16 run that follows is retained as the pre-fix baseline.
@@ -336,6 +340,36 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
+### R29 — 8-rank FSDP == single-GPU on the same batch: the FSDP distributed step is RULED OUT
+R29 exercises the one production-topology piece R28 did not — the 8-rank FSDP sharding/all-reduce
+(`docs/evidence/r29_fsdp_consistency.json`; `tools/sft_fsdp_consistency_probe.py` +
+`tools/_fsdp_grad_worker.py`). On the **IDENTICAL** fixed 32-frame global batch + fixed noise/time +
+base weights, RLinf's `Pi0` runs under (a) **single-GPU** (full batch) and (b) **8-rank FSDP1** with
+the production `MixedPrecision(param=bf16, reduce=fp32, buffer=fp32)` + `FULL_SHARD`, each rank fed its
+contiguous 4-frame shard. The global grad norm is the L2 norm from `clip_grad_norm_` (FSDP1's
+`model.clip_grad_norm_` on 8 ranks — the same call `train_pytorch_new.py:535` uses; `torch.nn.utils`
+on 1 rank).
+
+Result — they **MATCH**:
+- single-GPU global grad norm **21.125**, 8-rank FSDP **21.174** → **rel diff 0.23 %**;
+- losses 0.32414 vs 0.32589 (|Δ| = 0.0018). (All three subprocess return codes 0.)
+
+**So RLinf's 8-rank FSDP sharding / all-reduce / clip is numerically equivalent to the single-GPU
+path** — and since R26 (same-batch backward) and R28 (20-step same-input replay) already proved the
+single-GPU path equals the reference, **RLinf's full production stack (8-rank FSDP) is equivalent to
+the reference on identical inputs**. The **FSDP distributed step is RULED OUT** as the cause of the
+production first-50 divergence. (The 32-frame batch's grad norm ~21 differs from the production ~2.4
+only because of batch size — more frames lower the mean-gradient norm; this probe isolates the FSDP
+delta on a fixed batch, not the production magnitude.)
+
+**No overclaim:** single-GPU == reference is established (R26/R28); R29 isolates ONLY the FSDP delta.
+With the model backward, forward, optimizer, LR, clip, master/reduce dtype, `torch.compile`, the
+single-GPU multi-step loop, AND now the 8-rank FSDP step all ruled out, the **one remaining candidate
+is the per-step INPUT** each loader/RNG feeds in production. **R30 (decisive):** replay the
+reference's EXACT production first-N batch/noise/time sequence through RLinf and check it tracks the
+reference — the per-step-input proof — then decide the AC-11 path (accept the loader/RNG composition
+difference via a plan evolution, or feed RLinf the reference inputs) or rerun the 50/50 gate.
+
 ### R28 — MEASURED same-input N-step replay: the single-GPU stack is EQUIVALENT (model+optimizer+clip+LR ruled out)
 R28 replaces R27's inspection with the **measured same-input experiment** Codex required
 (`docs/evidence/r28_replay_parity.json`; `tools/sft_replay_parity_probe.py` +
@@ -431,6 +465,10 @@ until that run exists.
   reference run the IDENTICAL 20 batches + noise/time + base weights through the same fp32-master+bf16
   AdamW+clip+warmup-LR loop; the trajectories match mean |Δloss|=0.0006 → the single-GPU stack is
   ruled out; provenance block + per-step rows + artifact hashes).
+- **8-rank FSDP consistency** (R29): `tools/sft_fsdp_consistency_probe.py` + `tools/_fsdp_grad_worker.py`
+  → `docs/evidence/r29_fsdp_consistency.json` (RLinf `Pi0` single-GPU vs 8-rank FSDP1 production
+  MixedPrecision+FULL_SHARD on the same 32-frame batch; grad norms match 0.23% → the FSDP distributed
+  step is ruled out; provenance + per-side rows + hashes + torchrun return codes).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -452,9 +490,12 @@ the rank-independent control on the reference's exact stream still descended fas
 that MEASURED same-input comparison** (`r28_replay_parity.json`): on the IDENTICAL 20 batches +
 noise/time from identical base weights with the same fp32-master+bf16 AdamW+clip+warmup-LR loop, RLinf
 and the reference produce the **same trajectory** (mean |Δloss|=0.0006, max 0.0025), so the single-GPU
-**model+optimizer+clip+LR stack is RULED OUT** (measured). The **remaining** candidates are the
-per-step **INPUT** (the loaders/RNG feed different per-step inputs in production) and the **8-rank
-FSDP sharding** (not exercised single-GPU). **R29:** (a) replay the reference's EXACT production
-first-N sequence through RLinf and check it tracks; (b) run the 8-rank FSDP step comparison; then
-decide the AC-11 path or rerun the first-50 gate. task16 (advisory ~1 h trend) and task18 (final
+**model+optimizer+clip+LR stack is RULED OUT** (measured). **R29 then ruled out the 8-rank FSDP step**
+(`r29_fsdp_consistency.json`): RLinf's 8-rank FSDP all-reduced grad norm matches its single-GPU grad
+norm to 0.23% on the same batch, so the FSDP sharding/all-reduce is numerically correct → RLinf's full
+production stack equals the reference on identical inputs. The **one remaining** candidate is the
+per-step **INPUT** the loaders/RNG feed in production. **R30 (decisive):** replay the reference's EXACT
+production first-N batch/noise/time sequence through RLinf and check it tracks the reference; then
+decide the AC-11 path (accept the loader/RNG composition difference via a plan evolution, or feed RLinf
+the reference inputs) or rerun the 50/50 gate. task16 (advisory ~1 h trend) and task18 (final
 AC-13) remain blocked on task15's strict verification.
