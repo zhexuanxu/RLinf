@@ -27,12 +27,17 @@ mismatch was a real recipe divergence, now FIXED, but not causal). **R24 ran the
 trainer twice (seeds 42, 123)** and found the reference is highly reproducible (run-to-run spread
 ~0.004; both reach ~0.09 at step 49) while RLinf sits OUTSIDE that envelope (1/50) — so RLinf's
 faster descent is a **real systematic divergence, NOT benign run-to-run noise** (the R23 RNG
-hypothesis is REFUTED; no pass-rule is justified). The one untested difference is `torch.compile`
-(reference uses it, RLinf is eager) — the next localization step. The earlier R20 "RNG/aggregation"
-and R21 "missing-augmentation" attributions were both wrong and are
-retracted. The residual is benign and not localized to a correctness bug; no DEC-1 (b) pass-rule is
-accepted yet. See **"Round 20 / 21 / 22"** below. The R16 run that follows is retained as the
-pre-fix baseline.
+hypothesis is REFUTED; no pass-rule is justified). **R25 ran the reference EAGER
+(`TORCH_COMPILE_MODE=null`) and RULED OUT `torch.compile`**: the eager reference tracks the compiled
+reference within 0.0022 (50/50 within `|Δ| ≤ 0.03`; both descend to ~0.090), while RLinf (0.048) is
+below both. R25 localized the divergence to **gradient magnitude**: the LR schedule is identical, but
+RLinf's `grad_norm` is systematically higher than the reference's (mean 2.42 vs 1.43; even at step 0
+on the same base weights, 2.39 vs 2.19) — so with clip=1.0 and grad_norm<1.0 at later steps, RLinf
+takes larger effective steps. The earlier R20 "RNG/aggregation" and R21 "missing-augmentation"
+attributions were both wrong and are retracted. The residual is a **real systematic divergence
+(RLinf descends faster / lower)**, task15-blocking, with the root cause of the grad_norm difference
+the next investigation (a same-batch gradient comparison). See **"Round 20 / 21 / 22"** below. The
+R16 run that follows is retained as the pre-fix baseline.
 
 ## Run
 
@@ -280,13 +285,27 @@ is tiny, and RLinf descending to ≈0.048 vs the reference ≈0.090 is a **real,
 (RLinf learns faster), NOT benign run-to-run noise. **No variance-backed DEC-1 (b) pass-rule is
 justified**, and the R23 proposal is withdrawn. task15 remains NOT met with a real residual.
 
-**Next localization (the one untested difference):** the reference run (committed log + both
-replays) uses **`torch.compile`** (`TORCH_COMPILE_MODE=default`), while RLinf trains eager. A
-reference EAGER run (`TORCH_COMPILE_MODE=null`) to test whether compile causes the slower descent
-was attempted this round but did not complete (torchrun launch instability after the repeated runs);
-it is the next step. (Caveat from `r24_reference_variance_packet.json`: compile's triton `.so`
-cannot load from the `/mnt/public` network FS, so `TMPDIR` was pointed at `/dev/shm` — exec-allowed
-tmpfs, not `/tmp`/overlay — for the runs.)
+### R25 — `torch.compile` RULED OUT; the divergence is gradient magnitude
+The R24 next-step was to test whether `torch.compile` (which the reference uses and RLinf does not)
+causes the slower reference descent. **R25 ran the reference EAGER** (`TORCH_COMPILE_MODE=null`,
+seed 42, same recipe; log confirms 0 "Enable torch.compile" lines) — committed
+`docs/evidence/r25_ref_eager_first50.csv` + `r25_eager_vs_compiled.json`:
+- The EAGER reference **tracks the COMPILED reference almost exactly**: step49 eager=0.0894 vs
+  compiled-seed42=0.0903; mean 0.1678 vs 0.1675; mean `|Δ|`=0.0022; **50/50** within `|Δ| ≤ 0.03`.
+  So `torch.compile` is **RULED OUT** — both eager and compiled reference descend to ~0.090.
+- RLinf (step49=0.0481, mean 0.151) is below BOTH (only 31/50 within `|Δ| ≤ 0.03` of the eager
+  reference).
+- The **LR schedule is identical** (mean `|Δ|`=1.8e-14). The divergence is localized to **gradient
+  magnitude**: RLinf's `grad_norm` is systematically higher than the reference's (mean 2.42 vs 1.43;
+  step0 2.39 vs 2.19; step49 0.912 vs 0.561). With `clip_grad_norm=1.0` and grad_norm<1.0 at later
+  steps (no clipping), RLinf's larger gradients give larger effective steps → faster descent.
+
+**Next localization (R26):** root-cause the grad_norm difference with a **same-batch gradient
+comparison** (like R15 did for the loss): on an identical fixed batch + weights + noise/time, compare
+RLinf's gradient norm to the reference model's, to determine whether the higher grad_norm is the data
+(RLinf rank-folds 256 unique frames/step vs the reference's 32) or the backward. (FS caveat: the
+reference's compiled runs need an exec-loadable triton `.so`, so `TMPDIR` was pointed at `/dev/shm` —
+exec-allowed tmpfs, not `/tmp`/overlay; the eager run needs no compilation.)
 
 ### DEC-5 artifact (this round)
 - **RLinf scalars** (both runs) from the tensorboard event files under
@@ -306,6 +325,9 @@ tmpfs, not `/tmp`/overlay — for the runs.)
 - **Reference-repeat variance packet** (R24): `docs/evidence/r24_ref_seed{42,123}_first50.csv` +
   `docs/evidence/r24_reference_variance_packet.json` (the external reference trainer run twice;
   commands, venv, recipe, hashes, the run-to-run envelope, and the RLinf-outside-envelope verdict).
+- **Reference EAGER run** (R25): `docs/evidence/r25_ref_eager_first50.csv` +
+  `docs/evidence/r25_eager_vs_compiled.json` (`TORCH_COMPILE_MODE=null`; rules out `torch.compile`;
+  records the eager-vs-compiled-vs-RLinf loss + the grad_norm comparison localizing the divergence).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -317,9 +339,10 @@ augmentation alignment to do** (the reference and RLinf both train with `rng=Non
 reference-repeat variance packet (seeds 42 + 123) REFUTED the benign-RNG hypothesis**: the reference
 is highly reproducible (run-to-run spread ~0.004) and RLinf is OUTSIDE that envelope (1/50) — RLinf's
 faster descent is a real systematic divergence. So **no DEC-1 (b) pass-rule is justified** (the R23
-proposal is withdrawn), and task15 stays active on a real residual. The next localization step is to
-test **`torch.compile`** (the reference uses it; RLinf is eager) as the cause of the slower reference
-descent — a reference EAGER run, attempted in R24 but not completed (torchrun launch instability). If
-compile is the cause, RLinf may already match the reference's eager behavior; otherwise localize
-further or rerun toward the original 50/50 gate. task16 (advisory ~1 h trend) and task18 (final
+proposal is withdrawn), and task15 stays active on a real residual. **R25 RULED OUT `torch.compile`**
+(the eager reference tracks the compiled reference within 0.0022, both ~0.090 at step49) and
+localized the divergence to **gradient magnitude** (RLinf's grad_norm is systematically higher than
+the reference's: mean 2.42 vs 1.43; identical LR). The R26 next step is a **same-batch gradient
+comparison** to root-cause the grad_norm difference (data vs backward), then decide the AC-11
+acceptance path or rerun toward the 50/50 gate. task16 (advisory ~1 h trend) and task18 (final
 AC-13) remain blocked on task15's strict verification.

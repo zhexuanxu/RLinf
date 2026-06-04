@@ -1,0 +1,37 @@
+{
+  "purpose": "R25 reference EAGER run (TORCH_COMPILE_MODE=null) to test whether torch.compile causes the reference's slower first-50 descent vs RLinf.",
+  "command": "TMPDIR=/dev/shm/r25_tmp DIST_METHOD=fsdp1 USE_AUTOCAST=0 USE_PREFETCH=0 USE_CONSISTENT=0 TORCH_COMPILE_MODE=null torchrun --standalone --nproc_per_node=8 scripts/train_pytorch_new.py pi05_b1k-task0000_sft_pytorch_mixed --exp_name=r25_ref_eager --seed=42 --num_train_steps=200 --save_interval=100000 --log_interval=1 --checkpoint_base_dir=/mnt/public/xzxuan/tmp/r25_ref --no-wandb_enabled --overwrite",
+  "eager_confirmed": "log has 0 'Enable torch.compile' lines",
+  "hashes_sha256_16": {
+    "model.safetensors": "f6391204c480d6c5",
+    "norm_stats.json": "d66ed16830a98f90",
+    "paligemma_tokenizer.model": "8986bb4f423f07f8"
+  },
+  "first50": {
+    "eager_step49": 0.0894,
+    "compiled_seed42_step49": 0.0903,
+    "RLinf_r22_step49": 0.0481,
+    "eager_mean": 0.1678,
+    "compiled_mean": 0.1675,
+    "RLinf_mean": 0.1506,
+    "mean_abs_eager_minus_compiled": 0.0022,
+    "eager_within_0.03_of_compiled": "50/50",
+    "mean_abs_eager_minus_RLinf": 0.0299,
+    "eager_within_0.03_of_RLinf": "31/50"
+  },
+  "grad_norm": {
+    "ref_eager_mean": 1.432,
+    "RLinf_r22_mean": 2.423,
+    "step0": {
+      "ref": 2.189,
+      "RLinf": 2.387
+    },
+    "step49": {
+      "ref": 0.561,
+      "RLinf": 0.912
+    },
+    "lr_match_mean_abs_diff": "1.8e-14 (identical)"
+  },
+  "verdict": "torch.compile is RULED OUT: the EAGER reference tracks the COMPILED reference within 0.0022 (50/50 within 0.03; both descend to ~0.090 at step49). RLinf (0.048) is below BOTH (only 31/50 within 0.03 of eager). The LR schedule is identical. The divergence is localized to GRADIENT MAGNITUDE: RLinf's grad_norm is systematically higher than the reference's (mean 2.42 vs 1.43; even at step0 on the same base weights, 2.39 vs 2.19), so with clip=1.0 and grad_norm<1.0 at later steps RLinf takes larger effective steps -> faster descent. Next: a same-batch gradient-norm parity comparison (like R15 did for the loss) to root-cause the grad_norm difference.",
+  "next_localization": "same-batch gradient comparison: on an identical fixed batch + weights + noise/time, compare RLinf's vs the reference model's gradient norm (and per-layer grads) to determine whether the higher grad_norm is the data (RLinf rank-folded 256 unique vs reference 32) or the backward."
+}
