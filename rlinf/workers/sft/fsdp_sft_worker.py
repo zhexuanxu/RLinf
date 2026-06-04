@@ -179,8 +179,14 @@ class FSDPSftWorker(FSDPModelManager, Worker):
             grad_norm, lr_list = self.optimizer_step()
             self.optimizer.zero_grad(set_to_none=True)
 
+            # Capture the LR used for the just-finished optimizer step (from
+            # optimizer_step) before the scheduler advances to the next step's LR.
+            lr_value = (
+                float(lr_list[0])
+                if lr_list
+                else float(self.optimizer.param_groups[0]["lr"])
+            )
             self.lr_scheduler.step()
-            lr_value = self.optimizer.param_groups[0]["lr"]
             grad_norm_value = (
                 float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm
             )

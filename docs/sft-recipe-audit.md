@@ -38,7 +38,7 @@ the GPU-evidenced half (task14/task15/task16, next round, per DEC-1/DEC-5).
 | warmup steps | 1000 (`optimizer.py:19`) | 1000 (`behavior_pi05_vla.yaml:80`) | ALIGNED |
 | decay length | 30000 total → cosine over `decay-warmup`=29000 (`config.py:869`, `optimizer.py:21`) | `num_training_steps-warmup`=29000 (`utils.py:572-574`) | ALIGNED |
 | min / end LR | 0.0 (`optimizer.py:23`) | 0.0 (`behavior_pi05_vla.yaml:85`) | ALIGNED |
-| step-0 LR | `peak/(warmup+1)`=2.4975e-8 (`optimizer.py:27`; log: `learning_rate=2.4975e-08`) | `peak/(warmup+1)` (`utils.py:568`) | ALIGNED (exact; warmup ramp matches log steps 0/1/2) |
+| step-0 LR (scheduler) | `peak/(warmup+1)`=2.4975e-8 (`optimizer.py:27`; log: `learning_rate=2.4975e-08`) | `peak/(warmup+1)` (`utils.py:568`) | ALIGNED (exact; the `openpi_cosine` warmup ramp matches log steps 0/1/2) |
 | EMA | None / disabled (`config.py:872`) | off (no EMA in worker / config) | ALIGNED |
 | seed | 42 (`config.py:540` default) | 42 (`behavior_pi05_vla.yaml:56`) | ALIGNED |
 | weights | `pi05_base_pytorch_new`, fp32 load (`config.py:881`) | `pi05_base_pytorch_new` (`behavior_pi05_vla.yaml:63`), `load_for_training` fp32 (`model/pi0_5_pytorch.yaml:10`) | ALIGNED |
@@ -60,7 +60,8 @@ the GPU-evidenced half (task14/task15/task16, next round, per DEC-1/DEC-5).
 | num_workers | 8 (`config.py:874`) | 8 (builder default, `behavior_sft_data_loader.py:448`) | ALIGNED |
 | shuffle | True | True (`behavior_sft_data_loader.py:300`) | ALIGNED |
 | DataLoader prefetch_factor | n/a (reference uses LeRobot loader) | PyTorch default 2 | NOT loss-relevant‡ |
-| log interval | 1, rank-0 per step (`config.py:878`) | per global step, rank-0 averaged (`fsdp_sft_worker.py:199-200`) | ALIGNED |
+| loss logging | log_interval=1; loss AVG-reduced across ranks then logged (`config.py:878`, `train_pytorch_new.py:528`) | every global step; loss AVG-reduced across ranks (`fsdp_sft_worker.py:198-200`) | ALIGNED |
+| logged LR | `lr_schedule(global_step)` — the LR USED for that step (`train_pytorch_new.py:500,547`); step 0 logs 2.4975e-8 | the step's LR via `lr_list[0]` captured before `lr_scheduler.step()` (`fsdp_sft_worker.py:178-190`) | ALIGNED (R13 fix; previously logged the next step's LR) |
 
 ### Notes
 
@@ -88,17 +89,19 @@ the GPU-evidenced half (task14/task15/task16, next round, per DEC-1/DEC-5).
 
 **Every CPU-verifiable knob of the `use_skill: false` SFT recipe is aligned with the
 reference.** No config or code divergence remains at the recipe level (the M3 YAML/config
-work and the `openpi_cosine` scheduler already landed the alignment). The two items that
-are not pure config — the global-batch/grad-accum equivalence (needs 8 GPUs) and the
-loss-curve match itself — are exactly DEC-1's GPU-evidenced tier and are the subject of the
-next round.
+work and the `openpi_cosine` scheduler landed the alignment; the R13 logged-LR fix below
+closed the last logging-semantics gap). The two items that are not pure config — the
+global-batch/grad-accum equivalence (needs 8 GPUs) and the loss-curve match itself — are
+exactly DEC-1's GPU-evidenced tier and are the subject of the next round.
 
 This audit is pinned against regression by:
 - `tests/unit_tests/test_openpi_pytorch_sft_recipe.py` — asserts every RLinf recipe knob
   equals the reference value (the constants in that test cite the reference file:line), plus
   a skip-gated real-loader gate asserting the `turning_on_radio` episode count is 200.
 - `tests/unit_tests/test_openpi_pytorch_sft_schedule.py` — the `openpi_cosine` LR schedule
-  is reference-exact across warmup and decay (existing).
+  is reference-exact across warmup and decay, AND a regression test driving the real
+  `FSDPSftWorker.run_training` ordering asserts the logged step-0 LR is the LR used for that
+  step (`peak/(warmup+1)`), not the next step's value.
 - `tests/unit_tests/test_openpi_pytorch_sft_ref_parity.py` — per-sample tokenizer/transform/
   loader-output parity vs the real reference loader (existing).
 
