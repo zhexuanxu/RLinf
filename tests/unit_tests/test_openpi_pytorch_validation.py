@@ -34,7 +34,8 @@ def _embodied_cfg(**overrides):
                     "model_type": "openpi_pytorch",
                     "precision": None,
                     "add_value_head": False,
-                    "openpi": {"config_name": "pi05_behavior"},
+                    # config_name removed (DEC-2): BEHAVIOR is confirmed via env_type.
+                    "openpi": {},
                 }
             },
             "rollout": {"model": {"precision": None}},
@@ -82,8 +83,8 @@ def _sft_cfg(**overrides):
                     "model_type": "openpi_pytorch",
                     "precision": None,
                     "add_value_head": False,
+                    # config_name removed (DEC-2): openpi_pytorch is BEHAVIOR-only.
                     "openpi": {
-                        "config_name": "pi05_behavior_b1k_local",
                         "full_pi05": False,
                     },
                 },
@@ -108,7 +109,6 @@ def test_validate_sft_cfg_accepts_openpi_pytorch_behavior():
         ("actor__model__openpi__full_pi05", True, "full_pi05"),
         ("actor__model__openpi__use_dsrl", True, "use_dsrl"),
         ("actor__model__add_value_head", True, "add_value_head"),
-        ("actor__model__openpi__config_name", "pi05_libero", "BEHAVIOR"),
         ("actor__model__precision", "fp32", "precision"),
     ],
 )

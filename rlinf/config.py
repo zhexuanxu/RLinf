@@ -1109,14 +1109,10 @@ def _validate_openpi_pytorch_eval_cfg(cfg: DictConfig, task_type: str) -> None:
         )
 
     if task_type == "sft":
-        # SFT configs carry no env.* section; use the data-config / config_name
-        # signal to confirm the BEHAVIOR environment.
-        config_name = OmegaConf.select(model_cfg, "openpi.config_name", default="")
-        assert "behavior" in str(config_name).lower(), (
-            "openpi_pytorch SFT supports only the BEHAVIOR env; "
-            f"actor.model.openpi.config_name={config_name!r} must name a "
-            "BEHAVIOR data config."
-        )
+        # openpi_pytorch is BEHAVIOR-only by construction (there is no
+        # non-BEHAVIOR SFT variant), so SFT needs no env/config_name signal — the
+        # unsupported-flag and precision checks above are the gate. `config_name`
+        # is removed from the openpi_pytorch path entirely (DEC-2).
         return
 
     if task_type != "embodied":

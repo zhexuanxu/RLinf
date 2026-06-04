@@ -56,6 +56,7 @@ from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
     NormStats,
     load_norm_stats,
+    resolve_norm_stats_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,23 +175,14 @@ def _resolve_norm_stats(
     assets_dir: str | pathlib.Path,
     asset_id: str | None,
 ) -> dict[str, NormStats]:
-    """Load ``norm_stats.json`` from ``{assets_dir}/{asset_id}`` (or ``assets_dir``).
+    """Resolve the BEHAVIOR norm stats via the shared ``(assets_dir, asset_id)`` rule.
 
-    Mirrors the old asset layout: the BEHAVIOR norm stats live under
-    ``{assets_dir}/{asset_id}/norm_stats.json`` (e.g.
-    ``.../physical-intelligence/behavior/norm_stats.json``). Falls back to
-    ``assets_dir`` itself if the ``asset_id`` sub-directory has no stats file.
+    Delegates to :func:`resolve_norm_stats_dir` so the SFT loader and the eval
+    model factory resolve the *same* canonical ``norm_stats.json`` (AC-8).
     """
-    base = pathlib.Path(assets_dir).expanduser()
-    candidates = [base / asset_id] if asset_id else []
-    candidates.append(base)
-    for directory in candidates:
-        if (directory / "norm_stats.json").is_file():
-            logger.info("Loaded BEHAVIOR norm stats from %s", directory)
-            return load_norm_stats(directory)
-    raise FileNotFoundError(
-        f"BEHAVIOR SFT norm_stats.json not found under {[str(c) for c in candidates]}."
-    )
+    directory = resolve_norm_stats_dir(assets_dir, asset_id)
+    logger.info("Loaded BEHAVIOR norm stats from %s", directory)
+    return load_norm_stats(directory)
 
 
 def create_behavior_sft_data_loader(

@@ -32,7 +32,6 @@ Layout:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import pathlib
 
@@ -115,11 +114,14 @@ def get_model(cfg, torch_dtype=None):
     """Build the BEHAVIOR pi05 model from a model config (factory entry).
 
     Expects ``cfg.model_path`` to point at a *new-format* checkpoint directory
-    containing ``model.safetensors`` and ``config.json``. Eval builds also
-    require the ``physical-intelligence/behavior/norm_stats.json`` asset tree.
-    Training builds set ``load_for_training=True`` (or
-    ``openpi.load_for_training=True``), load fp32 new-format weights strictly,
-    then cast to bf16 for SFT.
+    containing ``model.safetensors``. The Pi0 model shape is built entirely from
+    YAML fields (``num_action_chunks`` plus ``openpi.model_action_dim`` /
+    ``openpi.paligemma_variant`` / ``openpi.action_expert_variant``); a checkpoint
+    ``config.json`` is never read. Eval builds resolve the BEHAVIOR norm stats via
+    ``openpi.assets_dir`` + ``openpi.asset_id`` (the same canonical task-0000 stats
+    the SFT data loader resolves). Training builds set ``load_for_training=True``
+    (or ``openpi.load_for_training=True``), load fp32 new-format weights strictly,
+    then cast to bf16 for SFT (norm stats are left to the data loader).
     """
     import safetensors.torch
     from omegaconf import OmegaConf
@@ -129,6 +131,7 @@ def get_model(cfg, torch_dtype=None):
     )
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
         load_norm_stats,
+        resolve_norm_stats_dir,
     )
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.processing import (
@@ -177,34 +180,34 @@ def get_model(cfg, torch_dtype=None):
             "openpi_pytorch supports only precision=null or bf16. "
             f"Got precision={precision!r}."
         )
-    config_name = _select("openpi.config_name", "pi05_behavior")
-    if "behavior" not in str(config_name):
-        raise ValueError(
-            f"openpi_pytorch supports only the BEHAVIOR env; got "
-            f"config_name={config_name!r}."
-        )
+
+    # Model-shape fields come exclusively from the YAML model config (no
+    # checkpoint config.json read). Missing required fields fail loudly.
+    def _require_shape(key, label):
+        value = _select(key)
+        if value is None:
+            raise ValueError(
+                f"openpi_pytorch requires actor.model.{key} ({label}) in the YAML "
+                "model config; model-shape fields are not read from a checkpoint "
+                "config.json."
+            )
+        return value
 
     model_path = pathlib.Path(_select("model_path"))
     weights_path = model_path / "model.safetensors"
-    norm_stats_path = (
-        model_path / "physical-intelligence" / "behavior" / "norm_stats.json"
-    )
     if not weights_path.exists():
         raise FileNotFoundError(f"openpi_pytorch checkpoint not found: {weights_path}")
-    if not load_for_training and not norm_stats_path.exists():
-        raise FileNotFoundError(
-            f"openpi_pytorch norm stats not found: {norm_stats_path}"
-        )
-    config_json = {}
-    if (model_path / "config.json").exists():
-        config_json = json.loads((model_path / "config.json").read_text())
 
     pi0_config = Pi0Config(
         pi05=True,
-        action_horizon=int(config_json.get("action_horizon", 32)),
-        action_dim=int(config_json.get("action_dim", 32)),
-        paligemma_variant=config_json.get("paligemma_variant", "gemma_2b"),
-        action_expert_variant=config_json.get("action_expert_variant", "gemma_300m"),
+        action_horizon=int(_require_shape("num_action_chunks", "action_horizon")),
+        action_dim=int(_require_shape("openpi.model_action_dim", "model action_dim")),
+        paligemma_variant=str(
+            _require_shape("openpi.paligemma_variant", "paligemma_variant")
+        ),
+        action_expert_variant=str(
+            _require_shape("openpi.action_expert_variant", "action_expert_variant")
+        ),
         dtype="bfloat16",
         pcd=False,
     )
@@ -216,13 +219,33 @@ def get_model(cfg, torch_dtype=None):
     )
     model.load_state_dict(state_dict, strict=True)
     n_params = sum(p.numel() for p in model.parameters())
-    norm_stats_digest = (
-        _file_digest(norm_stats_path) if norm_stats_path.exists() else "missing"
-    )
+
+    # Norm stats resolve from YAML assets_dir + asset_id (the SAME resolution the
+    # SFT data loader uses, so eval and SFT share the canonical task-0000 stats).
+    # Eval requires them (for the processor); training leaves the processor to the
+    # data loader, so norm stats are optional on the training build.
+    assets_dir = _select("openpi.assets_dir")
+    asset_id = _select("openpi.asset_id", "physical-intelligence/behavior")
+    norm_stats = None
+    norm_stats_dir = None
+    if not load_for_training:
+        if assets_dir is None:
+            raise FileNotFoundError(
+                "openpi_pytorch eval requires actor.model.openpi.assets_dir to "
+                "resolve the BEHAVIOR norm stats at "
+                f"<assets_dir>/{asset_id}/norm_stats.json."
+            )
+        norm_stats_dir = resolve_norm_stats_dir(assets_dir, asset_id)
+        norm_stats = load_norm_stats(norm_stats_dir)
+
+    if norm_stats_dir is not None:
+        norm_stats_digest = _file_digest(norm_stats_dir / "norm_stats.json")
+    else:
+        norm_stats_digest = "deferred"
     logger.info(
         "openpi_pytorch: loaded %s (%.2fB params) strict from %s for %s "
         "state_metadata_digest=%s norm_stats_digest=%s",
-        config_json or pi0_config,
+        pi0_config,
         n_params / 1e9,
         weights_path,
         "training" if load_for_training else "eval",
@@ -234,9 +257,6 @@ def get_model(cfg, torch_dtype=None):
     if load_for_training:
         model.gradient_checkpointing_enable()
 
-    norm_stats = (
-        load_norm_stats(norm_stats_path.parent) if norm_stats_path.exists() else None
-    )
     action_chunk = int(_select("num_action_chunks", pi0_config.action_horizon))
     action_env_dim = int(_select("action_dim", 23))
     num_steps = int(_select("num_steps", 10))

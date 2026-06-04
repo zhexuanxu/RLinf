@@ -159,7 +159,12 @@ def test_predict_action_batch_contract():
             "num_action_chunks": 32,
             "action_dim": 23,
             "num_steps": 10,
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": {
+                "model_action_dim": 32,
+                "paligemma_variant": "gemma_2b",
+                "action_expert_variant": "gemma_300m",
+                "assets_dir": str(_NEW_CKPT),
+            },
         }
     )
     model = get_model(cfg).to("cuda").eval()
@@ -188,11 +193,13 @@ def test_get_model_rejects_unsupported_paths():
 
     from rlinf.models.embodiment.openpi_pytorch import get_model
 
+    # These unsupported-path guards fire before any model-shape resolution, so a
+    # minimal config (no config_name — removed per DEC-2) still triggers them.
     # full_pi05 must fail loudly (unsupported by the eval-only model).
     cfg = OmegaConf.create(
         {
             "model_path": str(_NEW_CKPT),
-            "openpi": {"config_name": "pi05_behavior", "full_pi05": True},
+            "openpi": {"full_pi05": True},
         }
     )
     with pytest.raises(ValueError):
@@ -203,23 +210,16 @@ def test_get_model_rejects_unsupported_paths():
         get_model(
             {
                 "model_path": str(_NEW_CKPT),
-                "openpi": {"config_name": "pi05_behavior", "full_pi05": True},
+                "openpi": {"full_pi05": True},
             }
         )
-
-    # Non-BEHAVIOR config must fail loudly.
-    cfg2 = OmegaConf.create(
-        {"model_path": str(_NEW_CKPT), "openpi": {"config_name": "pi05_libero"}}
-    )
-    with pytest.raises(ValueError):
-        get_model(cfg2)
 
     # Standard RLinf top-level value-head flag must also fail loudly.
     cfg3 = OmegaConf.create(
         {
             "model_path": str(_NEW_CKPT),
             "add_value_head": True,
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": {},
         }
     )
     with pytest.raises(ValueError, match="add_value_head"):
@@ -231,7 +231,7 @@ def test_get_model_rejects_unsupported_paths():
         {
             "model_path": str(_NEW_CKPT),
             "precision": "fp32",
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": {},
         }
     )
     with pytest.raises(ValueError, match="precision"):
@@ -249,15 +249,18 @@ def test_get_model_rejects_missing_checkpoint_files(tmp_path):
     cfg = OmegaConf.create(
         {
             "model_path": str(tmp_path),
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": {},
         }
     )
+    # No model.safetensors -> checkpoint-not-found (before any shape resolution).
     with pytest.raises(FileNotFoundError, match="model.safetensors"):
         get_model(cfg)
 
+    # Weights present but no YAML model-shape fields -> loud missing-shape error
+    # (model shape is built from YAML, not a checkpoint config.json — AC-5).
     safetensors_torch.save_file(
         {"placeholder": torch.zeros(1, dtype=torch.bfloat16)},
         str(tmp_path / "model.safetensors"),
     )
-    with pytest.raises(FileNotFoundError, match="norm stats"):
+    with pytest.raises(ValueError, match="num_action_chunks"):
         get_model(cfg)

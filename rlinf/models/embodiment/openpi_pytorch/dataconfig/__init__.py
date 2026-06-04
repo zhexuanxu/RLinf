@@ -17,5 +17,6 @@
 The BEHAVIOR streaming SFT pipeline (dataset / transform / data loader) now lives
 under ``rlinf.data.datasets.behavior``; import it from there. This package is
 reserved for the YAML-driven BEHAVIOR data config that mirrors
-``openpi/dataconfig`` (no hard-coded ``TrainConfig`` registry).
+``openpi/dataconfig`` (driven entirely from YAML — no hard-coded in-code config
+registry keyed by config name).
 """

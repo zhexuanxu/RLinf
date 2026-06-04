@@ -143,6 +143,12 @@ def test_training_build_accepts_fp32_new_format_and_eval_rejects(tmp_path):
         )
     )
 
+    # Model shape comes from YAML fields (config.json is ignored, DEC-2/AC-5).
+    shape_fields = {
+        "model_action_dim": 32,
+        "paligemma_variant": "dummy",
+        "action_expert_variant": "dummy",
+    }
     train_cfg = OmegaConf.create(
         {
             "model_path": str(tmp_path),
@@ -150,7 +156,7 @@ def test_training_build_accepts_fp32_new_format_and_eval_rejects(tmp_path):
             "load_for_training": True,
             "num_action_chunks": 4,
             "action_dim": 23,
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": dict(shape_fields),
         }
     )
     model = get_model(train_cfg)
@@ -183,7 +189,7 @@ def test_training_build_accepts_fp32_new_format_and_eval_rejects(tmp_path):
             "precision": "bf16",
             "num_action_chunks": 4,
             "action_dim": 23,
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": {**shape_fields, "assets_dir": str(stats_dir.parent.parent)},
         }
     )
     with pytest.raises(ValueError, match="dtype mismatch"):

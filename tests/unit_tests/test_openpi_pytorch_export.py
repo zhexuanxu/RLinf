@@ -91,7 +91,12 @@ def test_sft_checkpoint_exports_to_eval_format(tmp_path):
             "precision": "bf16",
             "num_action_chunks": 4,
             "action_dim": 23,
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": {
+                "model_action_dim": 32,
+                "paligemma_variant": "dummy",
+                "action_expert_variant": "dummy",
+                "assets_dir": str(out),
+            },
         }
     )
     model = get_model(eval_cfg)
@@ -154,7 +159,12 @@ def test_sft_checkpoint_dir_exports_from_real_layout(tmp_path):
             "precision": "bf16",
             "num_action_chunks": 4,
             "action_dim": 23,
-            "openpi": {"config_name": "pi05_behavior"},
+            "openpi": {
+                "model_action_dim": 32,
+                "paligemma_variant": "dummy",
+                "action_expert_variant": "dummy",
+                "assets_dir": str(out),
+            },
         }
     )
     model = get_model(eval_cfg)

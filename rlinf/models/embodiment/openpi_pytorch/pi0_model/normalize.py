@@ -64,6 +64,29 @@ def load_norm_stats(directory: pathlib.Path | str) -> dict[str, NormStats]:
     return out
 
 
+def resolve_norm_stats_dir(
+    assets_dir: pathlib.Path | str, asset_id: str | None
+) -> pathlib.Path:
+    """Return the directory holding ``norm_stats.json`` for ``(assets_dir, asset_id)``.
+
+    Mirrors the BEHAVIOR asset layout: stats live under
+    ``{assets_dir}/{asset_id}/norm_stats.json`` (e.g.
+    ``.../behavior-1k/2025-challenge-demos/norm_stats.json``); falls back to
+    ``{assets_dir}/norm_stats.json``. Raising here (rather than silently
+    returning wrong stats) is the shared resolution both the eval model factory
+    and the SFT data loader use, so they always resolve the same file.
+    """
+    base = pathlib.Path(assets_dir).expanduser()
+    candidates = [base / asset_id] if asset_id else []
+    candidates.append(base)
+    for directory in candidates:
+        if (directory / "norm_stats.json").is_file():
+            return directory
+    raise FileNotFoundError(
+        f"BEHAVIOR norm_stats.json not found under {[str(c) for c in candidates]}."
+    )
+
+
 def normalize_quantile(x: np.ndarray, stats: NormStats) -> np.ndarray:
     """Map ``x`` to ``[-1, 1]`` using q01/q99 (openpi quantile normalize)."""
     if stats.q01 is None or stats.q99 is None:
