@@ -60,22 +60,25 @@ def main(out_dir):
     sys.path.insert(0, _REF_SRC)
     result = {"ok": False}
     try:
-        import torch
-
-        import safetensors.torch
         import openpi.models_pytorch_new.pi0 as pi0_new
         import openpi.models_pytorch_new.pi0_config as pi0_config_new
         import openpi.training.config as _config
         import openpi.training.data_loader as _data_loader
+        import safetensors.torch
+        import torch
 
         device = "cuda"
         cfg = _config.get_config(_CONFIG)
-        base = dataclasses.replace(cfg.data.base_config, behavior_dataset_root=_DATA_ROOT)
+        base = dataclasses.replace(
+            cfg.data.base_config, behavior_dataset_root=_DATA_ROOT
+        )
         assets = _config.AssetsConfig(
             assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos"
         )
         data = dataclasses.replace(cfg.data, base_config=base, assets=assets)
-        run_cfg = dataclasses.replace(cfg, data=data, batch_size=_BATCH_SIZE, num_workers=0)
+        run_cfg = dataclasses.replace(
+            cfg, data=data, batch_size=_BATCH_SIZE, num_workers=0
+        )
         it = iter(_data_loader.create_behavior_data_loader_torch(run_cfg, shuffle=True))
 
         model = pi0_new.Pi0(pi0_config_new.Pi0Config(**cfg.model.__dict__)).to(device)
@@ -99,7 +102,9 @@ def main(out_dir):
                 if m is not None:
                     store.setdefault(f"image_mask__{k}", []).append(_np(m[k]))
             store.setdefault("state", []).append(_np(observation.state))
-            store.setdefault("tokenized_prompt", []).append(_np(observation.tokenized_prompt))
+            store.setdefault("tokenized_prompt", []).append(
+                _np(observation.tokenized_prompt)
+            )
             tpm = getattr(observation, "tokenized_prompt_mask", None)
             if tpm is not None:
                 store.setdefault("tokenized_prompt_mask", []).append(_np(tpm))
@@ -115,18 +120,36 @@ def main(out_dir):
 
             obs = dataclasses.replace(
                 observation,
-                **{f.name: _mv(getattr(observation, f.name)) for f in dataclasses.fields(observation)},
+                **{
+                    f.name: _mv(getattr(observation, f.name))
+                    for f in dataclasses.fields(observation)
+                },
             )
             act = actions.to(device)
             with torch.no_grad():
                 noaug.append(
-                    float(model.compute_loss(obs, act, train=False, noise=noise, time=time).float().mean())
+                    float(
+                        model.compute_loss(
+                            obs, act, train=False, noise=noise, time=time
+                        )
+                        .float()
+                        .mean()
+                    )
                 )
                 aug.append(
-                    float(model.compute_loss(obs, act, train=True, rng=None, noise=noise, time=time).float().mean())
+                    float(
+                        model.compute_loss(
+                            obs, act, train=True, rng=None, noise=noise, time=time
+                        )
+                        .float()
+                        .mean()
+                    )
                 )
 
-        np.savez(f"{out_dir}/ref_model_batches.npz", **{k: np.stack(v) for k, v in store.items()})
+        np.savez(
+            f"{out_dir}/ref_model_batches.npz",
+            **{k: np.stack(v) for k, v in store.items()},
+        )
         np.savez(
             f"{out_dir}/ref_model_loss.npz",
             ref_loss_noaug=np.asarray(noaug),

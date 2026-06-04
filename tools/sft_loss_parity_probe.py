@@ -188,17 +188,30 @@ def main():
         f"norm_stats sha256[:16] = {_sha256(os.path.join(ASSETS_DIR, ASSET_ID, 'norm_stats.json'))}",
         flush=True,
     )
-    print(f"seed = {SEED}; samples per estimate = {N_BATCHES * 32} ({N_BATCHES}x32, turning_on_radio)", flush=True)
-    print(f"reference step-0 loss = {REF_LOSS}  (first-10-step mean 0.243848)", flush=True)
+    print(
+        f"seed = {SEED}; samples per estimate = {N_BATCHES * 32} ({N_BATCHES}x32, turning_on_radio)",
+        flush=True,
+    )
+    print(
+        f"reference step-0 loss = {REF_LOSS}  (first-10-step mean 0.243848)", flush=True
+    )
     print(f"DEC-1 band (rel5%/abs0.01) = [{lo:.6f}, {hi:.6f}]", flush=True)
-    print(f"deterministic single-batch draw (seed {SEED}, 32 samples) = {det:.6f}", flush=True)
+    print(
+        f"deterministic single-batch draw (seed {SEED}, 32 samples) = {det:.6f}",
+        flush=True,
+    )
     print(
         f"marginal E[loss] train=True  = {aug_mean:.6f}  std={aug_std:.6f} "
         f"min={aug_min:.6f} max={aug_max:.6f}  within DEC-1={lo <= aug_mean <= hi}",
         flush=True,
     )
-    print(f"marginal E[loss] train=False = {noaug_mean:.6f}  within DEC-1={lo <= noaug_mean <= hi}", flush=True)
-    print(f"worker sft_forward mean (internal sampling) = {worker_mean:.6f}", flush=True)
+    print(
+        f"marginal E[loss] train=False = {noaug_mean:.6f}  within DEC-1={lo <= noaug_mean <= hi}",
+        flush=True,
+    )
+    print(
+        f"worker sft_forward mean (internal sampling) = {worker_mean:.6f}", flush=True
+    )
 
 
 if __name__ == "__main__":

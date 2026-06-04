@@ -83,7 +83,9 @@ def ref_loss_dump(tmp_path_factory):
         if ln.startswith("REF_MODEL_LOSS ")
     ]
     if not lines:
-        pytest.skip(f"reference model-loss dump produced no result; stderr tail: {proc.stderr[-300:]}")
+        pytest.skip(
+            f"reference model-loss dump produced no result; stderr tail: {proc.stderr[-300:]}"
+        )
     result = json.loads(lines[-1].split("REF_MODEL_LOSS ", 1)[1])
     if not result.get("ok"):
         pytest.skip(f"reference model-loss dump failed: {result.get('err')}")
@@ -91,9 +93,8 @@ def ref_loss_dump(tmp_path_factory):
 
 
 def _rlinf_per_batch_losses(out):
-    from omegaconf import OmegaConf
-
     import torch
+    from omegaconf import OmegaConf
 
     from rlinf.models.embodiment.openpi_pytorch import get_model
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
@@ -131,20 +132,53 @@ def _rlinf_per_batch_losses(out):
     for bi in range(n):
         obs = Observation.from_dict(
             {
-                "image": {k: torch.from_numpy(d[f"image__{k}"][bi]).to("cuda", torch.float32) for k in _IMG},
-                "image_mask": {k: torch.from_numpy(d[f"image_mask__{k}"][bi]).to("cuda") for k in _IMG},
+                "image": {
+                    k: torch.from_numpy(d[f"image__{k}"][bi]).to("cuda", torch.float32)
+                    for k in _IMG
+                },
+                "image_mask": {
+                    k: torch.from_numpy(d[f"image_mask__{k}"][bi]).to("cuda")
+                    for k in _IMG
+                },
                 "state": torch.from_numpy(d["state"][bi]).to("cuda", torch.float32),
-                "tokenized_prompt": torch.from_numpy(d["tokenized_prompt"][bi]).to("cuda").long(),
-                "tokenized_prompt_mask": torch.from_numpy(d["tokenized_prompt_mask"][bi]).to("cuda").bool(),
+                "tokenized_prompt": torch.from_numpy(d["tokenized_prompt"][bi])
+                .to("cuda")
+                .long(),
+                "tokenized_prompt_mask": torch.from_numpy(
+                    d["tokenized_prompt_mask"][bi]
+                )
+                .to("cuda")
+                .bool(),
             }
         )
         actions = torch.from_numpy(d["actions"][bi]).to("cuda", torch.float32)
         noise = torch.from_numpy(loss["noise"][bi]).to("cuda")
         time = torch.from_numpy(loss["time"][bi]).to("cuda")
         with torch.no_grad():
-            noaug.append(float(inner.compute_loss(obs, actions, train=False, noise=noise, time=time).float().mean()))
-            aug.append(float(inner.compute_loss(obs, actions, train=True, rng=None, noise=noise, time=time).float().mean()))
-    return np.asarray(noaug), np.asarray(aug), loss["ref_loss_noaug"], loss["ref_loss_aug"]
+            noaug.append(
+                float(
+                    inner.compute_loss(
+                        obs, actions, train=False, noise=noise, time=time
+                    )
+                    .float()
+                    .mean()
+                )
+            )
+            aug.append(
+                float(
+                    inner.compute_loss(
+                        obs, actions, train=True, rng=None, noise=noise, time=time
+                    )
+                    .float()
+                    .mean()
+                )
+            )
+    return (
+        np.asarray(noaug),
+        np.asarray(aug),
+        loss["ref_loss_noaug"],
+        loss["ref_loss_aug"],
+    )
 
 
 def test_fixed_batch_loss_parity_vs_reference_model(ref_loss_dump):
