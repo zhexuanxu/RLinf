@@ -63,7 +63,16 @@ def _load_jax_params(checkpoint_dir: str | pathlib.Path) -> dict:
 
     params_dir = pathlib.Path(checkpoint_dir) / "params"
     restored = ocp.PyTreeCheckpointer().restore(str(params_dir))
-    return jax.tree_util.tree_map(lambda x: np.asarray(x, dtype=np.float32), restored)
+    restored = jax.tree_util.tree_map(
+        lambda x: np.asarray(x, dtype=np.float32), restored
+    )
+    # Some orbax checkpoints (e.g. the pi05_base reference) wrap the parameter
+    # tree under a top-level ``params`` collection; the converters expect the
+    # unwrapped tree (``PaliGemma`` / ``action_in_proj`` / ... at the top), so
+    # peel a single ``params`` wrapper when present.
+    if "PaliGemma" not in restored and isinstance(restored.get("params"), dict):
+        restored = restored["params"]
+    return restored
 
 
 def convert_siglip(params: dict) -> dict:
@@ -72,14 +81,22 @@ def convert_siglip(params: dict) -> dict:
     img = params["PaliGemma"]["img"]
 
     # Patch embedding (Conv2d): JAX (H, W, C_in, C_out) -> PT (C_out, C_in, H, W)
-    pt["img.stem.weight"] = torch.from_numpy(img["embedding"]["kernel"].transpose(3, 2, 0, 1))
+    pt["img.stem.weight"] = torch.from_numpy(
+        img["embedding"]["kernel"].transpose(3, 2, 0, 1)
+    )
     pt["img.stem.bias"] = torch.from_numpy(img["embedding"]["bias"])
 
     eb = img["Transformer"]["encoderblock"]
     ln0_scale, ln0_bias = eb["LayerNorm_0"]["scale"], eb["LayerNorm_0"]["bias"]
     ln1_scale, ln1_bias = eb["LayerNorm_1"]["scale"], eb["LayerNorm_1"]["bias"]
-    dense0_kernel, dense0_bias = eb["MlpBlock_0"]["Dense_0"]["kernel"], eb["MlpBlock_0"]["Dense_0"]["bias"]
-    dense1_kernel, dense1_bias = eb["MlpBlock_0"]["Dense_1"]["kernel"], eb["MlpBlock_0"]["Dense_1"]["bias"]
+    dense0_kernel, dense0_bias = (
+        eb["MlpBlock_0"]["Dense_0"]["kernel"],
+        eb["MlpBlock_0"]["Dense_0"]["bias"],
+    )
+    dense1_kernel, dense1_bias = (
+        eb["MlpBlock_0"]["Dense_1"]["kernel"],
+        eb["MlpBlock_0"]["Dense_1"]["bias"],
+    )
 
     mha = eb["MultiHeadDotProductAttention_0"]
     q_kernel, q_bias = mha["query"]["kernel"], mha["query"]["bias"]
@@ -105,7 +122,9 @@ def convert_siglip(params: dict) -> dict:
         pt[f"{prefix}.attn.in_proj_weight"] = torch.cat([q_w, k_w, v_w], dim=0)
         pt[f"{prefix}.attn.in_proj_bias"] = torch.cat([q_b, k_b, v_b], dim=0)
 
-        pt[f"{prefix}.attn.out_proj.weight"] = torch.from_numpy(o_kernel[i].reshape(width, width).T)
+        pt[f"{prefix}.attn.out_proj.weight"] = torch.from_numpy(
+            o_kernel[i].reshape(width, width).T
+        )
         pt[f"{prefix}.attn.out_proj.bias"] = torch.from_numpy(o_bias[i])
 
         pt[f"{prefix}.mlp.fc1.weight"] = torch.from_numpy(dense0_kernel[i].T)
@@ -113,8 +132,12 @@ def convert_siglip(params: dict) -> dict:
         pt[f"{prefix}.mlp.fc2.weight"] = torch.from_numpy(dense1_kernel[i].T)
         pt[f"{prefix}.mlp.fc2.bias"] = torch.from_numpy(dense1_bias[i])
 
-    pt["img.encoder.norm.weight"] = torch.from_numpy(img["Transformer"]["encoder_norm"]["scale"])
-    pt["img.encoder.norm.bias"] = torch.from_numpy(img["Transformer"]["encoder_norm"]["bias"])
+    pt["img.encoder.norm.weight"] = torch.from_numpy(
+        img["Transformer"]["encoder_norm"]["scale"]
+    )
+    pt["img.encoder.norm.bias"] = torch.from_numpy(
+        img["Transformer"]["encoder_norm"]["bias"]
+    )
     pt["img.head.weight"] = torch.from_numpy(img["head"]["kernel"].T)
     pt["img.head.bias"] = torch.from_numpy(img["head"]["bias"])
     pt["img.pos_embedding"] = torch.from_numpy(img["pos_embedding"])  # (1, 256, 1152)
@@ -125,7 +148,9 @@ def convert_llm(params: dict, pi05: bool) -> dict:
     """Convert the dual-expert Gemma LLM (PaliGemma + action expert) from JAX to PyTorch."""
     pt: dict[str, torch.Tensor] = {}
     llm = params["PaliGemma"]["llm"]
-    pt["llm.embedder.embedding.weight"] = torch.from_numpy(llm["embedder"]["input_embedding"])
+    pt["llm.embedder.embedding.weight"] = torch.from_numpy(
+        llm["embedder"]["input_embedding"]
+    )
 
     layers = llm["layers"]
     pg_w, act_w = _PALIGEMMA_WIDTH, _ACTION_WIDTH
@@ -150,12 +175,18 @@ def convert_llm(params: dict, pi05: bool) -> dict:
         pt[f"llm.layers.{i}.attn.q_proj.0.weight"] = torch.from_numpy(
             q_einsum[i].transpose(0, 2, 1).reshape(pg_w, pg_w)
         )
-        pt[f"llm.layers.{i}.attn.k_proj.0.weight"] = torch.from_numpy(kv_einsum[i, 0, 0].T)
-        pt[f"llm.layers.{i}.attn.v_proj.0.weight"] = torch.from_numpy(kv_einsum[i, 1, 0].T)
+        pt[f"llm.layers.{i}.attn.k_proj.0.weight"] = torch.from_numpy(
+            kv_einsum[i, 0, 0].T
+        )
+        pt[f"llm.layers.{i}.attn.v_proj.0.weight"] = torch.from_numpy(
+            kv_einsum[i, 1, 0].T
+        )
         pt[f"llm.layers.{i}.attn.o_proj.0.weight"] = torch.from_numpy(
             o_einsum[i].reshape(pg_w, pg_w).T
         )
-        pt[f"llm.layers.{i}.pre_attention_norms.0.scale"] = torch.from_numpy(pre_attn_scale[i])
+        pt[f"llm.layers.{i}.pre_attention_norms.0.scale"] = torch.from_numpy(
+            pre_attn_scale[i]
+        )
         pt[f"llm.layers.{i}.pre_ffw_norms.0.scale"] = torch.from_numpy(pre_ffw_scale[i])
         pt[f"llm.layers.{i}.mlps.0.w_gating"] = torch.from_numpy(mlp_gating[i])
         pt[f"llm.layers.{i}.mlps.0.w_linear"] = torch.from_numpy(mlp_linear[i])
@@ -164,8 +195,12 @@ def convert_llm(params: dict, pi05: bool) -> dict:
         pt[f"llm.layers.{i}.attn.q_proj.1.weight"] = torch.from_numpy(
             q_einsum_1[i].transpose(0, 2, 1).reshape(pg_w, act_w)
         )
-        pt[f"llm.layers.{i}.attn.k_proj.1.weight"] = torch.from_numpy(kv_einsum_1[i, 0, 0].T)
-        pt[f"llm.layers.{i}.attn.v_proj.1.weight"] = torch.from_numpy(kv_einsum_1[i, 1, 0].T)
+        pt[f"llm.layers.{i}.attn.k_proj.1.weight"] = torch.from_numpy(
+            kv_einsum_1[i, 0, 0].T
+        )
+        pt[f"llm.layers.{i}.attn.v_proj.1.weight"] = torch.from_numpy(
+            kv_einsum_1[i, 1, 0].T
+        )
         pt[f"llm.layers.{i}.attn.o_proj.1.weight"] = torch.from_numpy(
             o_einsum_1[i].reshape(pg_w, act_w).T
         )
@@ -175,17 +210,17 @@ def convert_llm(params: dict, pi05: bool) -> dict:
         if pi05:
             pre_attn_1 = layers["pre_attention_norm_1"]
             pre_ffw_1 = layers["pre_ffw_norm_1"]
-            pt[f"llm.layers.{i}.pre_attention_norms.1.ada_modulation.weight"] = torch.from_numpy(
-                pre_attn_1["Dense_0"]["kernel"][i].T
+            pt[f"llm.layers.{i}.pre_attention_norms.1.ada_modulation.weight"] = (
+                torch.from_numpy(pre_attn_1["Dense_0"]["kernel"][i].T)
             )
-            pt[f"llm.layers.{i}.pre_attention_norms.1.ada_modulation.bias"] = torch.from_numpy(
-                pre_attn_1["Dense_0"]["bias"][i]
+            pt[f"llm.layers.{i}.pre_attention_norms.1.ada_modulation.bias"] = (
+                torch.from_numpy(pre_attn_1["Dense_0"]["bias"][i])
             )
-            pt[f"llm.layers.{i}.pre_ffw_norms.1.ada_modulation.weight"] = torch.from_numpy(
-                pre_ffw_1["Dense_0"]["kernel"][i].T
+            pt[f"llm.layers.{i}.pre_ffw_norms.1.ada_modulation.weight"] = (
+                torch.from_numpy(pre_ffw_1["Dense_0"]["kernel"][i].T)
             )
-            pt[f"llm.layers.{i}.pre_ffw_norms.1.ada_modulation.bias"] = torch.from_numpy(
-                pre_ffw_1["Dense_0"]["bias"][i]
+            pt[f"llm.layers.{i}.pre_ffw_norms.1.ada_modulation.bias"] = (
+                torch.from_numpy(pre_ffw_1["Dense_0"]["bias"][i])
             )
         else:
             pt[f"llm.layers.{i}.pre_attention_norms.1.scale"] = torch.from_numpy(
@@ -198,8 +233,12 @@ def convert_llm(params: dict, pi05: bool) -> dict:
     pt["llm.final_norms.0.scale"] = torch.from_numpy(llm["final_norm"]["scale"])
     if pi05:
         final_norm_1 = llm["final_norm_1"]
-        pt["llm.final_norms.1.ada_modulation.weight"] = torch.from_numpy(final_norm_1["Dense_0"]["kernel"].T)
-        pt["llm.final_norms.1.ada_modulation.bias"] = torch.from_numpy(final_norm_1["Dense_0"]["bias"])
+        pt["llm.final_norms.1.ada_modulation.weight"] = torch.from_numpy(
+            final_norm_1["Dense_0"]["kernel"].T
+        )
+        pt["llm.final_norms.1.ada_modulation.bias"] = torch.from_numpy(
+            final_norm_1["Dense_0"]["bias"]
+        )
     else:
         pt["llm.final_norms.1.scale"] = torch.from_numpy(llm["final_norm_1"]["scale"])
     return pt
@@ -212,8 +251,11 @@ def convert_projections(params: dict, pi05: bool) -> dict:
         proj_keys = ["action_in_proj", "action_out_proj", "time_mlp_in", "time_mlp_out"]
     else:
         proj_keys = [
-            "state_proj", "action_in_proj", "action_out_proj",
-            "action_time_mlp_in", "action_time_mlp_out",
+            "state_proj",
+            "action_in_proj",
+            "action_out_proj",
+            "action_time_mlp_in",
+            "action_time_mlp_out",
         ]
     for key in proj_keys:
         if key not in params:
@@ -255,7 +297,11 @@ def convert_jax_to_new_pytorch(
     params = _load_jax_params(input_model)
 
     merged: dict[str, torch.Tensor] = {}
-    for part in (convert_siglip(params), convert_llm(params, pi05), convert_projections(params, pi05)):
+    for part in (
+        convert_siglip(params),
+        convert_llm(params, pi05),
+        convert_projections(params, pi05),
+    ):
         for k, v in part.items():
             # ``contiguous()`` is a no-op (returns the same tensor) when already
             # contiguous, so the guard ternary was redundant.
@@ -285,10 +331,18 @@ def convert_jax_to_new_pytorch(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-model", required=True, help="JAX checkpoint directory")
-    parser.add_argument("--input-norm-stats", required=True, help="norm_stats.json to copy across")
-    parser.add_argument("--output-model", required=True, help="output (new-format) checkpoint dir")
-    parser.add_argument("--output-norm-stats", required=True, help="destination norm_stats.json path")
-    parser.add_argument("--no-pi05", dest="pi05", action="store_false", help="convert a non-pi05 model")
+    parser.add_argument(
+        "--input-norm-stats", required=True, help="norm_stats.json to copy across"
+    )
+    parser.add_argument(
+        "--output-model", required=True, help="output (new-format) checkpoint dir"
+    )
+    parser.add_argument(
+        "--output-norm-stats", required=True, help="destination norm_stats.json path"
+    )
+    parser.add_argument(
+        "--no-pi05", dest="pi05", action="store_false", help="convert a non-pi05 model"
+    )
     parser.add_argument("--action-dim", type=int, default=32)
     parser.add_argument("--action-horizon", type=int, default=32)
     parser.add_argument("--max-token-len", type=int, default=200)
