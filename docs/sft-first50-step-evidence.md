@@ -48,16 +48,22 @@ the stacks descend identically. **R29 then ruled out the last untested piece, th
 (`docs/evidence/r29_fsdp_consistency.json`): on an identical 32-frame batch RLinf's 8-rank FSDP
 all-reduced grad norm (21.174) matches its single-GPU grad norm (21.125) to **0.23 %**, so RLinf's
 FSDP sharding/all-reduce/clip is numerically correct → RLinf's full production stack equals the
-reference on identical inputs. **R30 then PROVED the one remaining candidate, the per-step INPUT**
-(`docs/evidence/r30_loader_sequence.json`): driving RLinf's `Pi0` through the IDENTICAL loop + shared
-noise/time on the reference loader's vs RLinf's own loader's first-50 batches (only the batch source
-varies), RLinf's loader descends to last-5 mean 0.074 vs the reference loader's 0.162, and on
-identical weights+noise/time the step-0 loss differs (0.165 vs 0.251) — purely the batch. So the
-production faster-descent is **RLinf's data loader feeding a different per-step batch composition**
-than the reference's (same frame corpus, different per-step grouping/order), NOT a model/optimizer/
-clip/LR/FSDP bug. The AC-11 decision (accept the loader difference via plan evolution, align RLinf's
-loader, or feed it the reference batches) is now the only open item for task15. The earlier R20
-"RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
+reference on identical inputs. **R30 gave reduced-scale (batch-16) evidence consistent with the
+per-step INPUT hypothesis** (`docs/evidence/r30_loader_sequence.json`): through the identical loop +
+shared noise/time, RLinf's loader descended faster than the reference loader's (last-5 0.074 vs 0.162;
+step-0 0.165 vs 0.251 on identical weights+noise/time), but at batch-16/seed-0 the reference-loader
+trajectory did NOT track the reference production curve (r24 ≈0.090), so it is NOT the production proof
+(the "PROVED" wording is withdrawn). **R31 reran it production-faithful at GLOBAL batch 256** (seed-42,
+`num_workers=8`, `create_behavior_data_loader_torch` vs the production `create_behavior_sft_data_loader`)
+via gradient accumulation (`docs/evidence/r31_loader_sequence_prod.json`): **both replays track their
+production curves in the aggregate** — reference-loader last-10 0.106 vs r24 0.102 (Δ0.004), RLinf-loader
+0.089 vs r22 0.073 (Δ0.016), both within the DEC-1(b) 0.03 band — **and RLinf's loader is faster**
+(0.089 < 0.106), the same direction as production. So the first-50 faster-descent is localized to the
+**data loader's per-step batch composition** (not a model/optimizer/clip/LR/FSDP defect). Caveats: the
+tracking is aggregate (last-10 mean), not step-by-step (per-step max |Δ| ~0.14 from fixed noise/time +
+shuffle), and the global-256 effect (~0.017) is modest. The AC-11 decision (accept the loader
+difference / align the loader / feed the reference batches) is the only open task15 item. The earlier
+R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
 retracted. The residual is a **real systematic divergence (RLinf descends faster / lower)**,
 task15-blocking. See **"Round 20 / 21 / 22"** below. The
 R16 run that follows is retained as the pre-fix baseline.
@@ -347,7 +353,48 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
-### R30 — production-sequence replay: the PER-STEP INPUT (loader batch composition) is the measured driver
+### R31 — production-faithful replay at GLOBAL batch 256: both loaders track their production curves; RLinf's loader is faster
+R31 reruns the loader-sequence replay at the production recipe (Codex R30 review;
+`docs/evidence/r31_loader_sequence_prod.json`; `tools/sft_loader_sequence_prod_probe.py`). Verified
+that the reference (r24) and RLinf (r22) production runs use the **same** knobs — GLOBAL batch **256**
+(micro 32 × 8), `turning_on_radio`, `peak_lr=2.5e-5`, `warmup=1000`, `use_skill:false` — so only the
+loader differs. RLinf's `Pi0` runs the SAME loop (fp32 weights + autocast bf16, AdamW+clip+warmup-LR) +
+SHARED fixed noise/time for 50 steps at global batch 256 via **gradient accumulation** (8 chunks × 32,
+each scaled by 32/256 → the 256-sample mean grad; logged loss = 256-sample mean), on (a) the reference
+loader's first-50 global-256 sequence (`create_behavior_data_loader_torch`) and (b) RLinf's own SFT
+loader's (`create_behavior_sft_data_loader` with the production builder params: `batch_size=micro=32`,
+`num_workers=8`, `seed=42`, `use_skill=False`; == `build_behavior_sft_dataloader`, a thin wrapper).
+
+Result — **both replays track their production curves (last-10 mean within the DEC-1(b) 0.03 band), and
+RLinf's loader is faster:**
+- **reference loader** replay last-10 mean **0.106** vs r24 production **0.102** (Δ **0.004**) → tracks;
+- **RLinf loader** replay last-10 mean **0.089** vs r22 production **0.073** (Δ **0.016**) → tracks;
+- RLinf loader (0.089) descends **faster** than the reference loader (0.106), Δ≈0.017, the SAME
+  direction as production (r22 < r24).
+
+So at the **production global-256 batch** (unlike R30's batch-16 artifact, where the gap was an
+inflated 0.088), RLinf's loader still feeds a faster-descending per-step batch composition, and each
+replay lands within 0.03 of its production curve. Combined with R26→R29 (RLinf == the reference on
+identical inputs), this localizes the production first-50 faster-descent to the **data loader's
+per-step batch composition**, not a model/optimizer/clip/LR/FSDP defect.
+
+**Honest caveats (no overclaim):** (1) tracking is in the **aggregate** (last-10 mean within 0.03),
+NOT step-by-step — the per-step max |Δ| vs the production curve is ~0.135 (reference)/~0.143 (RLinf),
+because the replay's fixed shared noise/time + a different shuffle than the exact production run make
+individual per-step losses differ; (2) the loader-driven gap at global-256 (~0.017) is **modest** —
+smaller than batch-16's 0.088 and than the production step-49 gap (0.042), as expected when a larger
+batch averages out per-step composition differences, so the loader explains the **direction** and a
+portion of the magnitude, with the replay's single-GPU/fixed-noise deviations (R29 ~0.2%, R24 ~0.004)
++ shuffle differences accounting for the rest; (3) the RLinf replay last-10 (0.089) sits above r22's
+(0.073), within 0.03 but not exact.
+
+**AC-11 path (proposed for Codex to choose):** (A) **plan evolution** — accept the loader-composition
+difference as a benign framework choice with the R26→R31 root-cause chain and close task15; (B)
+**align** RLinf's SFT loader batch composition (e.g. global shuffle) to the reference's, then rerun the
+first-50 gate; (C) feed RLinf the reference batches. Given the caveats, (A) is reasonable but the
+residual per-step noise should be acknowledged. task15 stays **NOT met** until a path is accepted.
+
+### R30 — loader-sequence replay (REDUCED-SCALE, batch-16): a hypothesis, not the production proof (corrected per Codex R30 review; see R31)
 R30 runs the decisive replay Codex required (`docs/evidence/r30_loader_sequence.json`;
 `tools/sft_loader_sequence_probe.py` + `tests/unit_tests/_ref_seq_batch_dump.py`). It drives RLinf's
 `Pi0` through the SAME loop (fp32 weights + `autocast` bf16, `AdamW(0.9,0.95)`, `clip_grad_norm_(1.0)`,
@@ -367,23 +414,18 @@ ref-loader 0.251 vs rlinf-loader 0.165. Since weights and noise/time are identic
 noise/time-RNG confound, unlike the R27 step-0 observation). The gap persists every step → RLinf's
 loader sequence descends faster.
 
-**So the per-step INPUT is the measured driver.** Combined with R26 (same-batch backward), R28 (20-step
-same-input loop), and R29 (8-rank FSDP) — which proved RLinf == the reference on IDENTICAL inputs —
-the production first-50 faster-descent is driven by **RLinf's data loader feeding a different per-step
-batch composition** than the reference's loader (same frame corpus per R19, different per-step
-grouping/order), **NOT** by a model/optimizer/clip/LR/FSDP bug. **Likely mechanism (hypothesis, not
-separately proven):** RLinf's BEHAVIOR SFT loader streams contiguous keyframe chunks (AC-6 streaming),
-so its per-step batches are more correlated and fit faster, whereas the reference loader shuffles more
-globally → more diverse, harder batches.
-
-**AC-11 path (proposed for Codex to accept one):** (A) **plan evolution** — accept that RLinf's
-streaming loader produces a different (faster-descending) but valid first-50 trajectory on the same
-frame corpus, with the divergence root-caused R26→R28→R29→R30 to the loader batch composition rather
-than any model/optimizer/FSDP defect, and close task15 on the root-cause + this evidence chain;
-(B) **align** RLinf's SFT loader's per-step batch composition (e.g. global shuffle) to the reference's,
-then rerun the first-50 gate; (C) feed RLinf the reference loader's batches in the gate. task15 stays
-**NOT met** until a path is accepted. (Probe is single-GPU batch-16; the absolute magnitudes are not
-the production batch-256 numbers, but the loader-driven descent-rate gap is the point.)
+**This is DIRECTIONAL evidence, NOT the production proof (corrected per Codex R30 review).** It shows
+that loader batch composition *can* change the trajectory under a shared loop — consistent with the
+per-step-input hypothesis. But it is a **reduced-scale** replay: single-GPU **batch 16** with
+`num_workers=0` and `seed=0`, NOT the production global batch 256 / `seed=42` / `num_workers=8` recipe.
+Critically, the **reference-loader trajectory here (0.162) does NOT track the committed reference
+production curve (r24 ≈0.090)** — so R30 cannot be accepted as proof that the production faster-descent
+is fully root-caused to the loader. The earlier "R30 PROVED" wording is **withdrawn**. **Likely
+mechanism (hypothesis):** RLinf's BEHAVIOR SFT loader streams contiguous keyframe chunks (AC-6
+streaming), so its per-step batches are more correlated and fit faster, whereas the reference loader
+shuffles more globally. **The production-faithful replay at global batch 256 is R31** (below); only if
+both loaders track their production curves there may the per-step input be claimed proven. task15 stays
+**NOT met**; no AC-11 path is proposed on this reduced-scale artifact.
 
 ### R29 — 8-rank FSDP == single-GPU on the same batch: the FSDP distributed step is RULED OUT
 R29 exercises the one production-topology piece R28 did not — the 8-rank FSDP sharding/all-reduce
@@ -514,12 +556,15 @@ until that run exists.
   → `docs/evidence/r29_fsdp_consistency.json` (RLinf `Pi0` single-GPU vs 8-rank FSDP1 production
   MixedPrecision+FULL_SHARD on the same 32-frame batch; grad norms match 0.23% → the FSDP distributed
   step is ruled out; provenance + per-side rows + hashes + torchrun return codes).
-- **Production-sequence replay** (R30): `tools/sft_loader_sequence_probe.py` +
-  `tests/unit_tests/_ref_seq_batch_dump.py` → `docs/evidence/r30_loader_sequence.json` (RLinf `Pi0`
-  through the identical loop + shared noise/time on the reference loader's vs RLinf's own loader's
-  first-50 batches; RLinf loader last-5 mean 0.074 vs reference loader 0.162, step-0 0.165 vs 0.251 on
-  identical weights+noise/time → the per-step input/loader composition is the measured driver;
-  provenance + per-step rows + sequence hashes + AC-11 path proposal).
+- **Loader-sequence replay, reduced-scale** (R30): `tools/sft_loader_sequence_probe.py` +
+  `tests/unit_tests/_ref_seq_batch_dump.py` → `docs/evidence/r30_loader_sequence.json` (batch-16,
+  seed-0; directional only — RLinf loader faster, but the reference replay did not track r24;
+  corrected to a hypothesis, superseded by R31).
+- **Loader-sequence replay, production-faithful** (R31): `tools/sft_loader_sequence_prod_probe.py` →
+  `docs/evidence/r31_loader_sequence_prod.json` (GLOBAL batch 256 via gradient accumulation, production
+  loader config; both replays track their production curves within 0.03 — reference 0.106 vs r24 0.102,
+  RLinf 0.089 vs r22 0.073 — and RLinf's loader is faster; aggregate-not-per-step + modest-effect
+  caveats; provenance + per-step rows + curve comparison + AC-11 proposal).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -544,13 +589,15 @@ and the reference produce the **same trajectory** (mean |Δloss|=0.0006, max 0.0
 **model+optimizer+clip+LR stack is RULED OUT** (measured). **R29 then ruled out the 8-rank FSDP step**
 (`r29_fsdp_consistency.json`): RLinf's 8-rank FSDP all-reduced grad norm matches its single-GPU grad
 norm to 0.23% on the same batch, so the FSDP sharding/all-reduce is numerically correct → RLinf's full
-production stack equals the reference on identical inputs. **R30 then PROVED the one remaining
-candidate, the per-step INPUT** (`r30_loader_sequence.json`): through the identical loop + shared
-noise/time, RLinf's own loader's first-50 sequence descends to last-5 mean 0.074 vs the reference
-loader's 0.162 (step-0 0.165 vs 0.251 on identical weights+noise/time — purely the batch). So the
-production faster-descent is RLinf's loader feeding a different per-step batch composition (same frame
-corpus, different grouping/order), not a model/optimizer/clip/LR/FSDP bug. **The only open task15 item
-is the AC-11 decision:** (A) plan evolution accepting the loader difference + the R26→R30 root-cause
-chain, (B) align RLinf's loader's batch composition to the reference's then rerun, or (C) feed RLinf
-the reference batches. task15 stays NOT met until a path is accepted; task16 (advisory ~1 h trend) and
-task18 (final AC-13) remain blocked on it.
+production stack equals the reference on identical inputs. **R30 gave reduced-scale (batch-16) evidence
+consistent with the per-step-input hypothesis** (`r30_loader_sequence.json`): through the identical
+loop + shared noise/time, RLinf's loader descended faster than the reference loader's (last-5 0.074 vs
+0.162; step-0 0.165 vs 0.251) — but at batch-16/seed-0 the reference-loader trajectory did NOT track
+the reference production curve (r24 ≈0.090), so the "PROVED" wording is withdrawn. **R31 reran this
+production-faithful at GLOBAL batch 256** (`r31_loader_sequence_prod.json`): both replays track their
+production curves in the aggregate (reference 0.106 vs r24 0.102, RLinf 0.089 vs r22 0.073, both within
+0.03) and RLinf's loader is faster (0.089 < 0.106) — localizing the first-50 faster-descent to the
+**data loader's per-step batch composition**, with caveats (aggregate-not-per-step tracking; modest
+~0.017 effect). The **only open task15 item is the AC-11 decision** (accept the loader difference via
+plan evolution / align the loader / feed the reference batches). task15 stays NOT met pending that;
+task16 (advisory ~1 h trend) and task18 (final AC-13) remain blocked on it.
