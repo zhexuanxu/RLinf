@@ -1,6 +1,6 @@
 {
   "purpose": "bf16-master vs fp32-master AdamW update on the real BEHAVIOR SFT model (fixed batch + fixed noise/time, openpi_cosine warmup LR)",
-  "command": "CUDA_VISIBLE_DEVICES=0 python tools/sft_master_dtype_probe.py",
+  "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_master_dtype_probe.py --out-csv docs/evidence/r21_master_dtype_probe.csv --out-json docs/evidence/r21_master_dtype_probe.json",
   "n_steps": 50,
   "seed": 42,
   "peak_lr": 2.5e-05,
@@ -8,7 +8,8 @@
   "model_path": "/mnt/public/xzxuan/models/pi05_base_pytorch_new",
   "hashes_sha256_16": {
     "model.safetensors": "f6391204c480d6c5",
-    "norm_stats.json": "d66ed16830a98f90"
+    "norm_stats.json": "d66ed16830a98f90",
+    "paligemma_tokenizer.model": "8986bb4f423f07f8"
   },
   "bf16_master": {
     "param_dtype": "torch.bfloat16",

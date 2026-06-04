@@ -56,6 +56,7 @@ MODEL_PATH = "/mnt/public/xzxuan/models/pi05_base_pytorch_new"
 ASSETS = "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets"
 ASSET_ID = "behavior-1k/2025-challenge-demos"
 DATA = "/mnt/public/xzxuan/data/2025-challenge-demos"
+TOKENIZER = "/mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model"
 # openpi_cosine warmup: lr(step) = peak * (step + 1) / (warmup + 1)
 PEAK_LR, WARMUP = 2.5e-5, 1000
 
@@ -224,7 +225,14 @@ def main():
     manifest = {
         "purpose": "bf16-master vs fp32-master AdamW update on the real BEHAVIOR SFT model "
         "(fixed batch + fixed noise/time, openpi_cosine warmup LR)",
-        "command": "CUDA_VISIBLE_DEVICES=0 python tools/sft_master_dtype_probe.py",
+        "command": (
+            "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl "
+            "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True "
+            "PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 "
+            "python tools/sft_master_dtype_probe.py "
+            "--out-csv docs/evidence/r21_master_dtype_probe.csv "
+            "--out-json docs/evidence/r21_master_dtype_probe.json"
+        ),
         "n_steps": N,
         "seed": SEED,
         "peak_lr": PEAK_LR,
@@ -233,6 +241,7 @@ def main():
         "hashes_sha256_16": {
             "model.safetensors": _file_digest(f"{MODEL_PATH}/model.safetensors"),
             "norm_stats.json": _file_digest(f"{ASSETS}/{ASSET_ID}/norm_stats.json"),
+            "paligemma_tokenizer.model": _file_digest(TOKENIZER),
         },
         "bf16_master": {
             "param_dtype": bf16_dtype,

@@ -87,15 +87,20 @@ actor:
   fsdp_config:
     strategy: "fsdp"
     # FULL_SHARD across ranks, matching the reference trainer (degenerates to a
-    # single shard on 1 GPU). The model casts params to bf16; gradient
-    # checkpointing is enabled on the dual-expert Gemma + SigLIP.
+    # single shard on 1 GPU). FSDP MixedPrecision casts params to bf16 for compute;
+    # gradient checkpointing is enabled on the dual-expert Gemma + SigLIP.
     sharding_strategy: "full_shard"
     use_orig_params: True
     gradient_checkpointing: True
     mixed_precision:
+      # Match the reference recipe (init_model fsdp1 branch:
+      # MixedPrecision(param_dtype=bf16, reduce_dtype=fp32)): bf16 compute, but the
+      # gradient all-reduce and buffers stay fp32 so multi-rank grad accumulation is
+      # not rounded to bf16 (the BEHAVIOR config previously used bf16 for all three,
+      # unlike the reference and the other SFT configs).
       param_dtype: ${actor.model.precision}
-      reduce_dtype: ${actor.model.precision}
-      buffer_dtype: ${actor.model.precision}
+      reduce_dtype: fp32
+      buffer_dtype: fp32
 
 reward:
   use_reward_model: False

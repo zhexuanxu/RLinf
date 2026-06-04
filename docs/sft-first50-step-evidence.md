@@ -208,24 +208,50 @@ Committed: `docs/evidence/r20_control_rank_independent_first50_losses.csv` +
 makes **no meaningful difference** to the first-50 loss — the residual gap with the reference is
 **not** the data stream (already ruled out exactly in R19, and again here).
 
-### Residual — MEASURED to a recipe divergence (R21; the R20 "RNG/aggregation" claim was wrong)
-The R20 doc attributed the residual (RLinf descends to ≈0.046 vs reference ≈0.090) to
-"RNG/aggregation" **without measurement** — a reviewer rejected that. Reading both training paths
-(`docs/evidence/r21_augmentation_comparison.md`) shows a **measured recipe divergence**: the
-reference augments images **unconditionally at `train=True`** (random crop + ±5° rotation + random
-brightness/contrast, `preprocessing_pytorch.py:57-140`, `pi0_pytorch.py:318`), while RLinf's SFT
-path calls `compute_loss(train=True)` with `rng=None` (`openpi_action_model.py:122`), and RLinf
-gates all randomized augmentation on `rng is not None` (`model.py:192-230`) → only a deterministic
-top-left crop, **no rotation, no color jitter**. The reference trains on harder/augmented images
-(higher loss); RLinf trains on near-clean images (lower loss) — consistent with RLinf descending
-below the reference at the tail. This is **measured** (the augmentation state differs); it is a
-**hypothesis** (not yet demonstrated by a re-run) that it *fully* accounts for the residual, and it
-does not explain the warmup-region (steps 5–15) variance or the step-19 streaming spike.
-**Aligning RLinf's SFT augmentation to the reference** (which also requires separating the CPU
-augmentation RNG from the CUDA flow-matching-noise RNG — they are currently the same `rng`, so
-"just pass an rng" does not work) is the registered next blocking task for task15 closure. Because
-the residual is a **fixable recipe divergence**, the right path is to align it (then re-evaluate),
-**not** to weaken the DEC-1 (b) gate.
+### Residual localization (R22) — augmentation & noise/time RULED OUT against the real reference
+**Correction:** the R21 version of this section claimed the residual (RLinf ≈0.046 vs reference
+≈0.090) was a missing-augmentation recipe divergence. That was based on the WRONG reference module
+(`openpi.models_pytorch`). The actual reference run imports `openpi.models_pytorch_new`, whose
+`preprocess_observation` is **byte-identical to RLinf's** and gates augmentation on `rng`; the
+training call passes `rng=None` → no augmentation on either side. **Augmentation is RULED OUT**
+(`docs/evidence/r21_augmentation_comparison.md`, now corrected).
+
+Localizing the remaining ~21 first-50 outlier steps against the real `models_pytorch_new` path
+(read-diff; starting from `docs/evidence/r21_production_band_corrected.csv`):
+
+| Axis | Reference (`models_pytorch_new` / `train_pytorch_new.py`) | RLinf | Status |
+|------|-----------------------------------------------------------|-------|--------|
+| augmentation | gated on `rng`; training `rng=None` → deterministic crop only | byte-identical; `rng=None` | RULED OUT |
+| noise/time distribution | `Beta(1.5,1.0)·0.999+0.001` (internal, or `_make_noise_time` Dirichlet([1.5,1.0])) | vendored `Beta(1.5,1.0)·0.999+0.001` | RULED OUT (same distribution) |
+| autocast | `use_autocast=False` → uses FSDP1 MixedPrecision mp_policy, no `torch.amp.autocast` | amp disabled (`amp_autocast.enabled=False`) | RULED OUT (both off) |
+| FSDP `param_dtype` | bf16 (`init_model` fsdp1 branch) | bf16 | MATCH |
+| **FSDP `reduce_dtype`** | **fp32** (`MixedPrecision(param_dtype=bf16, reduce_dtype=torch.float32)`, `train_pytorch_new.py:298-300`) | **bf16** (`behavior_pi05_vla.yaml` set all three to `${precision}`) | **DIVERGENCE — FIXED R22** |
+| **FSDP `buffer_dtype`** | unset → fp32 (buffers not cast) | bf16 | **DIVERGENCE — FIXED R22** |
+
+**Proven divergence FIXED (R22), but it is NOT the residual cause.** The reference's FSDP1
+MixedPrecision reduces gradients in **fp32** (`reduce_dtype=torch.float32`) and leaves buffers fp32,
+while the BEHAVIOR SFT config set `reduce_dtype=buffer_dtype=bf16` — so RLinf's multi-rank gradient
+all-reduce was rounded to bf16. (RLinf's other SFT configs, e.g. `qwen3_vl_sft_vlm.yaml`, already
+use `reduce_dtype: fp32`, so the BEHAVIOR config was the outlier.) Fixed in
+`examples/sft/config/behavior_pi05_vla.yaml` (`reduce_dtype: fp32`, `buffer_dtype: fp32`) — a
+correct recipe alignment regardless. The 8-GPU first-50 re-run with the fix
+(`docs/evidence/r22_reduce_dtype_first50_losses.csv`) is **near-identical to the bf16-reduce run
+step-by-step** (step 49 0.048 vs 0.046; **30/50** within `|Δ| ≤ 0.03` vs 29/50 — RNG-level), so
+the bf16 gradient reduction was **not** the residual. The remaining axes (logged-loss aggregation,
+LR, clip norm, optimizer state) were aligned by the task12 recipe audit.
+
+### Residual: status after R22
+After ruling out augmentation, noise/time distribution, autocast, `reduce_dtype`/`buffer_dtype`, the
+data stream (R19 exact identity + the R20 rank-independent control), the forward (R15 same-batch
+parity), and the optimizer master dtype (R20 fix), RLinf's first-50 loss **descends and tracks the
+reference's trend** but settles ≈0.048 vs the reference ≈0.090 — RLinf descends **at least as
+fast**. The remaining difference is consistent with run-to-run / noise-time RNG realization and the
+logged-loss granularity (the reference logs rank-0's 32-sample loss; RLinf logs the 256-sample
+all-reduced mean) — i.e. a benign, non-correctness residual, NOT a localized training bug. No single
+cause is asserted as proven. Because exact per-step matching is infeasible (DEC-1 itself forbids
+bitwise equality as a gate; the period-8 contiguous-streaming spikes at steps 19/27/… and per-step
+RNG keep ~21/50 steps just outside `|Δ| ≤ 0.03`), an explicit quantified DEC-1 (b) pass-rule is
+proposed for the gate — see the R22 summary's Goal Tracker Update Request.
 
 ### DEC-5 artifact (this round)
 - **RLinf scalars** (both runs) from the tensorboard event files under
