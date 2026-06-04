@@ -55,6 +55,7 @@ from rlinf.data.lerobot_paths import (
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
     NormStats,
+    blank_asset_field,
     load_norm_stats,
     resolve_norm_stats_dir,
 )
@@ -347,7 +348,9 @@ class BehaviorSftDataLoader:
         return len(self._torch_loader)
 
 
-def build_behavior_sft_dataloader(cfg, world_size, rank, data_paths, eval_dataset=False):
+def build_behavior_sft_dataloader(
+    cfg, world_size, rank, data_paths, eval_dataset=False
+):
     """Build the self-contained BEHAVIOR SFT data loader for the SFT worker.
 
     Owns the config extraction the FSDP SFT worker previously did inline. The
@@ -375,19 +378,17 @@ def build_behavior_sft_dataloader(cfg, world_size, rank, data_paths, eval_datase
 
     # Norm stats are resolved STRICTLY from YAML assets_dir + asset_id — the same
     # canonical task-0000 distribution the eval model factory resolves (AC-8).
-    # No checkpoint-relative (model_path) or norm_stats_path fallback: those could
-    # silently load non-task-0000 stats, so a missing field fails loudly here.
+    # No checkpoint-relative (model_path) or norm_stats_path fallback, and a blank
+    # (None or empty/whitespace) value is rejected here the same way the eval
+    # factory rejects it, so neither path can silently load non-task-0000 stats.
     assets_dir = model_select("openpi.assets_dir", None)
-    if assets_dir is None:
-        raise ValueError(
-            "openpi_pytorch BEHAVIOR SFT requires actor.model.openpi.assets_dir "
-            "(the canonical task-0000 norm-stats assets directory); none was set."
-        )
     asset_id = model_select("openpi.asset_id", None)
-    if asset_id is None:
+    missing = blank_asset_field(assets_dir, asset_id)
+    if missing is not None:
         raise ValueError(
-            "openpi_pytorch BEHAVIOR SFT requires actor.model.openpi.asset_id "
-            "(e.g. 'behavior-1k/2025-challenge-demos'); none was set."
+            f"openpi_pytorch BEHAVIOR SFT requires a non-empty "
+            f"actor.model.openpi.{missing} (the canonical task-0000 norm-stats "
+            "asset location); it has no default."
         )
 
     micro_batch_size = cfg.actor.micro_batch_size

@@ -130,6 +130,7 @@ def get_model(cfg, torch_dtype=None):
         OpenPiPytorchActionModel,
     )
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        blank_asset_field,
         load_norm_stats,
         resolve_norm_stats_dir,
     )
@@ -222,25 +223,21 @@ def get_model(cfg, torch_dtype=None):
 
     # Norm stats resolve from YAML assets_dir + asset_id (the SAME resolution the
     # SFT data loader uses, so eval and SFT share the canonical task-0000 stats).
-    # Both fields are required for eval — there is NO hard-coded asset-id default,
-    # so eval can never silently load a non-task-0000 distribution. Training leaves
-    # the processor (and thus norm stats) to the data loader.
+    # Both fields are required for eval and must be non-blank — there is NO
+    # hard-coded asset-id default and a blank value is not a value, so eval can
+    # never silently load a non-task-0000 distribution. Training leaves the
+    # processor (and thus norm stats) to the data loader.
     assets_dir = _select("openpi.assets_dir")
     asset_id = _select("openpi.asset_id")
     norm_stats = None
     norm_stats_dir = None
     if not load_for_training:
-        if assets_dir is None:
-            missing = "assets_dir"
-        elif asset_id is None:
-            missing = "asset_id"
-        else:
-            missing = None
+        missing = blank_asset_field(assets_dir, asset_id)
         if missing is not None:
             raise FileNotFoundError(
-                f"openpi_pytorch eval requires actor.model.openpi.{missing} (no "
-                "default is applied); the canonical BEHAVIOR task-0000 norm stats "
-                "are resolved strictly from YAML."
+                f"openpi_pytorch eval requires a non-empty actor.model.openpi."
+                f"{missing} (no default is applied); the canonical BEHAVIOR "
+                "task-0000 norm stats are resolved strictly from YAML."
             )
         norm_stats_dir = resolve_norm_stats_dir(assets_dir, asset_id)
         norm_stats = load_norm_stats(norm_stats_dir)

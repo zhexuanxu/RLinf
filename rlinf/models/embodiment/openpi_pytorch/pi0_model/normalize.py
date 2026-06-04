@@ -64,6 +64,28 @@ def load_norm_stats(directory: pathlib.Path | str) -> dict[str, NormStats]:
     return out
 
 
+def _is_blank(value) -> bool:
+    """True if ``value`` is ``None`` or an empty / whitespace-only string."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def blank_asset_field(assets_dir, asset_id) -> str | None:
+    """Return the name of the first blank asset field, or ``None`` if both are set.
+
+    A field is "blank" when it is ``None`` or an empty / whitespace-only string.
+    Shared by the eval model factory and the SFT data-loader builder so that every
+    norm-stats entry point enforces the SAME non-empty YAML contract — a blank
+    value is not a value and must never fall back to bare (non-task-0000) stats.
+    Returns ``"assets_dir"`` or ``"asset_id"`` (assets_dir checked first) so the
+    caller can raise an error naming exactly the missing field.
+    """
+    if _is_blank(assets_dir):
+        return "assets_dir"
+    if _is_blank(asset_id):
+        return "asset_id"
+    return None
+
+
 def resolve_norm_stats_dir(
     assets_dir: pathlib.Path | str, asset_id: str | None
 ) -> pathlib.Path:
@@ -71,16 +93,24 @@ def resolve_norm_stats_dir(
 
     Mirrors the BEHAVIOR asset layout: when ``asset_id`` is given, the stats live
     at EXACTLY ``{assets_dir}/{asset_id}/norm_stats.json`` (e.g.
-    ``.../behavior-1k/2025-challenge-demos/norm_stats.json``). There is NO
-    fallback to a bare ``{assets_dir}/norm_stats.json`` when an ``asset_id`` was
-    requested — that bare form is only used for direct-directory callers that
-    pass ``asset_id=None``. A missing artifact raises rather than silently
-    returning a different (non-task-0000) stats file. This is the shared
-    resolution both the eval model factory and the SFT data loader use, so they
-    always resolve the same canonical file (AC-8).
+    ``.../behavior-1k/2025-challenge-demos/norm_stats.json``). The bare
+    ``{assets_dir}/norm_stats.json`` form is used ONLY when ``asset_id is None``
+    (explicit direct-directory callers); an empty / whitespace-only ``asset_id``
+    is rejected, since a blank YAML value must not silently resolve bare stats. A
+    missing artifact raises rather than returning a different (non-task-0000)
+    file. This is the shared resolution both the eval model factory and the SFT
+    data loader use, so they always resolve the same canonical file (AC-8).
     """
     base = pathlib.Path(assets_dir).expanduser()
-    directory = base / asset_id if asset_id else base
+    if asset_id is None:
+        directory = base
+    elif _is_blank(asset_id):
+        raise FileNotFoundError(
+            f"BEHAVIOR norm stats require a non-empty asset_id (got {asset_id!r}); "
+            "pass asset_id=None only for explicit direct-directory resolution."
+        )
+    else:
+        directory = base / asset_id
     if (directory / "norm_stats.json").is_file():
         return directory
     raise FileNotFoundError(

@@ -211,6 +211,12 @@ def test_norm_stats_resolver_no_bare_fallback_when_asset_id_given(tmp_path):
     with pytest.raises(FileNotFoundError, match="norm_stats.json"):
         resolve_norm_stats_dir(assets_dir, "behavior-1k/2025-challenge-demos")
 
+    # A blank/whitespace asset_id must NOT fall back to the bare root stats: a
+    # blank YAML value is not a value (AC-8). It is distinct from asset_id=None.
+    for blank in ("", "   "):
+        with pytest.raises(FileNotFoundError, match="asset_id"):
+            resolve_norm_stats_dir(assets_dir, blank)
+
     # With asset_id=None the bare-directory form is the intended resolution.
     assert resolve_norm_stats_dir(assets_dir, None) == assets_dir
 
@@ -306,12 +312,18 @@ def test_get_model_eval_requires_assets_dir(tmp_path):
         get_model(cfg)
 
 
-def test_get_model_eval_requires_asset_id(tmp_path):
-    """Eval must require YAML openpi.asset_id — no hard-coded default (AC-8).
+# Sentinel: omit the openpi.asset_id key entirely (vs. setting it to a blank value).
+_OMIT = object()
 
-    Reproduces the Codex Round-4 finding: norm stats present at the OLD default
-    location `{assets_dir}/physical-intelligence/behavior/norm_stats.json` but
-    `openpi.asset_id` omitted must FAIL, not silently load those stats.
+
+@pytest.mark.parametrize("asset_id_value", [_OMIT, "", "   "])
+def test_get_model_eval_requires_asset_id(tmp_path, asset_id_value):
+    """Eval must require a non-empty YAML openpi.asset_id — no hard-coded default
+    and no blank-value fallback (AC-8).
+
+    Reproduces the Codex findings: norm stats present at the OLD default location
+    `{assets_dir}/physical-intelligence/behavior/norm_stats.json` but `asset_id`
+    omitted (R4) OR blank/whitespace (R5) must FAIL, not silently load those stats.
     """
     torch = pytest.importorskip("torch")
     import safetensors.torch
@@ -334,19 +346,22 @@ def test_get_model_eval_requires_asset_id(tmp_path):
     )
     # Stats DO exist at the formerly-defaulted asset path...
     _write_norm_stats(tmp_path / "physical-intelligence" / "behavior", 0.0)
+    openpi = {
+        "model_action_dim": 32,
+        "paligemma_variant": "dummy",
+        "action_expert_variant": "dummy",
+        "assets_dir": str(tmp_path),
+    }
+    # ...but asset_id is omitted or blank -> must raise, never load root stats.
+    if asset_id_value is not _OMIT:
+        openpi["asset_id"] = asset_id_value
     cfg = OmegaConf.create(
         {
             "model_path": str(tmp_path),
             "precision": "bf16",
             "num_action_chunks": 4,
             "action_dim": 23,
-            "openpi": {
-                "model_action_dim": 32,
-                "paligemma_variant": "dummy",
-                "action_expert_variant": "dummy",
-                "assets_dir": str(tmp_path),
-                # ...but asset_id is intentionally omitted -> must raise.
-            },
+            "openpi": openpi,
         }
     )
     with pytest.raises(FileNotFoundError, match="asset_id"):

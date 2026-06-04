@@ -181,12 +181,21 @@ def test_fsdp_vla_worker_dispatches_openpi_pytorch_dataloader(monkeypatch):
 @pytest.mark.parametrize(
     ("openpi_overrides", "missing"),
     [
+        # Omitted fields.
         ({"asset_id": "behavior-1k/2025-challenge-demos"}, "assets_dir"),
         ({"assets_dir": "/data/assets"}, "asset_id"),
+        # Blank / whitespace-only values must be rejected like omitted ones (AC-8):
+        # a blank YAML value is not a value and must not fall back to bare stats.
+        (
+            {"assets_dir": "", "asset_id": "behavior-1k/2025-challenge-demos"},
+            "assets_dir",
+        ),
+        ({"assets_dir": "/data/assets", "asset_id": ""}, "asset_id"),
+        ({"assets_dir": "/data/assets", "asset_id": "   "}, "asset_id"),
     ],
 )
 def test_sft_builder_requires_assets_dir_and_asset_id(openpi_overrides, missing):
-    """Missing openpi.assets_dir or openpi.asset_id fails loudly (no fallback)."""
+    """Missing OR blank openpi.assets_dir/openpi.asset_id fails loudly (no fallback)."""
     worker = _openpi_pytorch_sft_worker(openpi_overrides)
     with pytest.raises(ValueError, match=missing):
         worker.build_dataloader("/data/behavior")
