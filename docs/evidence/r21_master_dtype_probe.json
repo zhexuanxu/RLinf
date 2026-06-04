@@ -1,0 +1,30 @@
+{
+  "purpose": "bf16-master vs fp32-master AdamW update on the real BEHAVIOR SFT model (fixed batch + fixed noise/time, openpi_cosine warmup LR)",
+  "command": "CUDA_VISIBLE_DEVICES=0 python tools/sft_master_dtype_probe.py",
+  "n_steps": 50,
+  "seed": 42,
+  "peak_lr": 2.5e-05,
+  "warmup": 1000,
+  "model_path": "/mnt/public/xzxuan/models/pi05_base_pytorch_new",
+  "hashes_sha256_16": {
+    "model.safetensors": "f6391204c480d6c5",
+    "norm_stats.json": "d66ed16830a98f90"
+  },
+  "bf16_master": {
+    "param_dtype": "torch.bfloat16",
+    "changed_param_fraction": 0.008611,
+    "delta_l1": 584.2927,
+    "loss_step0": 0.27539,
+    "loss_stepN": 0.24609,
+    "loss_min": 0.24414
+  },
+  "fp32_master": {
+    "param_dtype": "torch.float32",
+    "changed_param_fraction": 0.798918,
+    "delta_l1": 72415.5239,
+    "loss_step0": 0.27539,
+    "loss_stepN": 0.10107,
+    "loss_min": 0.10107
+  },
+  "verdict": "bf16 master loses ~1e-6 updates to rounding (low changed fraction, flat loss); fp32 master accumulates them (high changed fraction, descending loss)."
+}

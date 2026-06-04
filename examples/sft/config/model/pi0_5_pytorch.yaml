@@ -5,11 +5,14 @@ model_type: "openpi_pytorch"
 # here, so this template stays path-free and reusable.
 
 # Load the fp32 new-format base for training. This selects the training build
-# path (strict fp32 load + bf16 cast + gradient checkpointing), distinct from
-# the bf16-strict eval loader.
+# path (strict fp32 load kept as the FSDP optimizer master + gradient
+# checkpointing; FSDP MixedPrecision casts params to bf16 only for compute),
+# distinct from the bf16-strict eval loader.
 load_for_training: True
 
-# bfloat16 training (the self-contained model casts its params to bf16).
+# bf16 COMPUTE precision (FSDP MixedPrecision param_dtype). Training keeps fp32
+# master weights — the model is NOT cast to bf16 (so warmup-LR optimizer updates
+# are not lost to bf16 rounding); only eval casts the params to bf16.
 precision: "bf16"
 
 # LoRA is not used, but the shared model factory reads these keys.

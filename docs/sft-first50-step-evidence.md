@@ -2,17 +2,28 @@
 
 GPU run-evidence (DEC-5) for the `use_skill:false` first-50-step training-loss gate.
 
-**Verdict (Round 20): RESOLVED.** The first-50-step flat-vs-dropping divergence was caused by
-RLinf training the model in **pure bf16** — the `openpi_pytorch` factory cast the fp32-loaded
-training weights to bf16 *before* FSDP wrapped them, so the AdamW optimizer updated **bf16
-master weights** and the tiny warmup-LR updates (~1e-6, below the bf16 ULP ≈0.0078 near 1.0)
-were lost to rounding → the loss stayed flat. The fix keeps **fp32 master weights** for training
-(FSDP MixedPrecision casts to bf16 only for compute, matching the reference recipe). After the
-fix, RLinf's first-50 loss **descends 0.226 → 0.046** (was flat ≈0.24), tracking the reference's
-0.246 → 0.090 descent: **46/50** within the DEC-1 (b) band (`|Δ| ≤ 0.03` OR ±2σ) and **29/50**
-within `|Δ| ≤ 0.03` (was 12/50). See **"Round 20 — RESOLVED"** below for the proof, the
-controlled rank-independent comparison, and the honestly-bounded residual. The R16 run that
-follows is retained as the pre-fix baseline.
+**Verdict (Round 21): the flat-loss MECHANISM is fixed and proven, but task15's strict DEC-1 (b)
+gate is NOT met (29/50).** The first-50-step flat-vs-dropping divergence was caused by RLinf
+training the model in **pure bf16** — the `openpi_pytorch` factory cast the fp32-loaded training
+weights to bf16 *before* FSDP wrapped them, so AdamW updated **bf16 master weights** and the tiny
+warmup-LR updates (~1e-6, below the bf16 ULP ≈0.0078 near 1.0) were lost to rounding → the loss
+stayed flat. The R20 fix keeps **fp32 master weights** for training (FSDP MixedPrecision casts to
+bf16 only for compute, matching the reference recipe), and is now PROVEN by a committed mechanism
+probe (`docs/evidence/r21_master_dtype_probe.{csv,json}`: on the real model, fixed batch, 50 AdamW
+steps — bf16 master changes 0.86 % of params and the loss is flat 0.275→0.246; fp32 master changes
+79.9 % and the loss descends 0.275→0.101).
+
+After the fix the first-50 loss **descends 0.226 → 0.046** (was flat ≈0.24). Evaluated against the
+DEC-1 (b) protocol **as written** (per-step `|Δ| ≤ 0.03` OR within ±2σ of the reference's *step-to-
+step variation*), the correct band is `max(0.03, 2·σ_step)` with σ_step = std of the reference's
+consecutive first-differences = **0.0094 → 2σ = 0.019 < 0.03**, so the band reduces to `|Δ| ≤ 0.03`
+and the count is **29/50** (`docs/evidence/r21_production_band_corrected.csv`). The R20 "46/50"
+used the WRONG band (±2σ of the reference's *absolute-value* series, ≈0.11, inflated by the
+descent) and is corrected here. **task15's hard gate is therefore not met.** The dominant residual
+is a **measured recipe divergence** — the reference augments images at `train=True` while RLinf's
+SFT path (`rng=None`) does not (`docs/evidence/r21_augmentation_comparison.md`), which replaces the
+unproven R20 "RNG/aggregation" attribution. See **"Round 20 / 21"** below. The R16 run that follows
+is retained as the pre-fix baseline.
 
 ## Run
 
@@ -146,7 +157,7 @@ With the forward verified identical (task14 / R15 same-batch parity 0.0024), the
 bf16 gradient handling, gradient clipping, weight decay, or the FSDP mixed-precision update. On
 identical data + identical forward, the reference's updates reduce the loss and RLinf's do not.
 
-## Round 20 — RESOLVED: bf16 master weights → fp32 master weights
+## Round 20 / 21 — bf16 → fp32 master weights (mechanism proven; strict gate not met)
 
 ### Proven mechanism (the optimizer/weight-update divergence)
 `pi0_config.create()` builds the Pi0 params in **fp32** (`nn.Linear` / `nn.Parameter` use the
@@ -161,39 +172,60 @@ bf16, so `MixedPrecision(param_dtype=bf16)` became a no-op and AdamW updated bf1
 warmup LR the per-step update (~1e-6) is below the bf16 ULP near 1.0 (≈0.0078) and is lost to
 rounding.
 
-- **Direct measurement** (single-GPU, fixed batch, 50 AdamW steps at the openpi_cosine warmup LR):
-  the bf16 model changed only **0.91 % of params** (30.6 M / 3.35 B) and the loss stayed ≈flat
-  (0.264 → 0.245) — 99 % of the updates vanished to rounding.
+- **Committed mechanism probe** (`tools/sft_master_dtype_probe.py` →
+  `docs/evidence/r21_master_dtype_probe.{csv,json}`; single-GPU, fixed batch, 50 AdamW steps at the
+  openpi_cosine warmup LR, identical noise/time, bf16 compute on BOTH arms): the **bf16-master** arm
+  changes only **0.86 % of params** and the loss is flat (0.275 → 0.246); the **fp32-master** arm
+  (fp32 storage + bf16 compute, the production fix) changes **79.9 %** of params (delta-L1 124×
+  larger) and the loss descends (0.275 → 0.101). The only difference between the arms is the master
+  dtype — proving the tiny warmup-LR updates vanish under bf16 rounding and accumulate under fp32.
 
 ### The fix
 `get_model` no longer downcasts the training model: for `load_for_training=True` the fp32 master
 is **kept** and FSDP MixedPrecision casts to bf16 only for the forward/backward (eval is unchanged
 — still bf16-strict). This matches the reference recipe exactly (fp32 load + FSDP1 MixedPrecision).
 
-### Production re-run (8 GPUs, fix applied) — descends
+### Production re-run (8 GPUs, fix applied) — descends, but 29/50 (strict gate not met)
 Same command/config as the R16 run (`runner.logger.log_path=/mnt/public/xzxuan/tmp/r20_sft_results`).
 RLinf's first-50 loss now **descends 0.226 → 0.046** (first-50 mean 0.151 vs reference 0.168),
-tracking the reference's 0.246 → 0.090. **29/50** within `|Δ| ≤ 0.03` (was 12/50); **46/50**
-within the DEC-1 (b) band. Committed scalars: `docs/evidence/r20_first50_losses.csv` (columns add
-`within_2sigma`). The flat-vs-dropping divergence — the AC-11 blocker — is resolved.
+tracking the reference's 0.246 → 0.090 — the flat-loss MECHANISM is fixed. Evaluated against the
+DEC-1 (b) protocol as written (per-step `|Δ| ≤ 0.03` OR within ±2σ of the reference's step-to-step
+variation), σ_step = std of the reference's consecutive first-differences = **0.0094**, so
+2σ_step = 0.019 < 0.03 and the band is `|Δ| ≤ 0.03`: **29/50** (was 12/50 pre-fix). Committed
+scalars: `docs/evidence/r20_first50_losses.csv` and the corrected band
+`docs/evidence/r21_production_band_corrected.csv`. **The R20 "46/50" used the WRONG band**
+(±2σ of the reference's *absolute-value* series ≈0.11, inflated by the descent) — corrected here.
+**The hard gate (first-50 within band) is NOT met; task15 is not verified.**
 
 ### Controlled rank-independent comparison (rank-folding is NOT the residual)
 The 4 band-outliers are RLinf descending *faster/lower* than the reference (a benign direction),
 not flat. To attribute that residual without overclaiming, a second 8-GPU run applied the fix
 **and** the temporary rank-independent partition (R19's exact-reference stream, 32 unique/step;
 patch reverted after the run). Its curve is **near-identical to production** step-by-step (e.g.
-step 37 0.075 vs 0.079; the step-19 spike 0.313 vs 0.319; same 29/50 and 46/50). Committed:
-`docs/evidence/r20_control_rank_independent_first50_losses.csv`. So AC-6 rank-folding (256 vs 32
-unique frames/step) makes **no meaningful difference** to the first-50 loss — the residual gap
-with the reference is **not** the data stream (already ruled out exactly in R19, and again here).
+step 37 0.075 vs 0.079; the step-19 spike 0.313 vs 0.319; same 29/50 under the corrected band).
+Committed: `docs/evidence/r20_control_rank_independent_first50_losses.csv` +
+`docs/evidence/r21_control_band_corrected.csv`. So AC-6 rank-folding (256 vs 32 unique frames/step)
+makes **no meaningful difference** to the first-50 loss — the residual gap with the reference is
+**not** the data stream (already ruled out exactly in R19, and again here).
 
-### Honestly-bounded residual
-With the optimizer fixed (both descend) and the data stream ruled out (R19 exact identity + the
-rank-independent control here), the remaining ~2× tail gap (RLinf ≈0.046 vs reference ≈0.090) is
-**not** the optimizer or the data. It is attributable to RNG and aggregation differences between
-the two stacks (flow-matching noise/time sampling, image augmentation, loss reduction) and is
-**benign** — RLinf descends at least as fast as the reference. Tightening it is a separate,
-second-order item, not the AC-11 flat-loss blocker, which is closed.
+### Residual — MEASURED to a recipe divergence (R21; the R20 "RNG/aggregation" claim was wrong)
+The R20 doc attributed the residual (RLinf descends to ≈0.046 vs reference ≈0.090) to
+"RNG/aggregation" **without measurement** — a reviewer rejected that. Reading both training paths
+(`docs/evidence/r21_augmentation_comparison.md`) shows a **measured recipe divergence**: the
+reference augments images **unconditionally at `train=True`** (random crop + ±5° rotation + random
+brightness/contrast, `preprocessing_pytorch.py:57-140`, `pi0_pytorch.py:318`), while RLinf's SFT
+path calls `compute_loss(train=True)` with `rng=None` (`openpi_action_model.py:122`), and RLinf
+gates all randomized augmentation on `rng is not None` (`model.py:192-230`) → only a deterministic
+top-left crop, **no rotation, no color jitter**. The reference trains on harder/augmented images
+(higher loss); RLinf trains on near-clean images (lower loss) — consistent with RLinf descending
+below the reference at the tail. This is **measured** (the augmentation state differs); it is a
+**hypothesis** (not yet demonstrated by a re-run) that it *fully* accounts for the residual, and it
+does not explain the warmup-region (steps 5–15) variance or the step-19 streaming spike.
+**Aligning RLinf's SFT augmentation to the reference** (which also requires separating the CPU
+augmentation RNG from the CUDA flow-matching-noise RNG — they are currently the same `rng`, so
+"just pass an rng" does not work) is the registered next blocking task for task15 closure. Because
+the residual is a **fixable recipe divergence**, the right path is to align it (then re-evaluate),
+**not** to weaken the DEC-1 (b) gate.
 
 ### DEC-5 artifact (this round)
 - **RLinf scalars** (both runs) from the tensorboard event files under
@@ -204,5 +236,18 @@ second-order item, not the AC-11 flat-loss blocker, which is closed.
 - **Artifact hashes** (full-file sha256[:16]): `pi05_base_pytorch_new/model.safetensors`
   `f6391204c480d6c5`; task-0000 `norm_stats.json` `d66ed16830a98f90`;
   `paligemma_tokenizer.model` `8986bb4f423f07f8` (unchanged from R16 — same inputs).
+- **Mechanism probe** (R21): `tools/sft_master_dtype_probe.py` →
+  `docs/evidence/r21_master_dtype_probe.{csv,json}` (manifest records the command, hashes, param
+  dtype, changed-param fraction, delta-L1, and loss for both the bf16-master and fp32-master arms).
+- **Corrected band** (R21): `docs/evidence/r21_{production,control}_band_corrected.csv` (σ_step =
+  0.0094; band `max(0.03, 2σ_step)` = 0.03; 29/50). **Augmentation comparison**:
+  `docs/evidence/r21_augmentation_comparison.md`.
 
-task16 (advisory ~1 h trend) and task18 (final AC-13) follow now that task15's blocker is cleared.
+### task15 status and next step (R21)
+The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
+NOT met** (29/50 within the correct band). The dominant residual is the **measured** training-time
+augmentation divergence (above). The next blocking task is to **align RLinf's SFT augmentation to
+the reference** (separate the augmentation/noise RNGs; match the augmentation ops) and re-run the
+first-50 comparison; only if a residual then remains for inherent reasons (the step-19 streaming
+spike + per-step RNG) should a quantified DEC-1 (b) pass-rule be proposed. task16 (advisory ~1 h
+trend) and task18 (final AC-13) remain blocked on task15's strict verification.
