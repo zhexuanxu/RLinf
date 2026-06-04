@@ -19,11 +19,15 @@ step variation*), the correct band is `max(0.03, 2·σ_step)` with σ_step = std
 consecutive first-differences = **0.0094 → 2σ = 0.019 < 0.03**, so the band reduces to `|Δ| ≤ 0.03`
 and the count is **29/50** (`docs/evidence/r21_production_band_corrected.csv`). The R20 "46/50"
 used the WRONG band (±2σ of the reference's *absolute-value* series, ≈0.11, inflated by the
-descent) and is corrected here. **task15's hard gate is therefore not met.** The dominant residual
-is a **measured recipe divergence** — the reference augments images at `train=True` while RLinf's
-SFT path (`rng=None`) does not (`docs/evidence/r21_augmentation_comparison.md`), which replaces the
-unproven R20 "RNG/aggregation" attribution. See **"Round 20 / 21"** below. The R16 run that follows
-is retained as the pre-fix baseline.
+descent) and is corrected here. **task15's hard gate is therefore not met** (30/50 in the latest
+run). The residual (RLinf descends to ≈0.048 vs the reference ≈0.090, at least as fast) has been
+localized against the ACTUAL reference path (`openpi.models_pytorch_new`): augmentation, noise/time
+distribution, autocast, and `reduce_dtype`/`buffer_dtype` are all **ruled out** (the
+`reduce_dtype`/`buffer_dtype` mismatch was a real recipe divergence, now FIXED, but not causal). The
+earlier R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
+retracted. The residual is benign and not localized to a correctness bug; no DEC-1 (b) pass-rule is
+accepted yet. See **"Round 20 / 21 / 22"** below. The R16 run that follows is retained as the
+pre-fix baseline.
 
 ## Run
 
@@ -245,13 +249,20 @@ After ruling out augmentation, noise/time distribution, autocast, `reduce_dtype`
 data stream (R19 exact identity + the R20 rank-independent control), the forward (R15 same-batch
 parity), and the optimizer master dtype (R20 fix), RLinf's first-50 loss **descends and tracks the
 reference's trend** but settles ≈0.048 vs the reference ≈0.090 — RLinf descends **at least as
-fast**. The remaining difference is consistent with run-to-run / noise-time RNG realization and the
-logged-loss granularity (the reference logs rank-0's 32-sample loss; RLinf logs the 256-sample
-all-reduced mean) — i.e. a benign, non-correctness residual, NOT a localized training bug. No single
-cause is asserted as proven. Because exact per-step matching is infeasible (DEC-1 itself forbids
-bitwise equality as a gate; the period-8 contiguous-streaming spikes at steps 19/27/… and per-step
-RNG keep ~21/50 steps just outside `|Δ| ≤ 0.03`), an explicit quantified DEC-1 (b) pass-rule is
-proposed for the gate — see the R22 summary's Goal Tracker Update Request.
+fast**. The **logged-loss aggregation is identical**, not a residual source: the reference
+(`train_pytorch_new.py:528-529`) computes `torch.stack(loss_acc).sum()` then
+`dist.all_reduce(loss_acc, op=ReduceOp.AVG)` and logs `loss_acc.item()`, i.e. the AVG-all-reduced
+loss across all ranks — exactly as RLinf's worker does (the earlier "reference logs rank-0's
+32-sample loss" claim was wrong and is retracted; this was already established in the task12/13
+recipe audit). The one remaining un-ruled-out difference is the **noise/time RNG realization**: both
+stacks sample flow-matching noise/time from the same `Beta(1.5,1.0)·0.999+0.001` distribution but
+draw **different** per-step realizations (the global torch RNG state diverges), so the per-step
+losses and gradients differ within run-to-run variation. This is a benign, non-correctness residual,
+NOT a localized training bug; no single cause is asserted as proven. Because exact per-step matching
+is infeasible (DEC-1 itself forbids bitwise equality as a gate; the period-8 contiguous-streaming
+spikes at steps 19/27/… and per-step RNG keep ~20/50 steps just outside `|Δ| ≤ 0.03`), a corrected
+quantified DEC-1 (b) pass-rule (supported facts only) is proposed — see the R23 summary's Goal
+Tracker Update Request.
 
 ### DEC-5 artifact (this round)
 - **RLinf scalars** (both runs) from the tensorboard event files under
@@ -269,11 +280,16 @@ proposed for the gate — see the R22 summary's Goal Tracker Update Request.
   0.0094; band `max(0.03, 2σ_step)` = 0.03; 29/50). **Augmentation comparison**:
   `docs/evidence/r21_augmentation_comparison.md`.
 
-### task15 status and next step (R21)
+### task15 status and next step (R23)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
-NOT met** (29/50 within the correct band). The dominant residual is the **measured** training-time
-augmentation divergence (above). The next blocking task is to **align RLinf's SFT augmentation to
-the reference** (separate the augmentation/noise RNGs; match the augmentation ops) and re-run the
-first-50 comparison; only if a residual then remains for inherent reasons (the step-19 streaming
-spike + per-step RNG) should a quantified DEC-1 (b) pass-rule be proposed. task16 (advisory ~1 h
-trend) and task18 (final AC-13) remain blocked on task15's strict verification.
+NOT met** (30/50 in the latest run; 29/50 in the R20 run). The residual has been localized against
+the real `models_pytorch_new` reference path: augmentation, noise/time distribution, autocast, and
+`reduce_dtype`/`buffer_dtype` are all **ruled out** — the `reduce_dtype`/`buffer_dtype` mismatch was
+a genuine recipe divergence (now FIXED) but the re-run shows it is not the residual. There is **no
+augmentation alignment to do** (the reference and RLinf both train with `rng=None`). The remaining
+residual is benign (RLinf descends at least as fast) and consistent with the noise/time RNG
+realization (same distribution, different per-step draws), not a localized bug. The next step is the
+**accepted-pass-rule decision**: a corrected quantified DEC-1 (b) pass-rule (supported facts only;
+no aggregation claim) is proposed in the R23 summary; task15 stays active until that is accepted or
+the original 50/50 gate is met. task16 (advisory ~1 h trend) and task18 (final AC-13) remain blocked
+on task15's strict verification.

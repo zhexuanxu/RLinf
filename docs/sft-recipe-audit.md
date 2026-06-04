@@ -42,7 +42,7 @@ the GPU-evidenced half (task14/task15/task16, next round, per DEC-1/DEC-5).
 | EMA | None / disabled (`config.py:872`) | off (no EMA in worker / config) | ALIGNED |
 | seed | 42 (`config.py:540` default) | 42 (`behavior_pi05_vla.yaml:56`) | ALIGNED |
 | weights | `pi05_base_pytorch_new`, fp32 load (`config.py:881`) | `pi05_base_pytorch_new` (`behavior_pi05_vla.yaml:63`), `load_for_training` fp32 (`model/pi0_5_pytorch.yaml:10`) | ALIGNED |
-| precision | `mp_bfloat16` (`config.py:882`) | bf16 FSDP mixed precision (`behavior_pi05_vla.yaml:95-98`, `model/pi0_5_pytorch.yaml:13`) | ALIGNED |
+| precision / FSDP MixedPrecision | `mp_bfloat16` → fp32 load + `MixedPrecision(param_dtype=bf16, reduce_dtype=torch.float32)`, buffers fp32 by omission (`init_model`, `train_pytorch_new.py:298-300`) | `param_dtype: ${actor.model.precision}` (bf16), `reduce_dtype: fp32`, `buffer_dtype: fp32` (`behavior_pi05_vla.yaml:101-103`); fp32 master + bf16 compute | ALIGNED (R22: reduce/buffer dtype changed bf16→fp32 to match the reference; pinned by `test_sft_fsdp_full_shard_matches_reference`) |
 | FSDP | fsdp1 FULL_SHARD (`run.sh:21`, `train_pytorch_new.py:161`) | `full_shard` (`behavior_pi05_vla.yaml:88,92`) | ALIGNED |
 | FSDP fwd/bwd prefetch | disabled (`USE_PREFETCH=0` → `forward_prefetch=False`, `backward_prefetch=None`, `train_pytorch_new.py:163-168,364`) | FSDP defaults | ALIGNED-in-effect‡ |
 | gradient checkpointing | used | enabled (`behavior_pi05_vla.yaml:94`) | ALIGNED (memory-only; numerically identical) |

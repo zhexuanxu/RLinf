@@ -116,11 +116,21 @@ def test_sft_model_shape_and_weights_match_reference():
 
 
 def test_sft_fsdp_full_shard_matches_reference():
-    """FSDP FULL_SHARD with bf16 mixed precision, matching fsdp1 mp_bfloat16."""
+    """FSDP FULL_SHARD with bf16 COMPUTE but fp32 gradient all-reduce + fp32
+    buffers, matching the reference ``init_model`` fsdp1 branch
+    ``MixedPrecision(param_dtype=bf16, reduce_dtype=torch.float32)`` (buffers fp32
+    by omission). The BEHAVIOR config previously set all three to bf16 -- a real
+    recipe divergence fixed in R22; this asserts it does not regress."""
     fsdp = _load(_SFT_EXP).actor.fsdp_config
     assert fsdp.sharding_strategy == "full_shard"
-    # The mixed-precision dtypes interpolate the model precision (bf16).
-    assert "mixed_precision" in fsdp
+    # Read raw (no interpolation): param_dtype follows the model precision (bf16,
+    # see test_precision_bf16); reduce/buffer dtypes are literal fp32 so multi-rank
+    # gradient reduction and buffers are NOT rounded to bf16. Would FAIL if the
+    # config regressed reduce_dtype/buffer_dtype to bf16.
+    mp = OmegaConf.to_container(fsdp.mixed_precision, resolve=False)
+    assert mp["param_dtype"] == "${actor.model.precision}"
+    assert mp["reduce_dtype"] == "fp32"
+    assert mp["buffer_dtype"] == "fp32"
 
 
 # --------------------------------------------------------------------------- #
