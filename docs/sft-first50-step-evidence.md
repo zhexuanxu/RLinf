@@ -56,8 +56,9 @@ step20 0.239|0.167|0.072; step30 0.236|0.133|0.103; step40 0.257|0.111|0.146; st
   `/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/logs/pi05_b1k-pt-2k-8gpu-fmp-wo_prefetch-xzx.log`
   by regex `Step (\d+):.*loss=([0-9.]+)`, step 0..49.
 - **Run output dir**: `/mnt/public/xzxuan/tmp/r16_sft_results` (tensorboard under `tensorboard/`).
-- **Artifact hashes** (sha256[:16]): `model.safetensors` (first 64 MB) `650d624bc119a28f`;
-  task-0000 `norm_stats.json` `d66ed16830a98f90`; `paligemma_tokenizer.model` `8986bb4f423f07f8`.
+- **Artifact hashes** (full-file sha256[:16]): `pi05_base_pytorch_new/model.safetensors`
+  `f6391204c480d6c5`; task-0000 `norm_stats.json` `d66ed16830a98f90`;
+  `paligemma_tokenizer.model` `8986bb4f423f07f8`.
 - **Verdict**: 12/50 within `|Δ| ≤ 0.03`; DEC-1 (b) NOT met.
 
 ## Findings
@@ -81,40 +82,46 @@ step20 0.239|0.167|0.072; step30 0.236|0.133|0.103; step40 0.257|0.111|0.146; st
   rounds (task12 audit, task14 fixed-batch parity, task13 LR-logging fix). step-0 agreement
   (0.229 vs 0.246) reconfirms the forward.
 
-## Round 17 — data-stream partition RULED OUT; cause is the optimizer/gradient path
+## Round 17–18 — matched-topology stream comparison; data-stream RULED OUT (from committed artifacts)
 
-### Data-stream identity (probe)
-`tools/sft_stream_identity_probe.py` dumps the RLinf production stream identity (single
-process). The RLinf loader streams **long contiguous runs of consecutive frames within a
-keyframe chunk**: the first 256 emitted samples are **254/255 contiguous** (e.g. episode 2620
-frames 2000,2001,…,2039), touching only **2 episodes** — a batch of 32 is 32 near-identical
-consecutive frames (very low diversity), which also explains the period-8 spikes (with
-`num_workers=8`, each batch comes from one worker; the worker whose current chunk is a hard
-segment spikes at steps ≡ its index mod 8).
+### Observed facts (committed under `docs/evidence/`)
+**RLinf single-process stream is contiguous** (R17 observation): the RLinf loader streams long
+contiguous runs of consecutive frames within a keyframe chunk.
 
-The **reference** `BehaviorLeRobotDataset.__getitem__` (in `behavior.learning.datas.dataset`,
-which RLinf's was ported from) uses the **identical** contiguous keyframe-chunk streaming. The
-one real difference is the partition: the reference partitions chunks by **worker only**
-(`range(worker_id, n, num_workers)`, rng seed `seed + worker_id`) — **rank-independent**, so
-all distributed ranks stream identical chunks (verified: `_worker_init_fn` does not re-seed
-per rank; `self.seed`/`random.seed` are rank-independent). RLinf folds the **rank** into the
-partition + seed (`partition_chunk_indices` / `global_worker_id`), giving each rank disjoint
-chunks (256 unique frames/step vs the reference's 32).
+**Matched 8-rank / 8-worker stream identity** (R18 — driving the REAL
+`BehaviorSftDataset._select_streaming_chunk` for every `(rank, worker)`; reference via the
+subprocess dumper `tests/unit_tests/_ref_stream_dump.py` on the reference dataset):
 
-### Verification — the data partition is NOT the cause
-Hypothesis: RLinf's rank-folding (256 unique frames/step) prevents the memorization that drops
-the reference's loss (32 unique frames/step). **Refuted experimentally** (the R14 lesson —
-verify before claiming): a temporary rank-independent patch (matching the reference) was run on
-8 GPUs for 55 steps; the loss stayed **flat** (mean 0.234, step0 0.226 → step49 0.210, 12/50
-within `|Δ| ≤ 0.03` — unchanged from R16). So the chunk-partition / data-stream divergence does
-**not** explain the flat-vs-dropping loss. The patch was reverted (not committed).
+- `docs/evidence/r18_rlinf_stream_coverage.csv`: RLinf per-step unique-frame coverage = **256**
+  for every step (rank-folding → 8 ranks disjoint).
+- `docs/evidence/r18_ref_stream_coverage.csv`: reference per-step unique-frame coverage = **32**
+  for every step (rank-independent → all 8 ranks identical). Both loaders compute the same 1825
+  keyframe chunks.
+- `docs/evidence/r18_{rlinf,ref}_stream_sample.csv`: exact per-sample identities differ — e.g.
+  RLinf `(rank 0, worker 0)` starts at episode 2160 chunk `[362366, 362616]`, reference
+  `(worker 0)` starts at episode 1080 chunk `[229063, 229313]` (partition strides 64 vs 8).
 
-### Narrowed cause
-With the forward verified identical (task14, R15 same-batch parity 0.0024), the recipe config
-aligned (task12), and now the **data stream ruled out**, the divergence is in the **optimizer /
-gradient / weight-update path under FSDP** — gradient reduction, the grad-scaler / bf16 gradient
-handling, gradient clipping, weight decay, or the FSDP mixed-precision update. On identical
-data + identical forward, the reference's updates reduce the loss and RLinf's do not.
+So the RLinf and reference production streams **DIFFER** under the matched topology: RLinf folds
+the distributed rank into the partition (`partition_chunk_indices` / `global_worker_id`) → 256
+unique frames/step; the reference does not (`range(worker_id, n, num_workers)`, seed `+
+worker_id`) → 32 unique frames/step.
+
+### The data-stream difference is NOT causal (auditable rerun)
+`docs/evidence/r17_rank_independent_rerun.md` (the exact source override + command + output path)
+and `docs/evidence/r17_rank_independent_first50_losses.csv` record an 8-GPU rerun with RLinf's
+partition made rank-independent — i.e. identical to the reference's (per-step coverage 32, see
+above). The first-50 loss stayed **flat** (mean 0.234, step0 0.226 → step49 0.210, **12/50**
+within `|Δ| ≤ 0.03` — unchanged from the production R16 run). So making RLinf's data stream match
+the reference's does **not** fix the flat-vs-dropping loss. The patch was reverted (no committed
+`rlinf/` source change). **Conclusion (supported by the committed artifacts): the data-stream
+partition is RULED OUT as the cause.** AC-6's rank-aware sharding is retained.
+
+### Narrowed cause (next round)
+With the forward verified identical (task14 / R15 same-batch parity 0.0024), the recipe aligned
+(task12), and the data stream ruled out by committed artifacts, the divergence is in the
+**optimizer / gradient / weight-update path under FSDP** — gradient reduction, the grad-scaler /
+bf16 gradient handling, gradient clipping, weight decay, or the FSDP mixed-precision update. On
+identical data + identical forward, the reference's updates reduce the loss and RLinf's do not.
 
 ## Next round (blocking)
 
