@@ -51,6 +51,7 @@ import pytest
 import torch
 
 from rlinf.models.embodiment.openpi_pytorch.utils.new_to_old import (
+    ACTION_EXPERT_LM_HEAD,
     new_to_old_state_dict,
 )
 from rlinf.models.embodiment.openpi_pytorch.utils.old_to_new import (
@@ -342,11 +343,11 @@ def _struct_diff(produced, ref_header):
     return missing, extra, shape_mismatches
 
 
-# The one old-format tensor that the new format does not carry: old_to_new keeps
-# only PaliGemma's 2048-wide embedder and drops the 1024-wide action-expert head,
-# so new_to_old cannot reconstruct it (sourced from a reference by
-# convert_trained_ckpt instead). It is excluded from the new->old structural gate.
-_ACTION_EXPERT_LM_HEAD = "paligemma_with_expert.gemma_expert.lm_head.weight"
+# ACTION_EXPERT_LM_HEAD is the one old-format tensor the new format does not carry:
+# old_to_new keeps only PaliGemma's 2048-wide embedder and drops the 1024-wide
+# action-expert head, so new_to_old_state_dict cannot reconstruct it (sourced from a
+# reference by convert_trained_ckpt instead). It is excluded from the
+# new_to_old_state_dict helper's representable-key structural coverage.
 
 
 def test_new_to_old_omits_unreconstructible_action_expert_lm_head():
@@ -358,7 +359,7 @@ def test_new_to_old_omits_unreconstructible_action_expert_lm_head():
     """
     new_sd = {"llm.embedder.embedding.weight": torch.zeros(20, 8)}
     old_sd = new_to_old_state_dict(new_sd)
-    assert _ACTION_EXPERT_LM_HEAD not in old_sd
+    assert ACTION_EXPERT_LM_HEAD not in old_sd
     pali = old_sd["paligemma_with_expert.paligemma.lm_head.weight"]
     assert tuple(pali.shape) == (20, 8)
     assert torch.equal(pali, new_sd["llm.embedder.embedding.weight"])
@@ -387,21 +388,25 @@ def test_old_to_new_full_structural_parity_vs_reference():
     not (_OLD_REF.is_file() and _NEW_REF.is_file()),
     reason="reference base models pi05_base_pytorch{,_new} not available",
 )
-def test_new_to_old_full_structural_parity_vs_reference():
-    """new->old produces the old reference key set (minus the documented
-    action-expert lm-head), matching shapes, with no malformed key (AC-7)."""
+def test_new_to_old_state_dict_representable_keys_vs_reference():
+    """Helper-level coverage: the `new_to_old_state_dict` transform maps EVERY
+    representable new-format tensor to the old reference key set (minus the one
+    old-only action-expert lm-head it cannot reconstruct), with matching shapes and
+    no malformed key. This verifies the pure state-dict helper, NOT that the
+    four-parameter `convert_new_to_old` writes a complete old checkpoint — that path
+    fails loudly (see test_convert_new_to_old_fails_loudly_*)."""
     old_header = _safetensors_header(_OLD_REF)
     new_header = _safetensors_header(_NEW_REF)
     produced = new_to_old_state_dict(_meta_state_dict(new_header))
 
     # The action-expert head is intentionally not reconstructed; exclude it.
-    expected = {k: v for k, v in old_header.items() if k != _ACTION_EXPERT_LM_HEAD}
+    expected = {k: v for k, v in old_header.items() if k != ACTION_EXPERT_LM_HEAD}
     missing, extra, shape_mismatches = _struct_diff(produced, expected)
     assert not missing, f"new->old missing old keys: {missing[:10]}"
     assert not extra, f"new->old produced unexpected keys: {extra[:10]}"
     assert not shape_mismatches, f"new->old shape mismatches: {shape_mismatches[:10]}"
     # The previously-malformed key must be absent (not a 2048-wide duplicate).
-    assert _ACTION_EXPERT_LM_HEAD not in produced
+    assert ACTION_EXPERT_LM_HEAD not in produced
     # The new reference is fp32 and the converter is dtype-preserving.
     assert {t.dtype for t in produced.values()} == {torch.float32}
 
@@ -411,9 +416,11 @@ def test_new_to_old_full_structural_parity_vs_reference():
     reason="reference base models pi05_base_pytorch{,_new} not available",
 )
 def test_reference_round_trip_is_structurally_faithful():
-    """Round-trip over the FULL reference key universe (meta tensors): new->old->new
-    reproduces every new key/shape; old->new->old reproduces every old key/shape
-    except the documented action-expert lm-head (AC-7 round-trip)."""
+    """Helper-level round-trip over the FULL reference key universe (meta tensors):
+    the `old_to_new_state_dict`/`new_to_old_state_dict` transforms compose to
+    reproduce every new key/shape (new->old->new) and every old key/shape except the
+    documented action-expert lm-head (old->new->old) — AC-7 round-trip at the
+    state-dict helper level."""
     old_header = _safetensors_header(_OLD_REF)
     new_header = _safetensors_header(_NEW_REF)
 
@@ -431,7 +438,7 @@ def test_reference_round_trip_is_structurally_faithful():
     old_again = new_to_old_state_dict(
         old_to_new_state_dict(_meta_state_dict(old_header))
     )
-    expected = {k: v for k, v in old_header.items() if k != _ACTION_EXPERT_LM_HEAD}
+    expected = {k: v for k, v in old_header.items() if k != ACTION_EXPERT_LM_HEAD}
     missing, extra, shape_mismatches = _struct_diff(old_again, expected)
     assert not (missing or extra or shape_mismatches), (
         f"old->new->old drift: missing={missing[:5]} extra={extra[:5]} "
@@ -459,7 +466,7 @@ def test_convert_trained_ckpt_sources_action_expert_lm_head_from_reference(tmp_p
         "paligemma_with_expert.paligemma.lm_head.weight": torch.zeros(
             20, 8, dtype=torch.bfloat16
         ),
-        _ACTION_EXPERT_LM_HEAD: torch.arange(20 * 4, dtype=torch.bfloat16).reshape(
+        ACTION_EXPERT_LM_HEAD: torch.arange(20 * 4, dtype=torch.bfloat16).reshape(
             20, 4
         ),
         "action_in_proj.weight": torch.zeros(4, 8, dtype=torch.bfloat16),
@@ -483,10 +490,45 @@ def test_convert_trained_ckpt_sources_action_expert_lm_head_from_reference(tmp_p
 
     produced = safetensors.torch.load_file(str(out_dir / "model.safetensors"))
     assert set(produced) == set(ref)  # complete: matches reference key set
-    head = produced[_ACTION_EXPERT_LM_HEAD]
+    head = produced[ACTION_EXPERT_LM_HEAD]
     assert tuple(head.shape) == (20, 4) and head.dtype == torch.bfloat16
-    assert torch.equal(head, ref[_ACTION_EXPERT_LM_HEAD])  # sourced from reference
+    assert torch.equal(head, ref[ACTION_EXPERT_LM_HEAD])  # sourced from reference
     assert {t.dtype for t in produced.values()} == {torch.bfloat16}  # bf16-cast
+
+
+def test_convert_new_to_old_fails_loudly_without_action_expert_head(tmp_path):
+    """The four-parameter convert_new_to_old must NOT write an incomplete old
+    checkpoint: it raises RuntimeError naming the unreconstructible action-expert
+    lm-head and writes nothing (AC-7 fail-loud). The complete-output path is the
+    reference-backed convert_trained_ckpt."""
+    import safetensors.torch
+
+    from rlinf.models.embodiment.openpi_pytorch.utils.new_to_old import (
+        convert_new_to_old,
+    )
+
+    in_dir = tmp_path / "new"
+    in_dir.mkdir()
+    # A new-format checkpoint (only the shared embedder + a passthrough) — no way to
+    # produce the old 1024-wide action-expert head.
+    safetensors.torch.save_file(
+        {
+            "llm.embedder.embedding.weight": torch.zeros(20, 8),
+            "action_in_proj.weight": torch.zeros(4, 8),
+        },
+        str(in_dir / "model.safetensors"),
+    )
+    src_stats = tmp_path / "norm_stats.json"
+    src_stats.write_text("{}")
+    out_dir = tmp_path / "old_out"
+    out_stats = tmp_path / "out" / "norm_stats.json"
+
+    with pytest.raises(RuntimeError, match="gemma_expert.lm_head"):
+        convert_new_to_old(in_dir, src_stats, out_dir, out_stats)
+
+    # Nothing misleading was written: no output model and no copied norm stats.
+    assert not (out_dir / "model.safetensors").exists()
+    assert not out_stats.exists()
 
 
 @pytest.mark.skipif(

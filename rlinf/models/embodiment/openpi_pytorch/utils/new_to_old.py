@@ -14,11 +14,14 @@
 
 """Convert a NEW-format PyTorch OpenPI 0.5 checkpoint to the OLD layout.
 
-The inverse of :mod:`old_to_new`: ``new_to_old_state_dict`` maps the bare
-``Pi0`` keys back to the ``paligemma_with_expert.*`` layout (QKV split, MLP
-unstack+transpose, pos-embedding squeeze). ``convert_trained_ckpt`` additionally
-validates the converted keys/shapes against a reference old-format model and
-fixes the (untrained) narrow action-expert ``lm_head``.
+The inverse of :mod:`old_to_new`: ``new_to_old_state_dict`` maps every
+*representable* bare ``Pi0`` key back to the ``paligemma_with_expert.*`` layout
+(QKV split, MLP unstack+transpose, pos-embedding squeeze). It does NOT fabricate
+the 1024-wide action-expert ``lm_head`` (``ACTION_EXPERT_LM_HEAD``), which the new
+format does not carry. ``convert_trained_ckpt`` sources that head from a reference
+old-format model and validates keys/shapes, producing a COMPLETE old checkpoint;
+the four-parameter ``convert_new_to_old`` has no reference, so it FAILS LOUDLY
+rather than write an incomplete old checkpoint missing that mandatory old key.
 
 Usage (four-parameter interface; the two norm-stats paths are copied across):
 
@@ -40,6 +43,14 @@ from rlinf.models.embodiment.openpi_pytorch.utils.old_to_new import (
     _resolve_model_safetensors,
     copy_norm_stats,
 )
+
+# The old-format action-expert token head (1024-wide bf16). ``old_to_new`` drops it
+# (the new format keeps only PaliGemma's 2048-wide shared embedder), so the new format
+# does NOT carry it and ``new_to_old_state_dict`` cannot reconstruct it. The
+# reference-backed ``convert_trained_ckpt`` sources it from a reference old-format
+# model; the four-parameter ``convert_new_to_old`` fails loudly rather than write an
+# incomplete old checkpoint.
+ACTION_EXPERT_LM_HEAD = "paligemma_with_expert.gemma_expert.lm_head.weight"
 
 
 def new_to_old_state_dict(new_sd: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -176,13 +187,13 @@ def new_to_old_state_dict(new_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
 
     # --- embedder -> PaliGemma lm_head ---
     # The new format carries a SINGLE shared embedder (PaliGemma's, width 2048),
-    # tied to ``paligemma.lm_head``. The old format ALSO has a separate 1024-wide
-    # action-expert head (``gemma_expert.lm_head``) that ``old_to_new`` drops and
-    # the new format does NOT carry, so it cannot be reconstructed here — emitting
-    # the 2048-wide embedder for it would be a malformed (wrong-shape) tensor. The
-    # reference-backed ``convert_trained_ckpt`` sources the correct 1024-wide head
-    # from a reference model; the four-parameter ``convert_new_to_old`` legitimately
-    # omits this one old-only tensor.
+    # tied to ``paligemma.lm_head``. The old format ALSO has the separate 1024-wide
+    # action-expert head ``ACTION_EXPERT_LM_HEAD`` that ``old_to_new`` drops and the
+    # new format does NOT carry, so it cannot be reconstructed here — emitting the
+    # 2048-wide embedder for it would be a malformed (wrong-shape) tensor. This
+    # helper therefore maps only the representable tensors; the reference-backed
+    # ``convert_trained_ckpt`` sources the correct head, and the four-parameter
+    # ``convert_new_to_old`` fails loudly rather than write an incomplete checkpoint.
     if "llm.embedder.embedding.weight" in new_sd:
         old_sd["paligemma_with_expert.paligemma.lm_head.weight"] = new_sd[
             "llm.embedder.embedding.weight"
@@ -242,7 +253,7 @@ def convert_trained_ckpt(
     # the action expert. ``new_to_old_state_dict`` does NOT emit it (it cannot be
     # reconstructed from the new format), so copy the correct 1024-wide weight from
     # the reference when it is absent or shape-mismatched. It is not trained.
-    expert_lm_head_key = "paligemma_with_expert.gemma_expert.lm_head.weight"
+    expert_lm_head_key = ACTION_EXPERT_LM_HEAD
     if expert_lm_head_key in ref_sd and (
         expert_lm_head_key not in old_sd
         or old_sd[expert_lm_head_key].shape != ref_sd[expert_lm_head_key].shape
@@ -297,6 +308,13 @@ def convert_new_to_old(
     file), converts it via :func:`new_to_old_state_dict`, writes
     ``output_model/model.safetensors``, and copies ``input_norm_stats`` verbatim
     to ``output_norm_stats``.
+
+    The old format requires the 1024-wide action-expert head
+    ``ACTION_EXPERT_LM_HEAD``, which the new format does not carry and cannot be
+    reconstructed here. This four-parameter interface has no reference-model
+    parameter, so rather than write a misleading *incomplete* old checkpoint it
+    raises :class:`RuntimeError` and directs callers to the reference-backed
+    :func:`convert_trained_ckpt`, which sources that head from a reference model.
     """
     import safetensors.torch
 
@@ -308,6 +326,18 @@ def convert_new_to_old(
 
     new_sd = safetensors.torch.load_file(str(new_path), device="cpu")
     old_sd = new_to_old_state_dict(new_sd)
+
+    # Refuse to write an incomplete old checkpoint: the old-only action-expert head
+    # cannot be reconstructed from the new format and this interface has no reference
+    # to source it from. Fail loudly BEFORE creating any output.
+    if ACTION_EXPERT_LM_HEAD not in old_sd:
+        raise RuntimeError(
+            "convert_new_to_old cannot produce a complete old-format checkpoint: the "
+            f"action-expert head {ACTION_EXPERT_LM_HEAD!r} (1024-wide) is not carried "
+            "by the new format and cannot be reconstructed from it. Use "
+            "convert_trained_ckpt(input_ckpt, output_dir, reference_model, ...), which "
+            "sources that head from a reference old-format model."
+        )
 
     output_model.mkdir(parents=True, exist_ok=True)
     safetensors.torch.save_file(old_sd, str(output_model / "model.safetensors"))
