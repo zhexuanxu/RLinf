@@ -89,6 +89,42 @@ def test_behavior_sft_transform_and_collate_contract():
         assert observation.image_masks[key].dtype == torch.bool
 
 
+def test_skill_mode_yields_valid_skill_text_batch():
+    """use_skill:true is functional at the loader level: a frame carrying a skill
+    prompt (set by the dataset in skill mode) tokenizes to a well-formed
+    (Observation, actions) batch whose prompt is the SKILL text, distinct from the
+    main-task text (AC-12 + AC-10 prompt source)."""
+    from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
+        collate_behavior_sft_items,
+    )
+    from rlinf.data.datasets.behavior.behavior_sft_transform import (
+        BehaviorSftTransform,
+        transform_behavior_sft_item,
+    )
+
+    transform = BehaviorSftTransform(
+        norm_stats=_norm_stats(),
+        action_dim=32,
+        tokenizer=PaligemmaTokenizer(max_len=200),
+    )
+    # The dataset sets item["prompt"] to the skill text in skill mode; the transform
+    # prefers it over item["task"].
+    skill_frame = _raw_item()
+    skill_frame["prompt"] = "pick up radio"
+    task_item = transform_behavior_sft_item(_raw_item(), transform)
+    skill_item = transform_behavior_sft_item(skill_frame, transform)
+
+    observation, actions = collate_behavior_sft_items([skill_item, skill_item])
+    assert isinstance(observation, Observation)
+    assert tuple(actions.shape) == (2, 32, 32)
+    assert tuple(observation.tokenized_prompt.shape) == (2, 200)
+    # The skill prompt tokenizes differently from the main-task prompt.
+    assert not np.array_equal(
+        np.asarray(skill_item["tokenized_prompt"]),
+        np.asarray(task_item["tokenized_prompt"]),
+    )
+
+
 def test_behavior_sft_transform_rejects_missing_required_field():
     from rlinf.data.datasets.behavior.behavior_sft_transform import (
         BehaviorSftTransform,
@@ -107,10 +143,13 @@ def test_behavior_sft_transform_rejects_missing_required_field():
         )
 
 
-def _openpi_pytorch_sft_worker(openpi_overrides, *, world_size=1, rank=0):
+def _openpi_pytorch_sft_worker(openpi_overrides, *, world_size=1, rank=0, data=None):
     """An OPENPI_PYTORCH SFT worker whose actor.model.openpi block is overridable."""
     from rlinf.workers.sft.fsdp_vla_sft_worker import FSDPVlaSftWorker
 
+    data_block = {"train_data_paths": "/data/behavior", "num_workers": 0}
+    if data:
+        data_block.update(data)
     worker = FSDPVlaSftWorker.__new__(FSDPVlaSftWorker)
     worker.cfg = OmegaConf.create(
         {
@@ -119,7 +158,7 @@ def _openpi_pytorch_sft_worker(openpi_overrides, *, world_size=1, rank=0):
                 "micro_batch_size": 32,
                 "eval_batch_size": 4,
             },
-            "data": {"train_data_paths": "/data/behavior", "num_workers": 0},
+            "data": data_block,
         }
     )
     worker._world_size = world_size
@@ -176,6 +215,41 @@ def test_fsdp_vla_worker_dispatches_openpi_pytorch_dataloader(monkeypatch):
     assert calls["batch_size"] == 32
     assert calls["num_workers"] == 0
     assert calls["shuffle"] is True
+    # Default (no cfg.data.use_skill) trains on the main-task text (AC-10).
+    assert calls["use_skill"] is False
+
+
+def test_fsdp_vla_worker_use_skill_true_propagates(monkeypatch):
+    """cfg.data.use_skill/tasks are the production source of truth: use_skill: true
+    propagates the reference skill window recipe to the loader (AC-10)."""
+    from rlinf.data.datasets.behavior import behavior_sft_data_loader
+
+    calls = {}
+
+    class _FakeLoader:
+        def data_config(self):
+            return {"dataset": "behavior_b1k_direct"}
+
+        def __len__(self):
+            return 8
+
+    monkeypatch.setattr(
+        behavior_sft_data_loader,
+        "create_behavior_sft_data_loader",
+        lambda **kwargs: calls.update(kwargs) or _FakeLoader(),
+    )
+
+    worker = _openpi_pytorch_sft_worker(
+        {"assets_dir": "/data/assets", "asset_id": "behavior-1k/2025-challenge-demos"},
+        data={"use_skill": True, "tasks": ["turning_on_radio"]},
+    )
+    worker.build_dataloader("/data/behavior")
+    assert calls["use_skill"] is True
+    # Reference skill recipe (pi05_b1k-task0000_sft_local_skill).
+    assert calls["enable_gap"] is True
+    assert calls["allow_left"] == 100
+    assert calls["allow_right"] == 100
+    assert calls["tasks"] == ["turning_on_radio"]
 
 
 @pytest.mark.parametrize(

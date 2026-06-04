@@ -206,6 +206,7 @@ def create_behavior_sft_data_loader(
     seed: int = 0,
     norm_stats: dict[str, NormStats] | None = None,
     skill_labels: dict[int, str] | None = None,
+    use_skill: bool = False,
     enable_gap: bool = True,
     allow_left: int = 0,
     allow_right: int = 0,
@@ -233,6 +234,9 @@ def create_behavior_sft_data_loader(
         seed: Base seed for the streaming chunk partition.
         norm_stats: Pre-loaded norm stats; loaded from disk when ``None``.
         skill_labels: Optional per-skill labels enabling skill mode.
+        use_skill: Train on per-frame SKILL text (window-resolved) instead of the
+            main-task text; derives skill labels from the orchestrators when
+            ``skill_labels`` is not supplied.
         enable_gap: Skill mode — absorb a true gap into both adjacent skills.
         allow_left: Skill mode — frames to extend a contiguous skill start left.
         allow_right: Skill mode — frames to extend a contiguous skill end right.
@@ -263,6 +267,7 @@ def create_behavior_sft_data_loader(
         seed=seed,
         fine_grained_level=fine_grained_level,
         skill_labels=skill_labels,
+        use_skill=use_skill,
         enable_gap=enable_gap,
         allow_left=allow_left,
         allow_right=allow_right,
@@ -376,6 +381,9 @@ def build_behavior_sft_dataloader(
     def data_select(key, default):
         return OmegaConf.select(openpi_data, key, default=default)
 
+    def data_cfg_select(key, default):
+        return OmegaConf.select(cfg.data, key, default=default)
+
     # Norm stats are resolved STRICTLY from YAML assets_dir + asset_id — the same
     # canonical task-0000 distribution the eval model factory resolves (AC-8).
     # No checkpoint-relative (model_path) or norm_stats_path fallback, and a blank
@@ -394,6 +402,11 @@ def build_behavior_sft_dataloader(
     micro_batch_size = cfg.actor.micro_batch_size
     eval_batch_size = cfg.actor.get("eval_batch_size", 1)
 
+    # `cfg.data` is the production source of truth for the BEHAVIOR task set and the
+    # prompt-source flag. `use_skill: true` trains on the per-frame SKILL text via
+    # the window logic, honoring the reference skill recipe (enable_gap=True,
+    # allow_left=100, allow_right=100); `false` trains on the main-task text.
+    use_skill = bool(data_cfg_select("use_skill", False))
     loader = create_behavior_sft_data_loader(
         behavior_dataset_root=str(
             data_select(
@@ -404,16 +417,20 @@ def build_behavior_sft_dataloader(
         assets_dir=str(assets_dir),
         asset_id=asset_id,
         repo_id=str(data_select("repo_id", _DEFAULT_REPO_ID)),
-        tasks=list(data_select("tasks", ["turning_on_radio"])),
+        tasks=list(data_cfg_select("tasks", ["turning_on_radio"])),
         modalities=list(data_select("modalities", ["rgb"])),
         action_dim=int(model_select("openpi.model_action_dim", 32)),
         action_horizon=int(model_select("num_action_chunks", 32)),
         max_token_len=int(model_select("openpi.max_token_len", 200)),
         batch_size=eval_batch_size if eval_dataset else micro_batch_size,
-        num_workers=int(OmegaConf.select(cfg.data, "num_workers", default=8)),
+        num_workers=int(data_cfg_select("num_workers", 8)),
         fine_grained_level=int(data_select("fine_grained_level", 0)),
         tolerance_s=float(data_select("tolerance_s", 1e-4)),
         shuffle=not eval_dataset,
         seed=int(cfg.actor.get("seed", 42)),
+        use_skill=use_skill,
+        enable_gap=bool(data_cfg_select("enable_gap", True)),
+        allow_left=int(data_cfg_select("allow_left", 100)),
+        allow_right=int(data_cfg_select("allow_right", 100)),
     )
     return loader, loader.data_config()

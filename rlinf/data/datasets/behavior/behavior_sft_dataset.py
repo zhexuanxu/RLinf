@@ -786,6 +786,7 @@ class BehaviorSftDataset(LeRobotDataset):
         return_seg_instance: bool = False,
         skill_list: list[str] | None = None,
         skill_labels: dict[int, str] | None = None,
+        use_skill: bool = False,
         enable_gap: bool = True,
         allow_left: int = 0,
         allow_right: int = 0,
@@ -812,6 +813,11 @@ class BehaviorSftDataset(LeRobotDataset):
         self.train_rgb_type = train_rgb_type
         self.skill_list = skill_list
         self.skill_labels = skill_labels
+        # When `use_skill` is set, the training prompt is the per-frame SKILL text
+        # (resolved by the window logic) instead of the main-task text; if no
+        # explicit `skill_labels` were supplied they are derived from the level-1
+        # ("skill") orchestrators below, once the metadata is loaded.
+        self.use_skill = use_skill
         # Skill-mode windowing, aligned with the JAX openpi-comet semantics:
         # `enable_gap` absorbs a true gap into both adjacent skills (so the gap
         # region overlaps and is shared); `allow_left` / `allow_right` are frame
@@ -927,6 +933,10 @@ class BehaviorSftDataset(LeRobotDataset):
 
         self.prepare_task(fine_grained_level)
 
+        # Skill mode: derive skill labels from the level-1 orchestrators when the
+        # caller asked for `use_skill` but supplied none, then build the windows.
+        if self.use_skill and self.skill_labels is None:
+            self.skill_labels = self._derive_skill_labels()
         if self.skill_labels is not None:
             self._build_skill_boundaries()
 
@@ -998,6 +1008,35 @@ class BehaviorSftDataset(LeRobotDataset):
                 eff_e[i] = min(eff_e[i], valid_end)
             self.skill_start_frames[ep_id] = eff_s
             self.skill_end_frames[ep_id] = eff_e
+
+    def _derive_skill_labels(self) -> dict[int, str]:
+        """Derive skill-position -> skill text from the level-1 ("skill") orchestrators.
+
+        Each skill in ``annotation["skill_annotation"]`` (sorted by ``skill_idx``) is
+        mapped to the level-1 orchestrator task text covering its start frame, using
+        the same frame->sub-task bisect as the prompt lookups. Returns the labels of
+        the first episode that has both annotations and level-1 orchestrators (the
+        production single-task set has a consistent skill sequence). Used when
+        ``use_skill`` is requested but no explicit ``skill_labels`` were supplied.
+        """
+        for ep_id in self.episodes:
+            annotation = self.meta.annotations.get(ep_id)
+            orch = self.meta.orchestrators.get(ep_id)
+            if not annotation or not orch or 1 not in orch:
+                continue
+            level1 = orch[1]
+            end_frames = [entry["end_frame"] for entry in level1]
+            skills = sorted(
+                annotation["skill_annotation"], key=lambda s: s["skill_idx"]
+            )
+            labels: dict[int, str] = {}
+            for pos, skill in enumerate(skills):
+                start = skill["frame_duration"][0]
+                sub_idx = bisect.bisect_right(end_frames, start, hi=len(level1) - 1)
+                labels[pos] = level1[sub_idx]["task"]
+            if labels:
+                return labels
+        return {}
 
     def _is_gap_frame(self, ep_idx: int, frame_index: int) -> bool:
         """Return True if ``frame_index`` falls outside every effective window."""
@@ -1161,9 +1200,7 @@ class BehaviorSftDataset(LeRobotDataset):
         """
         if not self._chunk_streaming_using_keyframe:
             item = super().__getitem__(idx)
-            item["task"] = self._get_fine_grained_task(item)
-            if self.skill_labels is not None:
-                item["skill_label"] = self._get_skill_label(item)
+            self._set_prompt(item)
             return item
 
         # Streaming mode
@@ -1253,9 +1290,7 @@ class BehaviorSftDataset(LeRobotDataset):
             for cam in image_keys:
                 item[cam] = self.image_transforms(item[cam])
 
-        item["task"] = self._get_fine_grained_task(item)
-        if self.skill_labels is not None:
-            item["skill_label"] = self._get_skill_label(item)
+        self._set_prompt(item)
         self.current_streaming_frame_idx += 1
         return item
 
@@ -1287,6 +1322,21 @@ class BehaviorSftDataset(LeRobotDataset):
             logger.warning("%s failed to get subtask %s: %s", self.repo_id, item, e)
             task_text = self.meta.tasks[task_idx]
         return task_text
+
+    def _set_prompt(self, item: dict) -> None:
+        """Set the per-frame training-prompt fields on ``item``.
+
+        Always sets ``item["task"]`` (the fine-grained main-task text). In skill mode
+        it also resolves the per-frame skill text (``item["skill_label"]``) and, when
+        ``use_skill`` is on, makes that skill text the training prompt
+        (``item["prompt"]``, which the transform prefers over ``item["task"]``). With
+        ``use_skill`` off, no ``prompt`` key is set, so the prompt is the task text.
+        """
+        item["task"] = self._get_fine_grained_task(item)
+        if self.skill_labels is not None:
+            item["skill_label"] = self._get_skill_label(item)
+            if self.use_skill:
+                item["prompt"] = item["skill_label"]
 
     def _get_query_indices(self, idx: int, ep_idx: int):
         """Compute action-horizon query indices and per-key padding masks."""
