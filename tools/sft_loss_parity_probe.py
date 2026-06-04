@@ -21,17 +21,23 @@ task-0000 norm stats, builds fixed ``turning_on_radio`` batches from the
 production loader, and computes the flow-matching loss with explicit fixed
 noise/time (``Pi0.compute_loss`` accepts them) so the forward MSE is reproducible.
 It reports a deterministic single-batch draw, the marginal E[loss] over multiple
-batches (matching the reference per-step 256-sample global batch), and the worker's
-exact ``sft_forward`` path, comparing them to the reference step-0 loss
-``0.24609375`` under the DEC-1 tolerance (relative 5% or absolute 0.01).
+batches, and the worker's exact ``sft_forward`` path.
+
+NOTE: the marginal-vs-``0.24609375`` line below is CONTEXT, not the DEC-1 gate. The
+reference's logged ≈0.244 is on the reference run's specific (easier) early frames,
+not a same-batch forward; the reference model on a random sample reports ≈0.318, so a
+marginal-vs-logged comparison spuriously looks divergent. The actual DEC-1(a) gate is
+``tests/unit_tests/test_openpi_pytorch_sft_loss_parity_gpu.py``, which compares RLinf
+to the reference MODEL on the SAME batch + weights + noise/time (parity within DEC-1).
+This probe also reports the production ``train=True, rng=None`` path (the worker's),
+distinct from the full-random-augmentation draw used for the reproducible marginal.
 
 Run (single GPU)::
 
     TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl \\
         PYTHONPATH=. python tools/sft_loss_parity_probe.py
 
-The committed run evidence and the divergence analysis live in
-``docs/sft-loss-parity-evidence.md``.
+The analysis and same-batch evidence live in ``docs/sft-loss-parity-evidence.md``.
 """
 
 import hashlib

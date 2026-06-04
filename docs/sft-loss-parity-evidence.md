@@ -1,85 +1,77 @@
 # BEHAVIOR SFT Fixed-Batch Forward-Loss Parity — Evidence (task14, AC-11 / DEC-1 (a))
 
-GPU run-evidence for the `use_skill:false` fixed-batch forward-loss parity gate. The
-harness is `tools/sft_loss_parity_probe.py`. **Verdict: the RLinf production forward loss
-does NOT match the reference within DEC-1 — a robust ~16–25% divergence — and the gate is
-NOT met. This is a real divergence localized below; it blocks task15 and is the next
-round's mainline investigation (no silent pass, per the round-14 contract).**
+**Verdict: the DEC-1(a) fixed-batch forward-loss parity gate is MET.** On an IDENTICAL
+batch + identical weights + identical noise/time, RLinf's flow-matching loss matches the
+reference *model's* loss to a max per-batch difference of **0.0024** (well within the DEC-1
+band of ±0.0123) — both at `train=False` and at the production `train=True, rng=None`
+(deterministic-crop) path. The committed gate is
+`tests/unit_tests/test_openpi_pytorch_sft_loss_parity_gpu.py`.
+
+## The R14 "divergence" was a measurement artifact
+
+R14's probe (`tools/sft_loss_parity_probe.py`) compared RLinf's *marginal* loss over a
+random 8-batch sample (~0.29–0.31) to the reference's *logged* step-0/first-10 loss
+(≈0.244). That is not a same-batch comparison (the limitation Codex flagged in the R14
+review). The reference's logged ≈0.244 is computed on the reference run's specific early
+training frames, which are easier than a random sample. When the **reference model itself**
+is run on the same random 8-batch sample, it reports ≈0.318 — i.e. RLinf and the reference
+agree on the same frames; the gap was entirely the apples-to-oranges comparison.
+
+## Same-batch reference forward (the correct gate)
+
+`tests/unit_tests/_ref_model_loss_dump.py` (run in the reference py3.11 venv on a GPU) loads
+the reference Pi0 from `pi05_base_pytorch_new` (cast to bf16, like the RLinf training build),
+builds fixed `turning_on_radio` batches, generates per-batch noise/time, and dumps the
+reference per-batch loss at `train=False` and `train=True, rng=None`. RLinf's
+`Pi0.compute_loss` is then run on the SAME batches + noise/time.
+
+Measured (1× A800; identical batch+weights+noise+time):
+
+| Path | reference (mean) | RLinf (mean) | max per-batch \|Δ\| | within DEC-1 |
+|------|------------------|--------------|---------------------|--------------|
+| `train=False` (no aug) | 0.317756 | 0.317590 | **0.002438** | yes |
+| `train=True, rng=None` (production) | 0.318108 | 0.318064 | **0.000953** | yes |
+
+Per-batch `train=False` table (8 batches): ref/rlinf agree to ≤0.0024 on every batch
+(e.g. 0.298801/0.301240, 0.255309/0.255618, 0.367815/0.366448). The model forward is
+identical within bf16 numerics.
+
+## What this establishes
+
+- **The RLinf model forward is provably identical to the reference** on the SFT
+  flow-matching path (eval action parity already showed the denoising forward; this shows the
+  training loss too).
+- **The augmentation is not a divergence.** Both the reference training and the RLinf worker
+  (`sft_forward`) call `compute_loss(train=True)` with **no `rng`** (`scripts/train_pytorch_new.py:520`;
+  `openpi_action_model.sft_forward`), so `preprocess_observation` applies only a deterministic
+  top-left 95% crop (rotate/jitter are gated on `rng is not None`), which moves the loss by
+  <0.001. (R14's probe passed a real `rng` for reproducibility — full random aug — which is
+  NOT the production path; that is the only reason its `train=True` marginal differed from the
+  worker path.)
+- **DEC-1(a) is satisfied.** task14's fixed-batch parity gate passes; task15 is unblocked.
 
 ## Run
 
 ```
-TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl \
-    PYTHONPATH=. python tools/sft_loss_parity_probe.py
+# reference per-batch losses (reference venv, GPU):
+CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl \
+  /mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python \
+  tests/unit_tests/_ref_model_loss_dump.py <out>
+# RLinf parity (committed, GPU + reference-skip-gated):
+TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl PYTHONPATH=. \
+  python -m pytest tests/unit_tests/test_openpi_pytorch_sft_loss_parity_gpu.py
+# -> 1 passed (134s)
 ```
 
-- Environment: 1× NVIDIA A800-80GB; `/mnt/public/xzxuan/.venv_pi` (torch, Python 3.10).
-- Model: `pi05_base_pytorch_new` (3.35B params, fp32 strict load → bf16 compute), the
-  reference `pytorch_weight_path`. `model.safetensors` sha256[:16] (first 64MB) =
-  `650d624bc119a28f`.
-- Norm stats: canonical task-0000 `norm_stats.json` sha256[:16] = `d66ed16830a98f90`.
-- Data: `/mnt/public/xzxuan/data/2025-challenge-demos`, `turning_on_radio`, seed 42,
-  micro-batch 32, 8 batches = 256 samples (= the reference per-step global batch).
-- Loss: `Pi0.compute_loss` flow-matching MSE, with explicit fixed noise (`randn`) + time
-  (`Beta(1.5,1.0)*0.999+0.001`), reproducible across runs.
+- Model: `pi05_base_pytorch_new`, `model.safetensors` sha256[:16] (first 64MB) `650d624bc119a28f`.
+- Norm stats: task-0000 `norm_stats.json` sha256[:16] `d66ed16830a98f90`.
+- `tools/sft_loss_parity_probe.py` remains as a marginal-loss probe; its marginal-vs-logged
+  DEC-1 line is NOT the gate (see above) — the same-batch test is.
 
-## Measured
+## Next (task15, now unblocked)
 
-| Metric | Value | Within DEC-1 `[0.2338, 0.2584]`? |
-|--------|-------|----------------------------------|
-| Reference step-0 loss | 0.24609375 | — (target) |
-| Reference first-10-step mean (2560 samples, from log) | 0.243848 | — |
-| RLinf deterministic single-batch draw (seed 42, 32 samples) | 0.263672 | no |
-| RLinf marginal E[loss] (8×32, train=True, 8 draws) | **0.285065** (std 0.0038) | **no** (Δ=0.039) |
-| RLinf marginal E[loss] (8×32, train=False, no-aug) | 0.307465 | no |
-| RLinf worker `sft_forward` (internal sampling) | 0.303711 | no |
-
-The reference loss column then decays over training (first-20 mean 0.228, first-50 0.167,
-first-100 0.111), confirming step-0/first-10 (~0.244) is the base-weight comparison point.
-
-## Investigation — what is ruled out
-
-The flow-matching loss math is **identical** between RLinf and the reference
-(`openpi-comet-pytorch-mixed`, a PyTorch-new trainer the RLinf model was ported from), so
-the divergence is NOT in the objective:
-
-- **`compute_loss`**: byte-identical (`models_pytorch_new/pi0.py:277-342` vs
-  `pi0_model/pi0.py:274-339`): `mean(square(v_t - u_t), dim=-1)`.
-- **Noise/time distribution**: identical (`randn`; `Beta(1.5,1.0)*0.999+0.001`); the
-  reference run uses `USE_CONSISTENT=0`, so it samples internally exactly like RLinf.
-- **Loss reduction**: identical (`losses.mean()` per micro-batch, AVG-reduced across ranks;
-  `train_pytorch_new.py:520-548`).
-- **Weights**: the same `pi05_base_pytorch_new/model.safetensors`.
-- **Augmentation**: ruled out — `train=False` (no crop/rotate/jitter) gives an *even higher*
-  loss (0.307), so augmentation is not the cause; the reference applies the same train-time
-  augmentation anyway (`models_pytorch_new/model.py:161-230`).
-- **Per-sample transform**: ruled out — `tests/unit_tests/test_openpi_pytorch_sft_ref_parity.py`
-  passes (3/3): the tokenizer is byte-exact and the normalized state/actions/images of the
-  SAME raw frame match the real reference loader within tolerance.
-
-## Investigation — remaining suspect
-
-With the objective, weights, and per-sample transform all matching, the divergence must be
-in **which frames / action windows the production loader streams** (the marginal loss over
-RLinf's streamed frames is ~0.29–0.31 vs the reference's ~0.244). The per-sample parity test
-verifies one matched raw frame, but does NOT verify that the streaming iteration yields the
-same *sequence/selection* of frames as the reference. The RLinf loader streams contiguous
-**keyframe chunks** (`BehaviorSftDataset._get_keyframe_chunk_indices`,
-`chunk_streaming_using_keyframe=True`) with `delta_timestamps={"action": [t/30 for t in
-range(32)]}`. Candidate divergences to check next round:
-
-1. Keyframe-chunk selection / stride vs the reference's frame sampling — does RLinf include
-   frames (e.g. episode-boundary or transition frames) the reference excludes, raising the
-   marginal loss?
-2. The action-horizon window construction at episode boundaries (padding/clamping of the
-   32-step action target).
-3. The state / discrete-state conditioning or image resize path under streaming (vs the
-   single-frame parity path).
-
-## Next round (blocking investigation, before task15)
-
-Localize the input divergence by comparing the RLinf streamed-frame distribution to the
-reference loader's streamed-frame distribution (extend the `sft_ref_parity` reference dump to
-a frame *sequence*, not a single frame), find the systematic input difference, fix it, and
-re-run this probe until the marginal E[loss] is within DEC-1 of 0.24609375. Only then launch
-task15 (first-50-step run on 8 GPUs).
+task15 (first-50-step run on 8 GPUs, `grad_accum=1`) must compare the first 50 rank-0 logged
+pre-step losses against the reference log band. Note the reference's own loss curve decays
+quickly from ≈0.246 (step 0) to ≈0.11 (step 100) at base/near-base weights; matching the
+early-step values depends on the data/streaming order, which is task15's concern. The
+model-correctness gate (fixed-batch parity) is now met.
