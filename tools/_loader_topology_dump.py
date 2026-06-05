@@ -41,6 +41,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
+import sys
 
 import numpy as np
 
@@ -53,6 +55,15 @@ _NUM_WORKERS = 8
 _SEED = 42
 _GLOBAL = 256
 _MICRO = 32
+
+
+def _git_rev(repo):
+    try:
+        return subprocess.check_output(
+            ["git", "-C", repo, "rev-parse", "--short", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 def _np(x):
@@ -155,9 +166,12 @@ def main():
 
     if rank == 0:
         gathered.sort(key=lambda g: g["rank"])
+        import torch
+
+        is_ref = args.side == "ref"
         manifest = {
             "side": args.side,
-            "config": _REF_CONFIG if args.side == "ref" else "create_behavior_sft_data_loader",
+            "config": _REF_CONFIG if is_ref else "create_behavior_sft_data_loader",
             "world_size": world,
             "num_workers": nw,
             "global_batch": _GLOBAL,
@@ -166,7 +180,29 @@ def main():
             "task": _TASK,
             "n_steps": args.n_steps,
             "data_root": _DATA_ROOT,
-            "ref_src": _REF_SRC if args.side == "ref" else None,
+            "ref_src": _REF_SRC if is_ref else None,
+            "provenance": {
+                "command": f"torchrun --standalone --nproc_per_node={world} {sys.argv[0]} "
+                + " ".join(sys.argv[1:]),
+                "backend": "gloo",
+                "rank_count": world,
+                "num_workers": nw,
+                "seed": _SEED,
+                "task": _TASK,
+                "data_root": _DATA_ROOT,
+                "assets_dir": _ASSETS_DIR,
+                "rlinf_repo": "/mnt/public/xzxuan/repos/RLinf_pi05",
+                "rlinf_git_rev": _git_rev("/mnt/public/xzxuan/repos/RLinf_pi05"),
+                "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed" if is_ref else None,
+                "reference_git_rev": _git_rev("/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed") if is_ref else None,
+                "loader_builder": "openpi.training.data_loader.create_behavior_data_loader_torch"
+                if is_ref
+                else "rlinf.data.datasets.behavior.create_behavior_sft_data_loader",
+                "torch_version": torch.__version__,
+                "return_status": "rank0_wrote_manifest_ok",
+                "output_reused": False,
+                "with_images": args.with_images,
+            },
             "per_rank_per_step_frame_hashes": [g["per_step_frame_hashes"] for g in gathered],
         }
         out_path = f"{args.out}/{args.side}_topology_hashes{args.tag}.json"

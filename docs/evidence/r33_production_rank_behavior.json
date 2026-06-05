@@ -1,0 +1,22 @@
+{
+  "purpose": "R33 verification (Codex R32-review mainline) of the ACTUAL production-trainer loader rank behavior, to decide whether the R32 gloo-dump 'both loaders rank-replicated (effective batch 32)' holds for the production nccl runs -- i.e. whether the r22-vs-r24 gap is an effective-batch difference (reference 256 vs RLinf 32) or not.",
+  "method": "Read the REAL loader-setup code of both production trainers + confirm with the R32 8-rank torchrun dump (num_workers=0 control vs num_workers=8 production).",
+  "rlinf_production": {
+    "path": "rlinf/workers/sft/fsdp_sft_worker.py -> build_behavior_sft_dataloader -> rlinf/data/datasets/behavior/behavior_sft_data_loader.py:create_behavior_sft_data_loader",
+    "multiprocessing_context": "multiprocessing.get_context('spawn') for num_workers>0 (line 285)",
+    "worker_init_fn": "_worker_init_fn is a no-op placeholder (`del worker_id`, line 170-173) -- does NOT re-establish torch.distributed in the worker",
+    "rank_source": "BehaviorSftDataset._select_streaming_chunk reads `dist.get_rank() if dist.is_available() and dist.is_initialized() else 0`",
+    "conclusion": "SPAWN workers are fresh interpreters that do NOT inherit the parent's torch.distributed state, so dist.is_initialized() is False in the worker -> the dataset reads rank=0/world_size=1 in ALL ranks' workers -> all ranks replicate rank-0's partition -> RANK-REPLICATED (effective batch = micro_batch_size = 32, NOT the configured global_batch_size 256)."
+  },
+  "reference_production": {
+    "path": "scripts/train_pytorch_new.py -> openpi.training.data_loader.create_behavior_data_loader_torch -> TorchDataLoader",
+    "multiprocessing_context": "multiprocessing.get_context('spawn') for num_workers>0 (data_loader.py:369-371)",
+    "shuffle_seed": "generator seeded with process_seed = config.seed; `process_seed += jax.process_index()` ONLY when framework=='jax', but create_behavior_data_loader_torch uses framework='pytorch', so process_seed = config.seed -- the SAME generator seed on every rank (no rank/process offset)",
+    "sampler": "sampler=None (no DistributedSampler); local_batch_size = config.batch_size // world_size = 256//8 = 32 per rank",
+    "worker_init_fn": "_worker_init_fn only sets XLA env vars (data_loader.py:421-426) -- does NOT shard by rank",
+    "conclusion": "SPAWN workers + the SAME generator seed across all ranks + no rank-aware sampler -> every rank shuffles the same dataset identically -> RANK-REPLICATED (effective batch = local_batch_size = 32, NOT global 256)."
+  },
+  "empirical_confirmation_R32": "The R32 8-rank torchrun dump directly ran BOTH loaders: at num_workers=8 BOTH are rank-replicated (32 unique frames/global step); the num_workers=0 control is rank-disjoint (256) -- confirming the spawn-worker mechanism (workers lose the dist rank). See docs/evidence/r32_loader_topology.json + r32_*_topology_hashes.json.",
+  "verdict": "BOTH production trainers are RANK-REPLICATED (effective per-step batch = 32, not the configured global 256) -- code-confirmed (both use spawn DataLoader workers that do not inherit torch.distributed; the reference additionally uses the SAME shuffle seed across ranks since framework='pytorch' skips the jax.process_index offset) AND dump-confirmed (R32). So the r22-vs-r24 production gap (0.046 vs 0.090) is NOT an effective-batch-size difference -- BOTH are effective batch 32. The R30/R31 loader-composition hypothesis stays REFUTED (R32: same rank-0 frames at seed 42). REMAINING LEADS (R34, unproven): (a) DATA ORDERING -- RLinf production seed=42 vs the reference production's config.seed (if different, the two runs shuffle the same corpus differently); R24 showed the reference reproducible across seeds (~0.004), so this is unlikely to explain ~0.044 alone; (b) the noise/time RNG; (c) a 50-step / effective-batch-32 residual that R28's 20-step single-GPU same-input test did not capture. The r22-vs-r24 gap is genuinely re-opened; task15 NOT met.",
+  "caveat": "The code reading + R32 gloo dump establish the rank-replication mechanism (spawn workers). The production runs use nccl, but spawn-vs-fork worker behavior is backend-independent (a spawned worker never inherits the parent process group regardless of nccl/gloo), so the mechanism holds. Distinguished: OBSERVED = the dump + the code; INFERRED = the production nccl runs share the spawn mechanism (high-confidence, since both trainers' loader code uses spawn)."
+}

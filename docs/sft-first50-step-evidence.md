@@ -61,10 +61,13 @@ ranks emit the same 32-frame micro-batch → effective batch **32**, not 256; th
 workers don't see the rank), and **(2)** their rank-0 streams contain the **SAME frames** (images
 identical, state/actions ~5e-8). **So in production both loaders feed the SAME data → the R30/R31
 "RLinf loader feeds a different/faster batch" hypothesis is REFUTED** (it was a `world_size=1`
-artifact); the AC-11 loader plan-evolution proposal is **WITHDRAWN**. The batch-32 replay of the shared
-data tracks the RLinf production curve r22 but not the reference's r24, so the r22-vs-r24 gap is
-**re-opened** — new leads (unproven): the reference production's actual effective batch (rank-disjoint
-256 vs RLinf's rank-replicated 32?), noise/time RNG, or a 50-step residual. task15 stays NOT met. The earlier
+artifact); the AC-11 loader plan-evolution proposal is **WITHDRAWN**. **R33 then confirmed (by reading
+both production trainers' loader code) that BOTH are rank-replicated** — both use `spawn` DataLoader
+workers that don't inherit `torch.distributed`, and the reference additionally uses the same shuffle
+seed across ranks (`framework="pytorch"` skips the `jax.process_index` offset) — so the production
+effective batch is **32 for both** (`docs/evidence/r33_production_rank_behavior.json`); the r22-vs-r24
+gap is **NOT an effective-batch difference**, and is re-opened with the remaining leads (data
+ordering/seed, noise/time RNG, or a 50-step residual). task15 stays NOT met. The earlier
 R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
 retracted. The residual is a **real systematic divergence (RLinf descends faster / lower)**,
 task15-blocking. See **"Round 20 / 21 / 22"** below. The
@@ -355,6 +358,29 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
+### R33 — production-trainer rank behavior CONFIRMED: both rank-replicated (effective batch 32), not 256
+R33 verifies (Codex R32 review) whether the R32 gloo-dump "both loaders rank-replicated" holds for the
+PRODUCTION trainers, by reading both trainers' loader-setup code
+(`docs/evidence/r33_production_rank_behavior.json`):
+- **RLinf** (`fsdp_sft_worker` → `build_behavior_sft_dataloader` → `create_behavior_sft_data_loader`):
+  the DataLoader uses `multiprocessing.get_context("spawn")` for `num_workers>0` and a **no-op**
+  `worker_init_fn`. Spawn workers are fresh interpreters that do NOT inherit `torch.distributed`, so
+  `dist.is_initialized()` is False in the worker → `BehaviorSftDataset` reads rank=0 in every rank's
+  workers → **RANK-REPLICATED** (effective batch = `micro_batch_size` = 32, not the configured 256).
+- **Reference** (`train_pytorch_new.py` → `create_behavior_data_loader_torch` → `TorchDataLoader`):
+  also `spawn` workers; the shuffle generator is seeded with `process_seed = config.seed` and the
+  `+= jax.process_index()` offset is applied ONLY when `framework=="jax"` — but this path is
+  `framework="pytorch"`, so **every rank uses the SAME shuffle seed** (no rank offset, `sampler=None`)
+  → **RANK-REPLICATED** (effective batch = `batch_size // world_size` = 32).
+
+Both are **code-confirmed** rank-replicated AND **dump-confirmed** (R32: nw=8 → 32 unique/step;
+nw=0 control → 256). So at production BOTH trainers have **effective per-step batch 32** — the r22-vs-r24
+gap (0.046 vs 0.090) is **NOT an effective-batch-size difference**. The R30/R31 loader-composition
+hypothesis stays REFUTED. **Remaining leads (R34, unproven):** data ordering (RLinf seed-42 vs the
+reference's `config.seed`; R24 showed the reference reproducible across seeds ~0.004, so unlikely to
+explain ~0.044 alone), the noise/time RNG, or a 50-step / effective-batch-32 residual that R28's 20-step
+single-GPU same-input test did not capture. task15 stays NOT met.
+
 ### R32 — production-topology dumps: the loaders feed the SAME data → R30/R31 loader hypothesis REFUTED
 R32 dumped BOTH loaders' first-50 per-rank micro-batches at the REAL production topology (8 ranks ×
 `num_workers=8`) via `torchrun` (`tools/_loader_topology_dump.py`; manifests + per-rank/per-step
@@ -616,12 +642,16 @@ until that run exists.
 - **Loader-sequence replay, global-256** (R31): `tools/sft_loader_sequence_prod_probe.py` →
   `docs/evidence/r31_loader_sequence_prod.json` ("production-faithful" WITHDRAWN — bypassed the loader
   topology, world_size=1; superseded by R32).
-- **Loader TOPOLOGY dumps + replay** (R32): `tools/_loader_topology_dump.py` +
+- **Loader TOPOLOGY dumps + replay** (R32, manifests hardened R33): `tools/_loader_topology_dump.py` +
   `tools/sft_loader_topology_replay.py` → `docs/evidence/r32_loader_topology.json` +
-  `r32_topology_replay.json` + `r32_*_topology_hashes.json` (8-rank/`num_workers=8`; manifests +
-  per-rank/per-step hashes; BOTH loaders rank-replicated → effective batch 32; rank-0 streams contain
-  the SAME frames → the R30/R31 loader hypothesis is REFUTED; the batch-32 replay of the shared data
-  tracks r22 not r24; r22-vs-r24 re-opened).
+  `r32_topology_replay.json` + `r32_*_topology_hashes.json` (8-rank/`num_workers=8`; manifests with
+  provenance + per-rank/per-step hashes; BOTH loaders rank-replicated → effective batch 32; the replay
+  now computes a reproducible `same_frames` block — rank-0 streams contain the SAME frames → the R30/R31
+  loader hypothesis is REFUTED; r22-vs-r24 re-opened).
+- **Production-trainer rank behavior** (R33): `docs/evidence/r33_production_rank_behavior.json` (code
+  reading of both trainers' loader setup: both use `spawn` workers → rank-replicated, effective batch
+  32; the reference also uses the same shuffle seed across ranks; confirmed by the R32 dump → the
+  r22-vs-r24 gap is NOT an effective-batch difference).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -659,7 +689,10 @@ rank-aware topology, which drives the per-step batch composition under test. **R
 loaders at the real production topology** (8-rank, `num_workers=8`) and found both RANK-REPLICATED
 (effective batch 32) with rank-0 streams containing the **SAME frames** — so the loaders feed the same
 data and the **R30/R31 loader hypothesis is REFUTED** (the AC-11 loader proposal is withdrawn). The
-batch-32 replay of the shared data tracks r22 but not r24, so the r22-vs-r24 gap is **re-opened** (new
-leads: the reference production's actual effective batch / rank behavior, noise/time, or a 50-step
-residual — R33). task15 stays NOT met; task16 (advisory ~1 h trend) and task18 (final AC-13) remain
-blocked on it.
+batch-32 replay of the shared data tracks r22 but not r24, so the r22-vs-r24 gap is **re-opened**.
+**R33 confirmed (code + dump) that BOTH production trainers are rank-replicated** (both use `spawn`
+DataLoader workers that don't inherit `torch.distributed`; the reference also uses the same shuffle
+seed across ranks) → effective batch **32 for both**, so the gap is NOT an effective-batch difference
+(`docs/evidence/r33_production_rank_behavior.json`). **R34 leads (unproven):** data ordering/seed,
+noise/time RNG, or a 50-step / effective-batch-32 residual. task15 stays NOT met; task16 (advisory
+~1 h trend) and task18 (final AC-13) remain blocked on it.

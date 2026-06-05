@@ -5,9 +5,9 @@
     "repo_cwd": "/mnt/public/xzxuan/repos/RLinf_pi05",
     "base_weights": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
     "base_weights_sha256_16": "f6391204c480d6c5",
-    "rlinf_rank0_npz": "/mnt/public/xzxuan/tmp/rlinf_rank0_batches_img.npz",
+    "rlinf_rank0_npz": "/mnt/public/xzxuan/tmp/rlinf_rank0_batches.npz",
     "rlinf_rank0_npz_sha256_16": "f235b37f4bfb44fc",
-    "ref_rank0_npz": "/mnt/public/xzxuan/tmp/ref_rank0_batches_img.npz",
+    "ref_rank0_npz": "/mnt/public/xzxuan/tmp/ref_rank0_batches.npz",
     "ref_rank0_npz_sha256_16": "b9ab2de4989a3e75",
     "n_steps": 50,
     "batch": 32,
@@ -15,6 +15,15 @@
     "topology": "rank-0 streams from the 8-rank num_workers=8 dump (both loaders rank-replicated -> rank-0 stream IS the effective per-step batch). See docs/evidence/r32_loader_topology.json.",
     "loop": "fp32 weights + autocast bf16; AdamW(0.9,0.95)/eps1e-8/wd1e-10; clip_grad_norm_(1.0); openpi_cosine warmup peak=2.5e-5 warmup=1000",
     "output": "docs/evidence/r32_topology_replay.json"
+  },
+  "same_frames": {
+    "image_base_0_rgb_max_abs_diff": 0.0,
+    "state_max_abs_diff": 5.69e-08,
+    "actions_max_abs_diff": 2.98e-08,
+    "tokenized_prompt_equal_rate": 0.9999969,
+    "per_step_frame_overlap_of_32_min": 0,
+    "per_step_frame_overlap_of_32_mean": 0.0,
+    "note": "image diff after HWC->CHW transpose; state/actions are loader-transformed tensors of the SAME frames (~float noise); the per-step (state,actions)-hash overlap counts how many of each rank-0 step's 32 frames are byte-identical across the two loaders (loaders preprocess slightly differently, so use the image/state/action max-diffs as the primary same-frame signal)."
   },
   "reference_loader_vs_r24_production": {
     "replay_last10_mean": 0.074675,
@@ -382,6 +391,5 @@
       "r22_rlinf_prod": 0.048096
     }
   ],
-  "verdict": "R30/R31 LOADER-COMPOSITION HYPOTHESIS REFUTED. At the production topology (8-rank, num_workers=8) BOTH loaders are rank-replicated (effective batch 32, docs/evidence/r32_loader_topology.json) AND their rank-0 streams contain the SAME frames (images identical; state/actions ~5e-8). So the two loaders feed the SAME per-step batches in production -- the R30/R31 'RLinf loader descends faster' was an artifact of the NON-production topology (R31 ran RLinf at world_size=1 = rank-DISJOINT 256 unique; R30 at batch-16). The batch-32 replay of both rank-0 streams gives an IDENTICAL trajectory (gap -0.0001) that tracks the RLinf production curve r22 (replay last-10 0.0748 vs r22 0.0729) but lands BELOW the reference production curve r24 (vs 0.1017). So the production r22-vs-r24 difference (0.046 vs 0.090) is NOT the loader (same data) and NOT the single-GPU stack (R26-R29). The prior AC-11 loader plan-evolution proposal is WITHDRAWN. NEW LEADS (hypotheses, NOT proven) for the next round: (a) the reference PRODUCTION run (train_pytorch_new.py, nccl) may be rank-DISJOINT (effective batch 256) while RLinf production is rank-REPLICATED (effective 32) -- the forked-DataLoader-worker rank-replication this dump observed under gloo would, if it also holds for RLinf's production nccl but NOT the reference's, be a real RLinf effective-batch bug (config says 256, effective 32); (b) noise/time RNG; (c) a 50-step-compounding residual R28's 20-step test did not capture. task15 stays OPEN; verify the two production runs' ACTUAL effective batch / rank behavior next.",
-  "same_frames_finding": "The reference and RLinf rank-0 batch-32 streams contain the SAME frames: images identical (max|diff|=0.0 after HWC->CHW transpose), state max|diff|=5.7e-8, actions max|diff|=3.0e-8, tokenized_prompt 99.9997% identical. So at the production topology both loaders stream the SAME seed-42 data at rank-0, and the two replay trajectories are IDENTICAL (last-10 0.0747 vs 0.0748)."
+  "verdict": "R30/R31 LOADER-COMPOSITION HYPOTHESIS REFUTED. At the production topology both loaders are rank-replicated (effective batch 32; docs/evidence/r32_loader_topology.json) and their rank-0 streams hold the SAME frames (image max|\u0394|=0.0, state max|\u0394|=5.69e-08, actions max|\u0394|=2.98e-08, prompt equal rate=0.9999969). So both loaders feed the SAME data, and the batch-32 replay of the two rank-0 streams gives a nearly identical trajectory (reference-loader last-10 0.0747 vs r24 0.1017; RLinf-loader 0.0748 vs r22 0.0729) that tracks r22 but lands below r24. The R30/R31 'RLinf loader feeds a different/faster batch' was a world_size=1 artifact and is REFUTED; the AC-11 loader plan-evolution proposal is WITHDRAWN. The r22-vs-r24 gap is re-opened (new leads: the reference production's actual effective batch / rank behavior, noise/time RNG, or a 50-step residual). task15 NOT met."
 }

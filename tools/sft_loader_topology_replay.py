@@ -46,8 +46,8 @@ import numpy as np
 import torch
 
 _WEIGHTS = "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors"
-_RLINF_NPZ = "/mnt/public/xzxuan/tmp/rlinf_rank0_batches_img.npz"
-_REF_NPZ = "/mnt/public/xzxuan/tmp/ref_rank0_batches_img.npz"
+_RLINF_NPZ = "/mnt/public/xzxuan/tmp/rlinf_rank0_batches.npz"
+_REF_NPZ = "/mnt/public/xzxuan/tmp/ref_rank0_batches.npz"
 _R24_CSV = "docs/evidence/r24_ref_seed42_first50.csv"
 _R22_CSV = "docs/evidence/r22_reduce_dtype_first50_losses.csv"
 _IMG = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
@@ -133,6 +133,35 @@ def _replay(model, base_cpu, npz_path, noise, time, device):
     return rows
 
 
+def _same_frames(rlinf_npz, ref_npz):
+    """Reproducible cross-loader identity comparison of the two rank-0 batch-32 streams."""
+    a, b = np.load(rlinf_npz), np.load(ref_npz)
+    ai = a["image__base_0_rgb"]  # RLinf may be (...,224,224,3) HWC; reference (...,3,224,224) CHW
+    if ai.shape[-1] == 3 and b["image__base_0_rgb"].shape[-3] == 3:
+        ai = np.transpose(ai, (0, 1, 4, 2, 3))
+    img_diff = float(np.abs(ai.astype("f8") - b["image__base_0_rgb"].astype("f8")).max())
+    st_diff = float(np.abs(a["state"].astype("f8") - b["state"].astype("f8")).max())
+    act_diff = float(np.abs(a["actions"].astype("f8") - b["actions"].astype("f8")).max())
+    tp_eq = float((a["tokenized_prompt"] == b["tokenized_prompt"]).mean())
+    # per-step: do the two streams hold the same 32 frames (by per-frame (state,actions) hash)?
+    def _fh(npz, step):
+        s, ac = npz["state"][step], npz["actions"][step]
+        return {hashlib.sha256(np.ascontiguousarray(s[i]).tobytes() + np.ascontiguousarray(ac[i]).tobytes()).hexdigest()[:16] for i in range(s.shape[0])}
+    overlaps = [len(_fh(a, s) & _fh(b, s)) for s in range(a["state"].shape[0])]
+    return {
+        "image_base_0_rgb_max_abs_diff": round(img_diff, 8),
+        "state_max_abs_diff": round(st_diff, 10),
+        "actions_max_abs_diff": round(act_diff, 10),
+        "tokenized_prompt_equal_rate": round(tp_eq, 7),
+        "per_step_frame_overlap_of_32_min": int(min(overlaps)),
+        "per_step_frame_overlap_of_32_mean": round(float(np.mean(overlaps)), 2),
+        "note": "image diff after HWC->CHW transpose; state/actions are loader-transformed tensors of "
+        "the SAME frames (~float noise); the per-step (state,actions)-hash overlap counts how many of "
+        "each rank-0 step's 32 frames are byte-identical across the two loaders (loaders preprocess "
+        "slightly differently, so use the image/state/action max-diffs as the primary same-frame signal).",
+    }
+
+
 def _track(rows, curve, k=10):
     rl = [r["loss"] for r in rows]
     last_rl, last_cv = float(np.mean(rl[-k:])), float(np.mean(curve[-k:]))
@@ -169,6 +198,7 @@ def main():
     print("Replaying the RLINF loader rank-0 batch-32 stream ...", flush=True)
     rlinf_rows = _replay(model, base_cpu, _RLINF_NPZ, noise, time, device)
 
+    same_frames = _same_frames(_RLINF_NPZ, _REF_NPZ)
     r24, r22 = _curve(_R24_CSV, "loss"), _curve(_R22_CSV, "rlinf_loss")
     ref_vs_r24 = _track(ref_rows, r24)
     rlinf_vs_r22 = _track(rlinf_rows, r22)
@@ -208,23 +238,25 @@ def main():
             "openpi_cosine warmup peak=2.5e-5 warmup=1000",
             "output": args.out,
         },
+        "same_frames": same_frames,
         "reference_loader_vs_r24_production": ref_vs_r24,
         "rlinf_loader_vs_r22_production": rlinf_vs_r22,
         "steps": rows,
         "verdict": (
-            "At the topology-faithful effective batch 32, through the IDENTICAL loop + shared noise/time "
-            f"(only the loader differs): the reference-loader rank-0 stream last-10 mean is "
-            f"{ref_vs_r24['replay_last10_mean']:.4f} (r24 {ref_vs_r24['curve_last10_mean']:.4f}, "
-            f"tracks={ref_vs_r24['tracks']}); the RLinf-loader rank-0 stream is "
-            f"{rlinf_vs_r22['replay_last10_mean']:.4f} (r22 {rlinf_vs_r22['curve_last10_mean']:.4f}, "
-            f"tracks={rlinf_vs_r22['tracks']}); RLinf-loader "
-            + ("descends FASTER than the reference-loader" if rlinf_faster else "does NOT descend faster than the reference-loader")
-            + ". Combined with R26->R29 (RLinf == reference on identical inputs) and the R32 topology "
-            "analysis (both loaders rank-replicated, effective batch 32), the first-50 difference is "
-            "the per-step batch COMPOSITION each loader's rank-0 streams. Caveats: aggregate (last-10) "
-            "tracking, not step-by-step; fixed shared noise/time (vs production internal) and "
-            "single-GPU/autocast deviations. task15 NOT met without the original 50/50 gate or an "
-            "accepted plan evolution."
+            "R30/R31 LOADER-COMPOSITION HYPOTHESIS REFUTED. At the production topology both loaders are "
+            "rank-replicated (effective batch 32; docs/evidence/r32_loader_topology.json) and their "
+            f"rank-0 streams hold the SAME frames (image max|Δ|={same_frames['image_base_0_rgb_max_abs_diff']}, "
+            f"state max|Δ|={same_frames['state_max_abs_diff']}, actions max|Δ|={same_frames['actions_max_abs_diff']}, "
+            f"prompt equal rate={same_frames['tokenized_prompt_equal_rate']}). So both loaders feed the "
+            "SAME data, and the batch-32 replay of the two rank-0 streams gives a "
+            + ("nearly identical" if not rlinf_faster else "different")
+            + f" trajectory (reference-loader last-10 {ref_vs_r24['replay_last10_mean']:.4f} vs r24 "
+            f"{ref_vs_r24['curve_last10_mean']:.4f}; RLinf-loader {rlinf_vs_r22['replay_last10_mean']:.4f} "
+            f"vs r22 {rlinf_vs_r22['curve_last10_mean']:.4f}) that tracks r22 but lands below r24. The "
+            "R30/R31 'RLinf loader feeds a different/faster batch' was a world_size=1 artifact and is "
+            "REFUTED; the AC-11 loader plan-evolution proposal is WITHDRAWN. The r22-vs-r24 gap is "
+            "re-opened (new leads: the reference production's actual effective batch / rank behavior, "
+            "noise/time RNG, or a 50-step residual). task15 NOT met."
         ),
     }
     with open(args.out, "w", newline="\n") as f:

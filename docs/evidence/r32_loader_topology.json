@@ -24,15 +24,34 @@
         "n_steps": 50,
         "ref_src": null
       },
+      "provenance": {
+        "command": "torchrun --standalone --nproc_per_node=8 tools/_loader_topology_dump.py --side rlinf --out /mnt/public/xzxuan/tmp --n-steps 50 --num-workers 8 --with-images",
+        "backend": "gloo",
+        "rank_count": 8,
+        "num_workers": 8,
+        "seed": 42,
+        "task": "turning_on_radio",
+        "data_root": "/mnt/public/xzxuan/data/2025-challenge-demos",
+        "assets_dir": "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets",
+        "rlinf_repo": "/mnt/public/xzxuan/repos/RLinf_pi05",
+        "rlinf_git_rev": "c1de4217",
+        "reference_repo": null,
+        "reference_git_rev": null,
+        "loader_builder": "rlinf.data.datasets.behavior.create_behavior_sft_data_loader",
+        "torch_version": "2.5.1+cu124",
+        "return_status": "rank0_wrote_manifest_ok",
+        "output_reused": false,
+        "with_images": true
+      },
       "unique_frames_per_global_step": {
         "mean": 32,
         "min": 32,
         "max": 32
       },
       "step0_rank0_rank1_overlap_of_32": 32,
-      "verdict": "RANK-REPLICATED (all ranks emit the same per-step micro-batch -> effective batch = local_batch)",
+      "verdict": "RANK-REPLICATED (effective batch = local_batch)",
       "hashes_file": "docs/evidence/r32_rlinf_topology_hashes.json",
-      "hashes_file_sha256_16": "52fc023ee0b8d87c"
+      "hashes_file_sha256_16": "3305ff321b576d0e"
     },
     "rlinf_nw0": {
       "manifest": {
@@ -56,15 +75,34 @@
         "n_steps": 50,
         "ref_src": null
       },
+      "provenance": {
+        "command": "torchrun --standalone --nproc_per_node=8 tools/_loader_topology_dump.py --side rlinf --out /mnt/public/xzxuan/tmp --n-steps 50 --num-workers 0 --tag _nw0",
+        "backend": "gloo",
+        "rank_count": 8,
+        "num_workers": 0,
+        "seed": 42,
+        "task": "turning_on_radio",
+        "data_root": "/mnt/public/xzxuan/data/2025-challenge-demos",
+        "assets_dir": "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets",
+        "rlinf_repo": "/mnt/public/xzxuan/repos/RLinf_pi05",
+        "rlinf_git_rev": "c1de4217",
+        "reference_repo": null,
+        "reference_git_rev": null,
+        "loader_builder": "rlinf.data.datasets.behavior.create_behavior_sft_data_loader",
+        "torch_version": "2.5.1+cu124",
+        "return_status": "rank0_wrote_manifest_ok",
+        "output_reused": false,
+        "with_images": false
+      },
       "unique_frames_per_global_step": {
         "mean": 256,
         "min": 256,
         "max": 256
       },
       "step0_rank0_rank1_overlap_of_32": 0,
-      "verdict": "RANK-DISJOINT (each rank a different micro-batch -> effective batch = world*local_batch)",
+      "verdict": "RANK-DISJOINT (effective batch = world*local_batch)",
       "hashes_file": "docs/evidence/r32_rlinf_nw0_topology_hashes.json",
-      "hashes_file_sha256_16": "24faa41c8d18720d"
+      "hashes_file_sha256_16": "d8d3882e5d43bfed"
     },
     "reference_nw8_production": {
       "manifest": {
@@ -88,15 +126,34 @@
         "n_steps": 50,
         "ref_src": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/src"
       },
+      "provenance": {
+        "command": "torchrun --standalone --nproc_per_node=8 tools/_loader_topology_dump.py --side ref --out /mnt/public/xzxuan/tmp --n-steps 50 --num-workers 8 --with-images",
+        "backend": "gloo",
+        "rank_count": 8,
+        "num_workers": 8,
+        "seed": 42,
+        "task": "turning_on_radio",
+        "data_root": "/mnt/public/xzxuan/data/2025-challenge-demos",
+        "assets_dir": "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets",
+        "rlinf_repo": "/mnt/public/xzxuan/repos/RLinf_pi05",
+        "rlinf_git_rev": "c1de4217",
+        "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+        "reference_git_rev": "cd99b39",
+        "loader_builder": "openpi.training.data_loader.create_behavior_data_loader_torch",
+        "torch_version": "2.7.1+cu126",
+        "return_status": "rank0_wrote_manifest_ok",
+        "output_reused": false,
+        "with_images": true
+      },
       "unique_frames_per_global_step": {
         "mean": 32,
         "min": 32,
         "max": 32
       },
       "step0_rank0_rank1_overlap_of_32": 32,
-      "verdict": "RANK-REPLICATED (all ranks emit the same per-step micro-batch -> effective batch = local_batch)",
+      "verdict": "RANK-REPLICATED (effective batch = local_batch)",
       "hashes_file": "docs/evidence/r32_ref_topology_hashes.json",
-      "hashes_file_sha256_16": "e921139399b9e425"
+      "hashes_file_sha256_16": "59742d1357052703"
     }
   },
   "key_finding": "At the PRODUCTION topology (num_workers=8), BOTH the RLinf and the reference loader are RANK-REPLICATED: all 8 ranks emit the SAME 32-frame micro-batch per step (step0 rank0/rank1 overlap 32/32; unique frames per global step = 32, not 256). So BOTH production runs have an EFFECTIVE per-step batch of 32 (the all-reduce of 8 identical 32-frame grads = the 32-frame grad), NOT the configured global 256. The rank-disjoint partition only appears at num_workers=0 (RLinf nw=0 -> 256 unique/step): the forked DataLoader workers do not see the distributed rank, so with num_workers>0 all ranks replicate rank-0's partition.",
