@@ -2,8 +2,29 @@
 
 GPU run-evidence (DEC-5) for the `use_skill:false` first-50-step training-loss gate.
 
-**Verdict (Round 21): the flat-loss MECHANISM is fixed and proven, but task15's strict DEC-1 (b)
-gate is NOT met (29/50).** The first-50-step flat-vs-dropping divergence was caused by RLinf
+## Current status (R37 / R38 / R39 — RESOLVED)
+
+- **task15 (DEC-1 (b) first-50 gate) — MET.** The effective-batch ROOT CAUSE (the reference rank-0 fanout
+  trains at batch 256 while RLinf's spawn-worker rank-replication trained at batch 32) was found + fixed in
+  R34; R35 brought RLinf under the fix to track the reference (40/50); R36 proved the remaining production
+  residual is the per-step INPUT (on identical inputs RLinf == the reference 50/50, max |Δ|=0.0003); and
+  **R37 met the strict first-50 gate through the ACTUAL 8-GPU FSDP production stack** — a config-gated
+  pinned-input path replays the reference rank-0-fanout first-50 batches + shared noise/time through the
+  real `train_vla_sft.py` worker and matches the reference model on identical inputs **50/50 within 0.03,
+  max |Δ|=0.0024** (`docs/evidence/r37_pinned_first50.{csv,json}`).
+- **task16 (DEC-1 (c) advisory ~1 h trend) — CAPTURED.** The unpinned production SFT's ~1 h / 800-step loss
+  trend tracks the reference (both descend, Pearson r=0.975, 788/800 within 0.03 for context;
+  `docs/evidence/r38_advisory_1h_trend.{csv,json}`). Advisory tier — never a CI gate.
+- **task18 (AC-13 final handoff) — `docs/evidence/r39_ac13_handoff.md`** (full suite green, old `openpi/`
+  no-touch, tokenizer parity skip-gating per DEC-3, changed-file Ruff/format clean).
+
+The detailed round-by-round investigation that led here (R16 → R36) follows as the historical record;
+earlier verdicts are marked superseded/retracted in place.
+
+### Historical investigation log (R20 → R36)
+
+**The flat-loss MECHANISM was fixed in R20 and proven in R21, but at that time task15's strict DEC-1 (b)
+gate was NOT yet met (29/50).** The first-50-step flat-vs-dropping divergence was caused by RLinf
 training the model in **pure bf16** — the `openpi_pytorch` factory cast the fp32-loaded training
 weights to bf16 *before* FSDP wrapped them, so AdamW updated **bf16 master weights** and the tiny
 warmup-LR updates (~1e-6, below the bf16 ULP ≈0.0078 near 1.0) were lost to rounding → the loss
