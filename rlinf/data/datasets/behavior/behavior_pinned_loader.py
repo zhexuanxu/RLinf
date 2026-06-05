@@ -135,11 +135,6 @@ def build_pinned_behavior_sft_dataloader(cfg, world_size: int, rank: int):
     micro = int(cfg.actor.micro_batch_size)
 
     batches = _rank_slice_batches(str(batches_npz), rank, world_size)
-    total = int(batches["actions"].shape[0]) * world_size
-    if total % world_size != 0:
-        raise ValueError(
-            f"Pinned batch count {total} is not divisible by world_size {world_size}."
-        )
 
     lo = rank * micro
     with np.load(str(noise_time_npz)) as f:
