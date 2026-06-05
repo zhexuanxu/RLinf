@@ -56,12 +56,19 @@ def test_sft_forward_cpu_dummy():
             self.gc = False
             self.last_actions = None
             self.last_train = None
+            self.last_noise = None
+            self.last_time = None
 
-        def compute_loss(self, observation, actions, *, train=False):
+        def compute_loss(
+            self, observation, actions, *, train=False, rng=None, noise=None, time=None
+        ):
             # (B, action_horizon) per-timestep loss; depends on a param so the
-            # reduced scalar is differentiable.
+            # reduced scalar is differentiable. Mirrors Pi0.compute_loss, which
+            # accepts optional pinned noise/time (None in normal training).
             self.last_actions = actions
             self.last_train = train
+            self.last_noise = noise
+            self.last_time = time
             return (actions.float() ** 2).mean(dim=-1) + self.dummy
 
         def gradient_checkpointing_enable(self):

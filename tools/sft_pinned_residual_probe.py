@@ -79,6 +79,17 @@ def _hash(*arrs):
     return h.hexdigest()[:16]
 
 
+def _git_rev(repo):
+    try:
+        return subprocess.check_output(
+            ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
 def _lr_at(step):
     init = _PEAK_LR / (_WARMUP + 1)
     return init + (_PEAK_LR - init) * step / _WARMUP
@@ -222,36 +233,42 @@ def main():
     with open(dump_p) as f:
         ref = json.load(f)
     assert ref.get("ok"), f"reference arm failed: {ref.get('err')}"
+    meta = ref.get("meta", {})
+    # When reusing a prior arm, recover its real recorded return code (0) instead of "reused".
+    if ref_rc == "reused":
+        ref_rc = meta.get("returncode", "reused_unknown")
 
     print("Running the RLinf arm on the IDENTICAL inputs ...", flush=True)
     rl = _rlinf_run(args.tmp)
 
     ref_steps = ref["steps"]
-    # input-identity check: the per-step state/actions/noise/time hashes must match across arms.
-    hashes_match = all(
-        ref_steps[i]["state_hash"] == rl[i]["state_hash"]
-        and ref_steps[i]["actions_hash"] == rl[i]["actions_hash"]
-        and ref_steps[i]["noise_hash"] == rl[i]["noise_hash"]
-        and ref_steps[i]["time_hash"] == rl[i]["time_hash"]
-        for i in range(_N_STEPS)
-    )
-    rows = [
-        {
+    _fields = ("state", "actions", "noise", "time")
+
+    def _row(i):
+        row = {
             "step": i,
             "ref_loss": ref_steps[i]["loss"],
             "rlinf_loss": rl[i]["loss"],
             "abs_delta": round(abs(ref_steps[i]["loss"] - rl[i]["loss"]), 6),
             "within_0.03": int(abs(ref_steps[i]["loss"] - rl[i]["loss"]) <= 0.03),
-            "inputs_identical": int(
-                ref_steps[i]["state_hash"] == rl[i]["state_hash"]
-                and ref_steps[i]["noise_hash"] == rl[i]["noise_hash"]
-            ),
         }
-        for i in range(_N_STEPS)
-    ]
+        # Record BOTH arms' per-step hashes for state/actions/noise/time + per-field equality,
+        # so the input-identity claim is auditable from the committed JSON alone.
+        all_eq = True
+        for f in _fields:
+            rh, lh = ref_steps[i][f"{f}_hash"], rl[i][f"{f}_hash"]
+            row[f"ref_{f}_hash"] = rh
+            row[f"rlinf_{f}_hash"] = lh
+            row[f"{f}_match"] = int(rh == lh)
+            all_eq = all_eq and rh == lh
+        row["inputs_identical"] = int(all_eq)
+        return row
+
+    rows = [_row(i) for i in range(_N_STEPS)]
+    # input-identity across ALL steps requires every per-step state/actions/noise/time hash to match.
+    hashes_match = all(r["inputs_identical"] for r in rows)
     within = sum(r["within_0.03"] for r in rows)
     maxd = max(r["abs_delta"] for r in rows)
-    meta = ref.get("meta", {})
     result = {
         "purpose": "R36 PINNED same-input residual experiment: BOTH the reference models_pytorch_new.Pi0 "
         "and RLinf Pi0 run the IDENTICAL reference rank-0-fanout first-50 global-256 batch sequence + "
@@ -263,9 +280,11 @@ def main():
             "PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_pinned_residual_probe.py "
             "--out docs/evidence/r36_pinned_residual.json",
             "repo_cwd": os.getcwd(),
+            "rlinf_git_rev": _git_rev(os.getcwd()),
             "reference_venv": _REF_VENV_PY,
             "reference_src": _REF_SRC,
             "reference_arm": _REF_RUN,
+            "reference_command": meta.get("ref_command"),
             "ref_subprocess_returncode": ref_rc,
             "ref_git_rev": meta.get("ref_git_rev"),
             "base_weights": _WEIGHTS,

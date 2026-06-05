@@ -43,6 +43,17 @@ class FSDPVlaSftWorker(FSDPSftWorker):
     def build_dataloader(self, data_paths: Any, eval_dataset: bool = False):
         model_type = SupportedModel(self.cfg.actor.model.model_type)
         if model_type == SupportedModel.OPENPI_PYTORCH:
+            # Reproducibility-only: replay a pinned reference first-N input sequence
+            # (batches + shared noise/time) through the real FSDP training stack.
+            if not eval_dataset and self.cfg.data.get("pinned_inputs_npz", None):
+                from rlinf.data.datasets.behavior import (
+                    build_pinned_behavior_sft_dataloader,
+                )
+
+                return build_pinned_behavior_sft_dataloader(
+                    self.cfg, self._world_size, self._rank
+                )
+
             from rlinf.data.datasets.behavior import (
                 build_behavior_sft_dataloader,
             )

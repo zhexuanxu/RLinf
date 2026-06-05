@@ -81,10 +81,18 @@ rank-0-fanout batches + shared noise/time (hashes verified identical all 50 step
 match **50/50, max |Δ|=0.0003** (`docs/evidence/r36_pinned_residual.json`). So on identical inputs RLinf
 == the reference exactly, and the production 40/50 residual is the cross-implementation noise/time-RNG +
 shuffle (the two production runs sample independently), NOT a model/optimizer/effective-batch residual.
-**task15 remains ACTIVE** (the effective-batch root cause is fixed and the residual is proven benign, but
-the strict first-50 *production* gate is 40/50, not 50/50; task15 closes on an accepted plan evolution or
-a strict 50/50 production run with the reference's pinned RNG). The earlier R20 "RNG/aggregation" and
-R21 "missing-augmentation" attributions
+**R37 then MET the strict first-50 gate through the ACTUAL production stack**: a reproducibility-only,
+config-gated pinned-input path (`data.pinned_inputs_npz`/`pinned_noise_time_npz`) replays the reference
+rank-0-fanout first-50 global-256 batches + shared noise/time through the REAL 8-GPU FSDP
+`train_vla_sft.py` worker (rank `r` consumes the `s*world_size+r` chunk + the `[r*32:(r+1)*32]` noise/time
+slice; the SFT forward consumes the pinned noise/time instead of sampling). The actual-stack per-step
+`train/loss` matches the reference model's loss on the IDENTICAL inputs **50/50 within 0.03, max
+|Δ|=0.0024** (`docs/evidence/r37_pinned_first50.{csv,json}`; step0 0.3073 vs 0.3049, step49 0.0844 vs
+0.0844) — even across the FSDP-bf16-vs-fp32-autocast precision regimes. **So the strict DEC-1 (b) first-50
+gate is MET on the reference's pinned sequence through the real production stack** (the R35 production
+40/50 was purely the independent noise/time-RNG + shuffle, now removed → 50/50). task15's first-50 gate is
+met (pending Codex verification); the advisory ~1 h trend (task16) and the final AC-13 handoff (task18)
+remain. The earlier R20 "RNG/aggregation" and R21 "missing-augmentation" attributions
 were both wrong and are retracted. See **"Round 20 / 21 / 22"** below. The R16 run that follows is
 retained as the pre-fix baseline.
 
@@ -373,6 +381,48 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
+### R37 — PINNED input through the ACTUAL 8-GPU FSDP stack: the strict first-50 gate is MET (50/50)
+R37 takes the strict-path completion Codex's R36 review required: instead of waiting on a plan evolution
+for the R35 production 40/50, it pins RLinf's production first-50 behavior to the reference batch/noise/time
+sequence **through the real training stack** and reruns to 50/50.
+
+A reproducibility-only, config-gated pinned-input path was added to the actual SFT stack (no-op when off):
+- `OpenPiPytorchActionModel.sft_forward` (+ `_unpack_sft_batch`) accept optional `noise`/`time` carried in
+  the batch and pass them to `Pi0.compute_loss` (normal `(Observation, actions)` batches are unchanged —
+  the model still samples internally).
+- `rlinf/data/datasets/behavior/behavior_pinned_loader.py` (gated by `data.pinned_inputs_npz` +
+  `data.pinned_noise_time_npz`) replays the reference rank-0-fanout first-50 global-256 batches dumped by
+  the R36 reference arm, sharded per rank exactly as the reference fanout assigns chunks: rank `r` at step
+  `s` consumes the chunk at flat index `s*world_size+r` (`arr[r::world_size]`) and the matching noise/time
+  slice `[r*32:(r+1)*32]`; the worker dispatches to it when the flag is set.
+
+With FSDP's mean gradient reduction + the rank-averaged loss logging, this reproduces the reference's
+8-chunk gradient-accumulated step. Ran `python examples/sft/train_vla_sft.py --config-name
+behavior_pi05_vla runner.max_steps=50` on 8× A800 (seed 42, FSDP FULL_SHARD bf16, the production config)
+under the pinned path, and compared the rank-AVG `train/loss` per step to the reference model's loss on the
+IDENTICAL pinned inputs (the R36 reference arm, `ref_pinned_dump.json`).
+
+**Result — the actual production stack reproduces the reference on identical inputs, 50/50:**
+| metric | value |
+|--------|-------|
+| per-step \|Δ\| ≤ 0.03 (RLinf-FSDP-pinned vs reference-pinned) | **50/50** |
+| max \|Δ\| | **0.0024** (worst = step 0: 0.3073 vs 0.3049) |
+| step 0 / step 49 | 0.3073 vs 0.3049 / 0.0844 vs 0.0844 |
+| step-0 logged LR | 2.4975e-08 (the exact reference warmup init) |
+
+The pinned-run loss VALUES (0.307 at step 0) differ from the reference PRODUCTION curve (`ref_prod_loss`
+0.246 at step 0) precisely because the pinned noise/time (numpy seed 1234) is not the production run's RNG
+— which is the whole point: on the reference's IDENTICAL inputs the actual RLinf FSDP stack == the
+reference **50/50**, even across the FSDP-bf16-vs-fp32-autocast precision regimes (max |Δ| 0.0024 ≪ 0.03).
+**So the strict DEC-1 (b) first-50 gate is MET through the real production stack**, and the R35 production
+40/50 residual is conclusively the independent noise/time-RNG + shuffle (removed here → 50/50), not a
+model/optimizer/effective-batch/precision residual. Evidence: `docs/evidence/r37_pinned_first50.{csv,json}`
+(per-step RLinf/reference loss + |Δ| + within-band + LR + grad-norm; command, source revisions, return
+codes, tensorboard event file, npz hashes). task15's first-50 gate is met (pending Codex verification);
+task16 (advisory ~1 h) and task18 (final AC-13) remain. CPU unit tests
+`tests/unit_tests/test_openpi_pytorch_pinned_loader.py` cover the per-rank sharding + the noise/time
+passthrough no-op.
+
 ### R36 — PINNED same-input experiment: the R35 residual is PROVEN to be the per-step INPUT (50/50 on identical inputs)
 R36 tests the R35 residual hypothesis directly (Codex R35 review): it feeds BOTH the reference
 `models_pytorch_new.Pi0` and RLinf's `Pi0` the **IDENTICAL** reference rank-0-fanout first-50 global-256
@@ -477,9 +527,15 @@ DEC-1 (b) *production* gate is **still UNMET** — but **R36 PROVED** the cause 
 + shared noise/time (hashes verified identical), RLinf == the reference **50/50, max |Δ|=0.0003**
 (`docs/evidence/r36_pinned_residual.json`). So the production residual is benign cross-implementation
 noise/time-RNG + shuffle (the two production runs sample independently), NOT a model/optimizer residual.
-The effective-batch ROOT CAUSE is fixed (R34) and the residual is proven benign (R36), but task15 remains
-**ACTIVE** and closes only on a 50/50 production run (with the reference's pinned RNG) under the original
-gate or an explicitly accepted plan evolution.
+**R37 then MET the strict gate through the ACTUAL production stack:** a config-gated pinned-input path
+replays the reference rank-0-fanout first-50 batches + shared noise/time through the REAL 8-GPU FSDP
+`train_vla_sft.py` worker (sharded per rank `s*world_size+r`; the SFT forward consumes the pinned
+noise/time), and the actual-stack per-step `train/loss` matches the reference model on the IDENTICAL inputs
+**50/50 within 0.03, max |Δ|=0.0024** (`docs/evidence/r37_pinned_first50.{csv,json}`). The effective-batch
+ROOT CAUSE is fixed (R34), the residual is proven benign (R36), and **the strict DEC-1 (b) first-50 gate is
+MET on the reference's pinned sequence through the real production stack (R37, 50/50)** — so task15's
+first-50 gate is met (pending Codex verification); the advisory ~1 h trend (task16) and the final AC-13
+handoff (task18) remain.
 
 ### R33 — production-trainer rank behavior (reference half SUPERSEDED by R34): RLinf rank-replicated; reference verdict was wrong
 R33 verifies (Codex R32 review) whether the R32 gloo-dump "both loaders rank-replicated" holds for the
@@ -790,7 +846,20 @@ until that run exists.
   batch/noise/time sha256 hashes are recorded and verified identical for all 50 steps; the per-step
   losses match **50/50, max |Δ|=0.0003** → the R35 production residual is PROVEN to be the per-step INPUT
   (cross-implementation noise/time-RNG + shuffle), not a model/optimizer/effective-batch residual;
-  provenance block + per-step rows + reference venv/src/git rev + return codes).
+  provenance block + per-step rows + reference venv/src/git rev + return codes). R36 evidence hardened
+  (Codex R36 review): every step row now records BOTH arms' state/actions/noise/time hashes + per-field
+  equality + an all-four `inputs_identical`; provenance records `rlinf_git_rev`, the reference command, and
+  the real reference-arm return code 0 (`_ref_pinned_run.py` writes a failure JSON + `sys.exit(1)` on
+  error).
+- **PINNED input through the ACTUAL FSDP stack** (R37): the config-gated pinned path
+  (`rlinf/data/datasets/behavior/behavior_pinned_loader.py` + `OpenPiPytorchActionModel.sft_forward`
+  noise/time passthrough) replays the reference rank-0-fanout first-50 batches + shared noise/time through
+  the REAL 8-GPU FSDP `train_vla_sft.py` worker; `tools/sft_pinned_first50_eval.py` extracts the rank-AVG
+  `train/loss`/LR/grad-norm and compares per-step to the reference-pinned loss →
+  `docs/evidence/r37_pinned_first50.{csv,json}` (**50/50 within 0.03, max |Δ|=0.0024**; the strict DEC-1
+  (b) first-50 gate MET through the production stack; provenance: command, source revisions, return codes,
+  tensorboard event file, npz hashes, `r36_inputs_identical_all_steps`). CPU unit tests
+  `tests/unit_tests/test_openpi_pytorch_pinned_loader.py` (per-rank sharding + noise/time passthrough).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is

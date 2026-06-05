@@ -1,0 +1,527 @@
+{
+  "purpose": "R37 actual-stack PINNED first-50 SFT: the real 8-GPU FSDP train_vla_sft.py replays the reference rank-0-fanout first-50 global-256 batches + SHARED noise/time (data.pinned_inputs_npz + data.pinned_noise_time_npz) and is compared per-step to the reference model's loss on the IDENTICAL pinned inputs under the original DEC-1(b) |delta|<=0.03 gate. 50/50 => the actual SFT stack reproduces the reference first-50 curve on identical inputs (task15 closes under the original gate).",
+  "provenance": {
+    "run_command": "python examples/sft/train_vla_sft.py --config-name behavior_pi05_vla runner.max_steps=50 runner.save_interval=100000 runner.logger.log_path=/mnt/public/xzxuan/tmp/r37_pinned_sft_results +data.pinned_inputs_npz=/mnt/public/xzxuan/tmp/ref_pinned_batches.npz +data.pinned_noise_time_npz=/mnt/public/xzxuan/tmp/ref_pinned_noise_time.npz (8x A800, seed 42, FSDP FULL_SHARD bf16, pinned reference rank-0-fanout first-50 + shared noise/time)",
+    "run_returncode": "0",
+    "rlinf_git_rev": "49b4b4bb",
+    "tensorboard_event_file": "/mnt/public/xzxuan/tmp/r37_pinned_sft_results/tensorboard/events.out.tfevents.1780645077.is-dcvh2anfn7ushuq7-devmachine-0.2304985.0",
+    "loss_tag": "train/loss (rank-AVG)",
+    "ref_pinned_dump": "/mnt/public/xzxuan/tmp/ref_pinned_dump.json",
+    "ref_pinned_arm_returncode": 0,
+    "ref_pinned_command": "tests/unit_tests/_ref_pinned_run.py /mnt/public/xzxuan/tmp 50 8",
+    "ref_git_rev": "cd99b39",
+    "pinned_batches_npz": "/mnt/public/xzxuan/tmp/ref_pinned_batches.npz",
+    "pinned_batches_npz_sha256_16": "b67eec453cf9000e",
+    "pinned_noise_time_npz": "/mnt/public/xzxuan/tmp/ref_pinned_noise_time.npz",
+    "pinned_noise_time_npz_sha256_16": "e9cbac480459e4d1",
+    "r36_inputs_identical_all_steps": true,
+    "r36_base_weights_sha256_16": "f6391204c480d6c5",
+    "out_csv": "docs/evidence/r37_pinned_first50.csv"
+  },
+  "within_0.03": "50/50",
+  "max_abs_delta": 0.002383,
+  "gate_passed_50_50": true,
+  "steps": [
+    {
+      "step": 0,
+      "rlinf_pinned_loss": 0.307251,
+      "ref_pinned_loss": 0.304868,
+      "abs_delta": 0.002383,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.246094,
+      "rlinf_lr": 2.4975024714990468e-08,
+      "rlinf_grad_norm": 9.05397
+    },
+    {
+      "step": 1,
+      "rlinf_pinned_loss": 0.353027,
+      "ref_pinned_loss": 0.354867,
+      "abs_delta": 0.00184,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.235352,
+      "rlinf_lr": 4.9950049429980936e-08,
+      "rlinf_grad_norm": 10.08537
+    },
+    {
+      "step": 2,
+      "rlinf_pinned_loss": 0.330811,
+      "ref_pinned_loss": 0.330465,
+      "abs_delta": 0.000346,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.246094,
+      "rlinf_lr": 7.492507592132824e-08,
+      "rlinf_grad_norm": 4.39617
+    },
+    {
+      "step": 3,
+      "rlinf_pinned_loss": 0.256348,
+      "ref_pinned_loss": 0.255384,
+      "abs_delta": 0.000964,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.240234,
+      "rlinf_lr": 9.990009885996187e-08,
+      "rlinf_grad_norm": 2.14169
+    },
+    {
+      "step": 4,
+      "rlinf_pinned_loss": 0.206543,
+      "ref_pinned_loss": 0.205949,
+      "abs_delta": 0.000594,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.24707,
+      "rlinf_lr": 1.2487511469316814e-07,
+      "rlinf_grad_norm": 2.23909
+    },
+    {
+      "step": 5,
+      "rlinf_pinned_loss": 0.184326,
+      "ref_pinned_loss": 0.183762,
+      "abs_delta": 0.000564,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.239258,
+      "rlinf_lr": 1.498501518426565e-07,
+      "rlinf_grad_norm": 1.52084
+    },
+    {
+      "step": 6,
+      "rlinf_pinned_loss": 0.222778,
+      "ref_pinned_loss": 0.221723,
+      "abs_delta": 0.001055,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.227539,
+      "rlinf_lr": 1.7482517478129012e-07,
+      "rlinf_grad_norm": 3.08515
+    },
+    {
+      "step": 7,
+      "rlinf_pinned_loss": 0.335693,
+      "ref_pinned_loss": 0.335209,
+      "abs_delta": 0.000484,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.24707,
+      "rlinf_lr": 1.9980019771992374e-07,
+      "rlinf_grad_norm": 10.00893
+    },
+    {
+      "step": 8,
+      "rlinf_pinned_loss": 0.275513,
+      "ref_pinned_loss": 0.275147,
+      "abs_delta": 0.000366,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.25,
+      "rlinf_lr": 2.247752348694121e-07,
+      "rlinf_grad_norm": 3.607
+    },
+    {
+      "step": 9,
+      "rlinf_pinned_loss": 0.319214,
+      "ref_pinned_loss": 0.318809,
+      "abs_delta": 0.000405,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.259766,
+      "rlinf_lr": 2.497502293863363e-07,
+      "rlinf_grad_norm": 5.20657
+    },
+    {
+      "step": 10,
+      "rlinf_pinned_loss": 0.269653,
+      "ref_pinned_loss": 0.268981,
+      "abs_delta": 0.000672,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.248047,
+      "rlinf_lr": 2.7472526653582463e-07,
+      "rlinf_grad_norm": 3.40429
+    },
+    {
+      "step": 11,
+      "rlinf_pinned_loss": 0.217407,
+      "ref_pinned_loss": 0.216069,
+      "abs_delta": 0.001338,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.251953,
+      "rlinf_lr": 2.99700303685313e-07,
+      "rlinf_grad_norm": 1.86648
+    },
+    {
+      "step": 12,
+      "rlinf_pinned_loss": 0.291382,
+      "ref_pinned_loss": 0.290696,
+      "abs_delta": 0.000686,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.236328,
+      "rlinf_lr": 3.246753124130919e-07,
+      "rlinf_grad_norm": 6.58398
+    },
+    {
+      "step": 13,
+      "rlinf_pinned_loss": 0.30542,
+      "ref_pinned_loss": 0.304815,
+      "abs_delta": 0.000605,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.237305,
+      "rlinf_lr": 3.4965034956258023e-07,
+      "rlinf_grad_norm": 5.0232
+    },
+    {
+      "step": 14,
+      "rlinf_pinned_loss": 0.209229,
+      "ref_pinned_loss": 0.208015,
+      "abs_delta": 0.001214,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.213867,
+      "rlinf_lr": 3.746253867120686e-07,
+      "rlinf_grad_norm": 2.24118
+    },
+    {
+      "step": 15,
+      "rlinf_pinned_loss": 0.184204,
+      "ref_pinned_loss": 0.183189,
+      "abs_delta": 0.001015,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.198242,
+      "rlinf_lr": 3.996003954398475e-07,
+      "rlinf_grad_norm": 1.59724
+    },
+    {
+      "step": 16,
+      "rlinf_pinned_loss": 0.1698,
+      "ref_pinned_loss": 0.168702,
+      "abs_delta": 0.001098,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.191406,
+      "rlinf_lr": 4.2457537574591697e-07,
+      "rlinf_grad_norm": 1.81726
+    },
+    {
+      "step": 17,
+      "rlinf_pinned_loss": 0.228394,
+      "ref_pinned_loss": 0.227074,
+      "abs_delta": 0.00132,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.185547,
+      "rlinf_lr": 4.495504697388242e-07,
+      "rlinf_grad_norm": 3.30807
+    },
+    {
+      "step": 18,
+      "rlinf_pinned_loss": 0.212891,
+      "ref_pinned_loss": 0.211833,
+      "abs_delta": 0.001058,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.174805,
+      "rlinf_lr": 4.745254784666031e-07,
+      "rlinf_grad_norm": 2.49236
+    },
+    {
+      "step": 19,
+      "rlinf_pinned_loss": 0.218994,
+      "ref_pinned_loss": 0.217203,
+      "abs_delta": 0.001791,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.179688,
+      "rlinf_lr": 4.995004587726726e-07,
+      "rlinf_grad_norm": 6.90056
+    },
+    {
+      "step": 20,
+      "rlinf_pinned_loss": 0.150024,
+      "ref_pinned_loss": 0.149414,
+      "abs_delta": 0.00061,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.166992,
+      "rlinf_lr": 5.244755243438703e-07,
+      "rlinf_grad_norm": 1.53579
+    },
+    {
+      "step": 21,
+      "rlinf_pinned_loss": 0.250122,
+      "ref_pinned_loss": 0.248961,
+      "abs_delta": 0.001161,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.160156,
+      "rlinf_lr": 5.494505330716493e-07,
+      "rlinf_grad_norm": 2.09179
+    },
+    {
+      "step": 22,
+      "rlinf_pinned_loss": 0.268311,
+      "ref_pinned_loss": 0.265992,
+      "abs_delta": 0.002319,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.157227,
+      "rlinf_lr": 5.744255417994282e-07,
+      "rlinf_grad_norm": 4.04967
+    },
+    {
+      "step": 23,
+      "rlinf_pinned_loss": 0.188721,
+      "ref_pinned_loss": 0.187675,
+      "abs_delta": 0.001046,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.176758,
+      "rlinf_lr": 5.99400607370626e-07,
+      "rlinf_grad_norm": 1.59668
+    },
+    {
+      "step": 24,
+      "rlinf_pinned_loss": 0.182129,
+      "ref_pinned_loss": 0.181415,
+      "abs_delta": 0.000714,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.174805,
+      "rlinf_lr": 6.243756160984049e-07,
+      "rlinf_grad_norm": 2.10781
+    },
+    {
+      "step": 25,
+      "rlinf_pinned_loss": 0.186035,
+      "ref_pinned_loss": 0.185429,
+      "abs_delta": 0.000606,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.168945,
+      "rlinf_lr": 6.493506248261838e-07,
+      "rlinf_grad_norm": 1.5959
+    },
+    {
+      "step": 26,
+      "rlinf_pinned_loss": 0.165894,
+      "ref_pinned_loss": 0.165861,
+      "abs_delta": 3.3e-05,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.178711,
+      "rlinf_lr": 6.743256903973815e-07,
+      "rlinf_grad_norm": 1.6568
+    },
+    {
+      "step": 27,
+      "rlinf_pinned_loss": 0.162537,
+      "ref_pinned_loss": 0.161347,
+      "abs_delta": 0.00119,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.162109,
+      "rlinf_lr": 6.993006991251605e-07,
+      "rlinf_grad_norm": 1.85819
+    },
+    {
+      "step": 28,
+      "rlinf_pinned_loss": 0.148315,
+      "ref_pinned_loss": 0.147682,
+      "abs_delta": 0.000633,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.154297,
+      "rlinf_lr": 7.242757078529394e-07,
+      "rlinf_grad_norm": 1.21321
+    },
+    {
+      "step": 29,
+      "rlinf_pinned_loss": 0.206543,
+      "ref_pinned_loss": 0.206432,
+      "abs_delta": 0.000111,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.146484,
+      "rlinf_lr": 7.492507734241372e-07,
+      "rlinf_grad_norm": 2.73537
+    },
+    {
+      "step": 30,
+      "rlinf_pinned_loss": 0.162231,
+      "ref_pinned_loss": 0.161477,
+      "abs_delta": 0.000754,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.132812,
+      "rlinf_lr": 7.742256684650783e-07,
+      "rlinf_grad_norm": 1.41385
+    },
+    {
+      "step": 31,
+      "rlinf_pinned_loss": 0.148682,
+      "ref_pinned_loss": 0.148096,
+      "abs_delta": 0.000586,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.119141,
+      "rlinf_lr": 7.99200790879695e-07,
+      "rlinf_grad_norm": 1.3291
+    },
+    {
+      "step": 32,
+      "rlinf_pinned_loss": 0.161133,
+      "ref_pinned_loss": 0.160485,
+      "abs_delta": 0.000648,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.114746,
+      "rlinf_lr": 8.241758564508928e-07,
+      "rlinf_grad_norm": 1.20839
+    },
+    {
+      "step": 33,
+      "rlinf_pinned_loss": 0.105591,
+      "ref_pinned_loss": 0.105404,
+      "abs_delta": 0.000187,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.115234,
+      "rlinf_lr": 8.491507514918339e-07,
+      "rlinf_grad_norm": 0.909
+    },
+    {
+      "step": 34,
+      "rlinf_pinned_loss": 0.126892,
+      "ref_pinned_loss": 0.126619,
+      "abs_delta": 0.000273,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.117676,
+      "rlinf_lr": 8.741258739064506e-07,
+      "rlinf_grad_norm": 1.07504
+    },
+    {
+      "step": 35,
+      "rlinf_pinned_loss": 0.121948,
+      "ref_pinned_loss": 0.121643,
+      "abs_delta": 0.000305,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.125977,
+      "rlinf_lr": 8.991009394776484e-07,
+      "rlinf_grad_norm": 1.02751
+    },
+    {
+      "step": 36,
+      "rlinf_pinned_loss": 0.14093,
+      "ref_pinned_loss": 0.140653,
+      "abs_delta": 0.000277,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.111816,
+      "rlinf_lr": 9.240758345185895e-07,
+      "rlinf_grad_norm": 0.9629
+    },
+    {
+      "step": 37,
+      "rlinf_pinned_loss": 0.106628,
+      "ref_pinned_loss": 0.106165,
+      "abs_delta": 0.000463,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.104004,
+      "rlinf_lr": 9.490509569332062e-07,
+      "rlinf_grad_norm": 1.13737
+    },
+    {
+      "step": 38,
+      "rlinf_pinned_loss": 0.093079,
+      "ref_pinned_loss": 0.093128,
+      "abs_delta": 4.9e-05,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.105469,
+      "rlinf_lr": 9.74025965660985e-07,
+      "rlinf_grad_norm": 0.85349
+    },
+    {
+      "step": 39,
+      "rlinf_pinned_loss": 0.114075,
+      "ref_pinned_loss": 0.113813,
+      "abs_delta": 0.000262,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.109375,
+      "rlinf_lr": 9.990009175453451e-07,
+      "rlinf_grad_norm": 0.85755
+    },
+    {
+      "step": 40,
+      "rlinf_pinned_loss": 0.126099,
+      "ref_pinned_loss": 0.125553,
+      "abs_delta": 0.000546,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.111328,
+      "rlinf_lr": 1.023975983116543e-06,
+      "rlinf_grad_norm": 1.20696
+    },
+    {
+      "step": 41,
+      "rlinf_pinned_loss": 0.144775,
+      "ref_pinned_loss": 0.144666,
+      "abs_delta": 0.000109,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.106445,
+      "rlinf_lr": 1.0489510486877407e-06,
+      "rlinf_grad_norm": 0.95982
+    },
+    {
+      "step": 42,
+      "rlinf_pinned_loss": 0.090027,
+      "ref_pinned_loss": 0.089833,
+      "abs_delta": 0.000194,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.105957,
+      "rlinf_lr": 1.0739260005721007e-06,
+      "rlinf_grad_norm": 0.88057
+    },
+    {
+      "step": 43,
+      "rlinf_pinned_loss": 0.10199,
+      "ref_pinned_loss": 0.101899,
+      "abs_delta": 9.1e-05,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.098145,
+      "rlinf_lr": 1.0989010661432985e-06,
+      "rlinf_grad_norm": 0.7608
+    },
+    {
+      "step": 44,
+      "rlinf_pinned_loss": 0.09314,
+      "ref_pinned_loss": 0.093095,
+      "abs_delta": 4.5e-05,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.109863,
+      "rlinf_lr": 1.1238761317144963e-06,
+      "rlinf_grad_norm": 1.121
+    },
+    {
+      "step": 45,
+      "rlinf_pinned_loss": 0.105225,
+      "ref_pinned_loss": 0.104963,
+      "abs_delta": 0.000262,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.11377,
+      "rlinf_lr": 1.1488510835988563e-06,
+      "rlinf_grad_norm": 1.12637
+    },
+    {
+      "step": 46,
+      "rlinf_pinned_loss": 0.078796,
+      "ref_pinned_loss": 0.078692,
+      "abs_delta": 0.000104,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.097168,
+      "rlinf_lr": 1.1738261491700541e-06,
+      "rlinf_grad_norm": 0.87834
+    },
+    {
+      "step": 47,
+      "rlinf_pinned_loss": 0.098389,
+      "ref_pinned_loss": 0.098089,
+      "abs_delta": 0.0003,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.090332,
+      "rlinf_lr": 1.198801214741252e-06,
+      "rlinf_grad_norm": 1.03402
+    },
+    {
+      "step": 48,
+      "rlinf_pinned_loss": 0.128113,
+      "ref_pinned_loss": 0.12777,
+      "abs_delta": 0.000343,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.093262,
+      "rlinf_lr": 1.223776166625612e-06,
+      "rlinf_grad_norm": 1.02539
+    },
+    {
+      "step": 49,
+      "rlinf_pinned_loss": 0.084412,
+      "ref_pinned_loss": 0.084369,
+      "abs_delta": 4.3e-05,
+      "within_0.03": 1,
+      "ref_prod_loss": 0.090332,
+      "rlinf_lr": 1.2487512321968097e-06,
+      "rlinf_grad_norm": 0.92827
+    }
+  ],
+  "verdict": "PINNED ACTUAL-STACK MATCH (task15 closes under the original gate): the real 8-GPU FSDP SFT run, fed the reference's IDENTICAL rank-0-fanout first-50 batches + shared noise/time, matches the reference model's per-step loss 50/50 within 0.03 (max |delta|=0.0024). So the actual SFT training stack reproduces the reference first-50 curve on identical inputs; the R35 production 40/50 residual was purely the independent noise/time-RNG + shuffle, now removed."
+}

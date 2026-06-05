@@ -22,6 +22,10 @@ externally installed ``openpi``. The SFT worker dispatches to
 :func:`build_behavior_sft_dataloader` the same way it dispatches DreamZero.
 """
 
+from rlinf.data.datasets.behavior.behavior_pinned_loader import (
+    PinnedBehaviorSftDataLoader,
+    build_pinned_behavior_sft_dataloader,
+)
 from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
     BehaviorSftDataConfig,
     BehaviorSftDataLoader,
@@ -42,7 +46,9 @@ __all__ = [
     "BehaviorSftDataLoader",
     "BehaviorSftDataset",
     "BehaviorSftTransform",
+    "PinnedBehaviorSftDataLoader",
     "build_behavior_sft_dataloader",
+    "build_pinned_behavior_sft_dataloader",
     "collate_behavior_sft_items",
     "create_behavior_sft_data_loader",
     "transform_behavior_sft_item",

@@ -217,25 +217,32 @@ def main(out_dir, n_steps, world_size):
                 "seed": _SEED,
                 "ref_src": _REF_SRC,
                 "ref_git_rev": _git_rev(_REF_SRC.rsplit("/src", 1)[0]),
+                "ref_command": " ".join(sys.argv),
+                "returncode": 0,
                 "model": "openpi.models_pytorch_new.pi0.Pi0 (fp32 weights + autocast bf16, rank-0 fanout)",
                 "batches_npz": f"{out_dir}/ref_pinned_batches.npz",
                 "noise_time_npz": f"{out_dir}/ref_pinned_noise_time.npz",
             },
         )
-        with open(f"{out_dir}/ref_pinned_dump.json", "w", newline="\n") as f:
-            json.dump(result, f, indent=2)
-            f.write("\n")
     except Exception as e:  # pragma: no cover - environment dependent
         import traceback
 
+        result["ok"] = False
         result["err"] = f"{type(e).__name__}: {str(e)[:300]}"
         result["tb"] = traceback.format_exc()[-1200:]
+
+    # Always persist the dump (success OR failure) so the orchestrator can audit a failed arm.
+    with open(f"{out_dir}/ref_pinned_dump.json", "w", newline="\n") as f:
+        json.dump(result, f, indent=2)
+        f.write("\n")
 
     print(
         "REF_PINNED " + json.dumps({k: result[k] for k in ("ok", "err") if k in result})
     )
     if "tb" in result and not result["ok"]:
         print(result["tb"])
+    if not result.get("ok"):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
