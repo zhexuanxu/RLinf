@@ -51,10 +51,20 @@ class _FakeDist:
         return self._world_size
 
 
-def _select_under_rank(monkeypatch, rank, world_size, num_chunks=8, seed=42):
-    """Run the real streaming chunk selection as a given distributed rank."""
+def _select_under_rank(
+    monkeypatch, rank, world_size, num_chunks=8, seed=42, explicit=None, dist_rank=None
+):
+    """Run the real streaming chunk selection as a given distributed rank.
+
+    ``explicit`` (rank, world_size) sets the dataset's stored ``_dist_rank`` /
+    ``_dist_world_size`` (the spawn-safe path); ``dist_rank`` overrides what the
+    monkeypatched ``torch.distributed`` reports (used to simulate a SPAWN worker
+    that wrongly sees rank 0).
+    """
     monkeypatch.setattr(
-        behavior_sft_dataset, "dist", _FakeDist(rank, world_size)
+        behavior_sft_dataset,
+        "dist",
+        _FakeDist(rank if dist_rank is None else dist_rank, world_size),
     )
     ds = BehaviorSftDataset.__new__(BehaviorSftDataset)
     # chunks are (start_frame, end_frame, keyframe_start) tuples.
@@ -62,8 +72,36 @@ def _select_under_rank(monkeypatch, rank, world_size, num_chunks=8, seed=42):
     ds.seed = seed
     ds.current_streaming_chunk_idx = None
     ds._active_chunks = None
+    ds._dist_rank = explicit[0] if explicit is not None else None
+    ds._dist_world_size = explicit[1] if explicit is not None else None
     ds._select_streaming_chunk()
     return ds
+
+
+def test_explicit_rank_partitions_disjoint_even_when_dist_reports_rank0(monkeypatch):
+    """Spawn-safe regression: the explicit ``_dist_rank`` must win over ``torch.distributed``.
+
+    Simulates SPAWNED DataLoader workers, where ``dist.get_rank()`` wrongly returns 0
+    in every rank's worker. With the stored explicit rank/world_size the dataset must
+    still partition by the correct per-rank id, so the ranks stay DISJOINT (the bug fix:
+    without it, all ranks would replicate rank 0's chunks -> effective batch collapses).
+    """
+    world_size, num_chunks = 4, 64
+    first_chunks = []
+    for r in range(world_size):
+        # dist always reports rank 0 (the spawn-worker bug), but explicit rank = r.
+        ds = _select_under_rank(
+            monkeypatch, r, world_size, num_chunks=num_chunks, explicit=(r, world_size), dist_rank=0
+        )
+        first_chunks.append(ds._active_chunks)
+    # Each rank's active chunk set must be disjoint from the others (not replicated).
+    sets = [set(c) for c in first_chunks]
+    for i in range(world_size):
+        for j in range(i + 1, world_size):
+            assert sets[i].isdisjoint(sets[j]), "explicit rank did not yield a disjoint partition"
+    # And the union covers every chunk exactly once (complete partition, no duplicates).
+    union = [c for s in sets for c in s]
+    assert len(union) == len(set(union)) == num_chunks
 
 
 def test_partition_is_disjoint_and_complete_across_ranks():

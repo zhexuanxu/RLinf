@@ -1,0 +1,48 @@
+{
+  "purpose": "R34 production-EFFECTIVE-BATCH topology (Codex R33-review): the R32/R33 reference dump had every rank independently build the loader (which replicates); the REAL reference trainer train_pytorch_new.py builds the loader on rank 0 only and fans out SUCCESSIVE micro-batches to each rank. This measures the reference's actual fanout topology and states RLinf's, then records the fix.",
+  "reference_fanout": {
+    "trainer": "scripts/train_pytorch_new.py: rank-0-only loader (line 866); each step rank 0 pulls world_size*gradient_accumulate successive next(data_iter) micro-batches and fans one block to each rank (lines 952-961).",
+    "measured_by": "tests/unit_tests/_ref_fanout_dump.py (single-process mirror of rank 0: loader at per-rank batch 32, pull world_size=8 successive micro-batches/step, hash every frame).",
+    "unique_frames_per_global_step": {
+      "mean": 256.0,
+      "min": 256,
+      "max": 256
+    },
+    "verdict": "RANK-DISJOINT (effective batch = world_size*per_rank)",
+    "conclusion": "RANK-DISJOINT -- the reference production EFFECTIVE per-step batch is 256 (world_size 8 * per-rank 32), confirmed (256 unique frames/global step).",
+    "hashes_file": "docs/evidence/r34_ref_fanout_hashes.json",
+    "hashes_file_sha256_16": "9a0f2cbec118d6ae"
+  },
+  "rlinf_topology": {
+    "worker": "rlinf/workers/sft/fsdp_vla_sft_worker.py builds a loader PER RANK via build_behavior_sft_dataloader(cfg, world_size, rank, ...).",
+    "pre_fix": "RANK-REPLICATED (effective batch 32) -- BehaviorSftDataset._select_streaming_chunk read torch.distributed, but the DataLoader workers are SPAWNED (fresh interpreters that do not inherit torch.distributed) so they read rank=0 -> every rank replicated rank 0's chunks (R32 dump: nw=8 -> 32 unique/step; nw=0 control -> 256).",
+    "config_intent": "actor.global_batch_size=256 = micro 32 * 8 ranks; the rank-replication collapsed the effective batch to 32 (1/8 the configured value)."
+  },
+  "root_cause": "The reference production trains at EFFECTIVE batch 256 (rank-disjoint fanout) while RLinf trained at EFFECTIVE batch 32 (rank-replicated, spawn workers lose the dist rank) -- an 8x effective-batch difference, the likely driver of the r22-vs-r24 gap (RLinf at batch 32 sees 8x fewer unique frames/step and descends faster to 0.046 vs the reference's batch-256 0.090). This corrects the R33 verdict that BOTH were effective batch 32 (that read only the loader helper, not the trainer's rank-0 fanout).",
+  "fix": "Thread explicit rank/world_size: build_behavior_sft_dataloader passes its rank/world_size into create_behavior_sft_data_loader -> BehaviorSftDataset (stored as _dist_rank/_dist_world_size); _select_streaming_chunk prefers the explicit values (falling back to torch.distributed only when not provided), so spawned workers partition by the correct per-rank id -> RANK-DISJOINT (effective batch 256, matching the config + the reference). fsdp_vla_sft_worker already passes self._world_size/self._rank, so the fix is wired into production with no worker change.",
+  "provenance": {
+    "rlinf_git_rev": "ccfbc84d",
+    "reference_git_rev": "cd99b39",
+    "reference_fanout_command": "<ref_venv>/python tests/unit_tests/_ref_fanout_dump.py /mnt/public/xzxuan/tmp 50 8",
+    "config": "pi05_b1k-turning_on_radio_cs32_bs32_lr2.5e-5_step30k",
+    "global_batch": 256,
+    "world_size": 8,
+    "per_rank_local_batch": 32,
+    "num_workers": 8,
+    "n_steps": 50
+  },
+  "next": "Confirm the fix by re-dumping RLinf at the 8-rank/num_workers=8 topology with the explicit-rank path -> RLinf now rank-disjoint (256). The FINAL task15 validation is the 8-GPU first-50 rerun under the fix (effective batch 256) -- expected to descend like the reference (~0.090); task15 closes only if the original 50/50 DEC-1(b) gate passes or an accepted plan evolution.",
+  "fix_confirmed": {
+    "method": "re-ran the 8-rank/num_workers=8 RLinf topology dump with the fix (tools/_loader_topology_dump.py _build_rlinf now passes dist_rank=rank/dist_world_size=world, mirroring the production worker).",
+    "unique_frames_per_global_step": {
+      "mean": 256,
+      "min": 256,
+      "max": 256
+    },
+    "step0_rank0_rank1_overlap_of_32": 0,
+    "verdict": "RANK-DISJOINT \u2014 after the fix RLinf emits 256 unique frames per global step (was 32 before), i.e. effective batch 256, matching the reference + the configured global_batch_size=256.",
+    "hashes_file": "docs/evidence/r34_rlinf_fixed_topology_hashes.json",
+    "hashes_file_sha256_16": "a4c72cfaffe9fbbe",
+    "regression_test": "tests/unit_tests/test_openpi_pytorch_sft_sharding.py::test_explicit_rank_partitions_disjoint_even_when_dist_reports_rank0"
+  }
+}

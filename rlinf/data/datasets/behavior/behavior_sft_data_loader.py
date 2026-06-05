@@ -210,6 +210,8 @@ def create_behavior_sft_data_loader(
     enable_gap: bool = True,
     allow_left: int = 0,
     allow_right: int = 0,
+    dist_rank: int | None = None,
+    dist_world_size: int | None = None,
 ) -> "BehaviorSftDataLoader":
     """Build the BEHAVIOR-1K SFT data loader yielding ``(Observation, actions)``.
 
@@ -270,6 +272,8 @@ def create_behavior_sft_data_loader(
         enable_gap=enable_gap,
         allow_left=allow_left,
         allow_right=allow_right,
+        dist_rank=dist_rank,
+        dist_world_size=dist_world_size,
     )
 
     transform = BehaviorSftTransform(
@@ -358,12 +362,13 @@ def build_behavior_sft_dataloader(
     """Build the self-contained BEHAVIOR SFT data loader for the SFT worker.
 
     Owns the config extraction the FSDP SFT worker previously did inline. The
-    streaming dataset handles rank-aware sharding internally (it reads the
-    distributed rank from ``torch.distributed``), so ``world_size``/``rank`` are
-    accepted only for dispatch parity with the other SFT builders. Returns
-    ``(loader, loader.data_config())``.
+    streaming dataset partitions chunks per ``(rank, worker)``; ``rank``/
+    ``world_size`` are captured here (in the main process) and threaded into the
+    dataset so that SPAWNED DataLoader workers -- which cannot read
+    ``torch.distributed`` -- still partition by the correct per-rank id (otherwise
+    every rank replicates rank 0's chunks, collapsing the effective batch to one
+    rank's micro-batch). Returns ``(loader, loader.data_config())``.
     """
-    del world_size, rank  # rank-aware partition is internal to the streaming dataset
 
     data_path = resolve_lerobot_repo_id(data_paths)
     if data_path is None:
@@ -455,5 +460,7 @@ def build_behavior_sft_dataloader(
         enable_gap=enable_gap,
         allow_left=allow_left,
         allow_right=allow_right,
+        dist_rank=rank,
+        dist_world_size=world_size,
     )
     return loader, loader.data_config()

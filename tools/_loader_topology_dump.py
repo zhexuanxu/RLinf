@@ -103,6 +103,10 @@ def _build_rlinf(rank, world, nw):
         num_workers=nw,
         seed=_SEED,
         use_skill=False,
+        # Mirror the production worker (build_behavior_sft_dataloader passes rank/world_size):
+        # the explicit identity makes the spawned DataLoader workers rank-disjoint.
+        dist_rank=rank,
+        dist_world_size=world,
     )
 
 

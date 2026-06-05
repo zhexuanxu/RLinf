@@ -790,6 +790,8 @@ class BehaviorSftDataset(LeRobotDataset):
         enable_gap: bool = True,
         allow_left: int = 0,
         allow_right: int = 0,
+        dist_rank: int | None = None,
+        dist_world_size: int | None = None,
     ):
         import packaging.version
 
@@ -826,6 +828,15 @@ class BehaviorSftDataset(LeRobotDataset):
         self.enable_gap = enable_gap
         self.allow_left = allow_left
         self.allow_right = allow_right
+        # Explicit distributed identity captured in the MAIN process. The streaming
+        # chunk partition is rank-aware, but DataLoader workers are SPAWNED (fresh
+        # interpreters that do NOT inherit ``torch.distributed``), so reading
+        # ``dist.get_rank()`` inside a worker returns 0 and every rank would replicate
+        # rank 0's partition. Storing rank/world_size here (pickled into the worker)
+        # lets ``_select_streaming_chunk`` partition by the correct per-rank id; we fall
+        # back to ``torch.distributed`` only when these are not provided.
+        self._dist_rank = dist_rank
+        self._dist_world_size = dist_world_size
 
         self.image_writer = None
         self.episode_buffer = None
@@ -1130,12 +1141,20 @@ class BehaviorSftDataset(LeRobotDataset):
         distributed rank stream a disjoint set of chunks (a ``DistributedSampler``
         cannot, since this dataset ignores ``idx``).
         """
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        world_size = (
-            dist.get_world_size()
-            if dist.is_available() and dist.is_initialized()
-            else 1
-        )
+        # Prefer the explicit rank/world_size captured at construction (in the main
+        # process); spawned DataLoader workers cannot read ``torch.distributed``, so
+        # without these every rank would replicate rank 0's chunk partition.
+        if self._dist_rank is not None and self._dist_world_size is not None:
+            rank, world_size = self._dist_rank, self._dist_world_size
+        else:
+            rank = (
+                dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+            )
+            world_size = (
+                dist.get_world_size()
+                if dist.is_available() and dist.is_initialized()
+                else 1
+            )
         worker_info = get_worker_info()
         worker_id = 0 if worker_info is None else worker_info.id
         num_workers = 1 if worker_info is None else worker_info.num_workers

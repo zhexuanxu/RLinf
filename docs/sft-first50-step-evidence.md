@@ -61,13 +61,18 @@ ranks emit the same 32-frame micro-batch → effective batch **32**, not 256; th
 workers don't see the rank), and **(2)** their rank-0 streams contain the **SAME frames** (images
 identical, state/actions ~5e-8). **So in production both loaders feed the SAME data → the R30/R31
 "RLinf loader feeds a different/faster batch" hypothesis is REFUTED** (it was a `world_size=1`
-artifact); the AC-11 loader plan-evolution proposal is **WITHDRAWN**. **R33 then confirmed (by reading
-both production trainers' loader code) that BOTH are rank-replicated** — both use `spawn` DataLoader
-workers that don't inherit `torch.distributed`, and the reference additionally uses the same shuffle
-seed across ranks (`framework="pytorch"` skips the `jax.process_index` offset) — so the production
-effective batch is **32 for both** (`docs/evidence/r33_production_rank_behavior.json`); the r22-vs-r24
-gap is **NOT an effective-batch difference**, and is re-opened with the remaining leads (data
-ordering/seed, noise/time RNG, or a 50-step residual). task15 stays NOT met. The earlier
+artifact); the AC-11 loader plan-evolution proposal is **WITHDRAWN**. **R34 then found + FIXED the
+EFFECTIVE-BATCH root cause** (correcting R33): the reference trainer `train_pytorch_new.py` builds the
+loader on rank 0 ONLY and fans out **successive** micro-batches to each rank → rank-DISJOINT,
+**effective batch 256** (measured: 256 unique frames/global step). RLinf built a loader per rank whose
+**spawned** DataLoader workers don't inherit `torch.distributed` → rank-REPLICATED, **effective batch
+32** (config intends 256). So the r22-vs-r24 gap **IS an 8× effective-batch difference** (RLinf at
+batch 32 sees 8× fewer unique frames/step → descends faster to 0.046 vs the reference's batch-256
+0.090). **Fixed** by threading explicit `rank`/`world_size` into `BehaviorSftDataset._select_streaming_chunk`
+(spawn-safe); confirmed the fix makes RLinf rank-DISJOINT (256 unique/step) + a regression test
+(`docs/evidence/r34_production_batch_topology.json`). **Final task15 validation (next):** rerun the
+8-GPU first-50 under the fix and check it tracks the reference (~0.090). task15 stays NOT met until then.
+The earlier
 R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
 retracted. The residual is a **real systematic divergence (RLinf descends faster / lower)**,
 task15-blocking. See **"Round 20 / 21 / 22"** below. The
@@ -358,7 +363,44 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
-### R33 — production-trainer rank behavior CONFIRMED: both rank-replicated (effective batch 32), not 256
+### R34 — ROOT CAUSE FOUND + FIXED: reference effective batch 256 (rank-0 fanout) vs RLinf 32 (spawn rank-replication)
+R34 corrects R33's reference verdict (Codex R33 review) and finds the effective-batch root cause
+(`docs/evidence/r34_production_batch_topology.json`). R33 read only the loader helper; the REAL
+reference trainer `train_pytorch_new.py` builds the loader on **rank 0 only** (line 866) and, each step,
+pulls `world_size × gradient_accumulate` **successive** `next(data_iter)` micro-batches and **fans one
+block to each rank** (lines 952-961). So each rank trains a DIFFERENT 32-frame micro-batch →
+**rank-DISJOINT, effective batch 256**.
+
+- **Reference fanout MEASURED** (`tests/unit_tests/_ref_fanout_dump.py`, a single-process mirror of
+  rank 0): **256 unique frames per global step** (mean/min/max 256) → confirmed effective batch 256.
+- **RLinf** builds a loader **per rank** (`fsdp_vla_sft_worker` → `build_behavior_sft_dataloader`), and
+  its `BehaviorSftDataset` partition is rank-aware — but the DataLoader workers are **spawned** (fresh
+  interpreters that don't inherit `torch.distributed`), so they read rank=0 → **rank-REPLICATED,
+  effective batch 32** (R32). The config intends `global_batch_size=256`; the bug collapsed it to 32.
+
+**⇒ Root cause:** the reference trains at effective batch **256** while RLinf trained at effective batch
+**32** — an 8× difference, the likely driver of r22-vs-r24 (RLinf at batch 32 sees 8× fewer unique
+frames/step and descends faster to 0.046 vs the reference's batch-256 0.090). This corrects R33's "both
+32" verdict (which missed the trainer's rank-0 fanout).
+
+**Fix (committed, `rlinf/` source):** thread explicit `rank`/`world_size` —
+`build_behavior_sft_dataloader` passes them to `create_behavior_sft_data_loader` → `BehaviorSftDataset`
+(stored as `_dist_rank`/`_dist_world_size`), and `_select_streaming_chunk` prefers the explicit values
+(falling back to `torch.distributed` only when not provided), so the **spawned workers partition by the
+correct per-rank id**. `fsdp_vla_sft_worker` already passes `self._world_size`/`self._rank`, so the fix
+is wired into production with no worker change. A regression test
+(`test_explicit_rank_partitions_disjoint_even_when_dist_reports_rank0`) asserts the partition stays
+disjoint even when `dist.get_rank()` wrongly returns 0 (the spawn-worker case).
+
+**Fix CONFIRMED** (`docs/evidence/r34_rlinf_fixed_topology_hashes.json`): the re-run 8-rank/`num_workers=8`
+RLinf dump with the fix is now **RANK-DISJOINT — 256 unique frames/global step** (was 32), i.e.
+effective batch 256, matching the reference + the config.
+
+**Final task15 validation (next):** rerun the 8-GPU first-50 SFT under the fix (effective batch 256) and
+check it descends like the reference (~0.090) within the DEC-1(b) band. task15 closes only if the
+original 50/50 gate passes or an accepted plan evolution. task15 stays NOT met until then.
+
+### R33 — production-trainer rank behavior (reference half SUPERSEDED by R34): RLinf rank-replicated; reference verdict was wrong
 R33 verifies (Codex R32 review) whether the R32 gloo-dump "both loaders rank-replicated" holds for the
 PRODUCTION trainers, by reading both trainers' loader-setup code
 (`docs/evidence/r33_production_rank_behavior.json`):
@@ -648,10 +690,14 @@ until that run exists.
   provenance + per-rank/per-step hashes; BOTH loaders rank-replicated → effective batch 32; the replay
   now computes a reproducible `same_frames` block — rank-0 streams contain the SAME frames → the R30/R31
   loader hypothesis is REFUTED; r22-vs-r24 re-opened).
-- **Production-trainer rank behavior** (R33): `docs/evidence/r33_production_rank_behavior.json` (code
-  reading of both trainers' loader setup: both use `spawn` workers → rank-replicated, effective batch
-  32; the reference also uses the same shuffle seed across ranks; confirmed by the R32 dump → the
-  r22-vs-r24 gap is NOT an effective-batch difference).
+- **Production-trainer rank behavior** (R33, reference half SUPERSEDED by R34):
+  `docs/evidence/r33_production_rank_behavior.json` (correctly found RLinf rank-replicated/32; its
+  reference verdict was wrong — it missed the rank-0 fanout).
+- **Production effective-batch topology + FIX** (R34): `tests/unit_tests/_ref_fanout_dump.py` +
+  `tools/_loader_topology_dump.py` → `docs/evidence/r34_production_batch_topology.json` +
+  `r34_ref_fanout_hashes.json` + `r34_rlinf_fixed_topology_hashes.json` (reference rank-0 fanout MEASURED
+  rank-disjoint = effective batch 256; RLinf was rank-replicated = 32; the spawn-safe fix in `rlinf/`
+  threads explicit rank/world_size → RLinf now rank-disjoint 256, confirmed + a regression test).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -690,9 +736,13 @@ loaders at the real production topology** (8-rank, `num_workers=8`) and found bo
 (effective batch 32) with rank-0 streams containing the **SAME frames** — so the loaders feed the same
 data and the **R30/R31 loader hypothesis is REFUTED** (the AC-11 loader proposal is withdrawn). The
 batch-32 replay of the shared data tracks r22 but not r24, so the r22-vs-r24 gap is **re-opened**.
-**R33 confirmed (code + dump) that BOTH production trainers are rank-replicated** (both use `spawn`
-DataLoader workers that don't inherit `torch.distributed`; the reference also uses the same shuffle
-seed across ranks) → effective batch **32 for both**, so the gap is NOT an effective-batch difference
-(`docs/evidence/r33_production_rank_behavior.json`). **R34 leads (unproven):** data ordering/seed,
-noise/time RNG, or a 50-step / effective-batch-32 residual. task15 stays NOT met; task16 (advisory
-~1 h trend) and task18 (final AC-13) remain blocked on it.
+R33 mis-concluded both rank-replicated, but **R34 found the EFFECTIVE-BATCH root cause** (correcting it):
+the reference trainer builds the loader on rank 0 only and fans out **successive** micro-batches → it is
+**rank-DISJOINT, effective batch 256** (measured 256 unique/step), while RLinf was **rank-REPLICATED,
+effective batch 32** (its spawned DataLoader workers can't read `torch.distributed`). So the r22-vs-r24
+gap **IS** an 8× effective-batch difference. **R34 FIXED it** (threading explicit `rank`/`world_size`
+into `BehaviorSftDataset._select_streaming_chunk`; spawn-safe) + a regression test, and CONFIRMED RLinf
+is now rank-disjoint (256 unique/step; `docs/evidence/r34_production_batch_topology.json`). **Final
+validation (next):** rerun the 8-GPU first-50 under the fix and check it tracks the reference (~0.090).
+task15 stays NOT met until that 50/50 (or an accepted plan evolution); task16 (advisory ~1 h trend) and
+task18 (final AC-13) remain blocked on it.
