@@ -1,0 +1,106 @@
+{
+  "purpose": "R32 loader-TOPOLOGY composition analysis (Codex R31 review): dump BOTH loaders' first-50 per-rank micro-batch identity hashes at the PRODUCTION topology (8 ranks x num_workers=8) via torchrun (gloo), and compute how many UNIQUE frames each global step emits across the 8 ranks -- proving each loader's effective per-step batch composition rather than assuming it.",
+  "method": "tools/_loader_topology_dump.py under torchrun --nproc_per_node=8; per-frame sha256 of (state, actions, tokenized_prompt); rank 0 all-gathers per-rank hashes. RLinf = create_behavior_sft_data_loader(batch=micro=32, seed=42, use_skill=False, turning_on_radio); reference = create_behavior_data_loader_torch (config pi05_b1k-turning_on_radio..., GLOBAL 256 -> local 256//8=32/rank). num_workers=8 is the production count; nw=0 is the isolation control.",
+  "loaders": {
+    "rlinf_nw8_production": {
+      "manifest": {
+        "side": "rlinf",
+        "config": "create_behavior_sft_data_loader",
+        "world_size": 8,
+        "num_workers": 8,
+        "global_batch": 256,
+        "per_rank_local_batch": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "seed": 42,
+        "task": "turning_on_radio",
+        "n_steps": 50,
+        "ref_src": null
+      },
+      "unique_frames_per_global_step": {
+        "mean": 32,
+        "min": 32,
+        "max": 32
+      },
+      "step0_rank0_rank1_overlap_of_32": 32,
+      "verdict": "RANK-REPLICATED (all ranks emit the same per-step micro-batch -> effective batch = local_batch)",
+      "hashes_file": "docs/evidence/r32_rlinf_topology_hashes.json",
+      "hashes_file_sha256_16": "52fc023ee0b8d87c"
+    },
+    "rlinf_nw0": {
+      "manifest": {
+        "side": "rlinf",
+        "config": "create_behavior_sft_data_loader",
+        "world_size": 8,
+        "num_workers": 0,
+        "global_batch": 256,
+        "per_rank_local_batch": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "seed": 42,
+        "task": "turning_on_radio",
+        "n_steps": 50,
+        "ref_src": null
+      },
+      "unique_frames_per_global_step": {
+        "mean": 256,
+        "min": 256,
+        "max": 256
+      },
+      "step0_rank0_rank1_overlap_of_32": 0,
+      "verdict": "RANK-DISJOINT (each rank a different micro-batch -> effective batch = world*local_batch)",
+      "hashes_file": "docs/evidence/r32_rlinf_nw0_topology_hashes.json",
+      "hashes_file_sha256_16": "24faa41c8d18720d"
+    },
+    "reference_nw8_production": {
+      "manifest": {
+        "side": "ref",
+        "config": "pi05_b1k-turning_on_radio_cs32_bs32_lr2.5e-5_step30k",
+        "world_size": 8,
+        "num_workers": 8,
+        "global_batch": 256,
+        "per_rank_local_batch": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "seed": 42,
+        "task": "turning_on_radio",
+        "n_steps": 50,
+        "ref_src": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/src"
+      },
+      "unique_frames_per_global_step": {
+        "mean": 32,
+        "min": 32,
+        "max": 32
+      },
+      "step0_rank0_rank1_overlap_of_32": 32,
+      "verdict": "RANK-REPLICATED (all ranks emit the same per-step micro-batch -> effective batch = local_batch)",
+      "hashes_file": "docs/evidence/r32_ref_topology_hashes.json",
+      "hashes_file_sha256_16": "e921139399b9e425"
+    }
+  },
+  "key_finding": "At the PRODUCTION topology (num_workers=8), BOTH the RLinf and the reference loader are RANK-REPLICATED: all 8 ranks emit the SAME 32-frame micro-batch per step (step0 rank0/rank1 overlap 32/32; unique frames per global step = 32, not 256). So BOTH production runs have an EFFECTIVE per-step batch of 32 (the all-reduce of 8 identical 32-frame grads = the 32-frame grad), NOT the configured global 256. The rank-disjoint partition only appears at num_workers=0 (RLinf nw=0 -> 256 unique/step): the forked DataLoader workers do not see the distributed rank, so with num_workers>0 all ranks replicate rank-0's partition.",
+  "implications": "(1) R31's global-256 replay used the WRONG effective batch (256); the correct topology-faithful effective batch is 32 for BOTH loaders. (2) The effective batch SIZE is the SAME (32) for RLinf and the reference, so the r22-vs-r24 descent difference is NOT an effective-batch-size difference; it is which 32 frames each loader's rank-0 streams per step (the per-step composition). (3) Caveat: this dump uses gloo/torchrun; the rank-replication is a forked-DataLoader-worker effect (get_rank not seen in workers) that should hold under the production nccl fork as well, and in any case applies EQUALLY to both loaders.",
+  "next": "Replay rank-0's first-50 32-frame streams (the effective per-step batch) for both loaders through the shared loop + shared noise/time at batch 32, compared to r24/r22.",
+  "cross_loader_same_frames": "The reference and RLinf rank-0 batch-32 streams (dumped with --with-images) contain the SAME frames (images identical after HWC->CHW; state/actions ~5e-8; prompts 99.9997% identical), so at the production topology both loaders stream the SAME seed-42 data -- there is NO per-step loader composition difference in production (refuting R30/R31). See docs/evidence/r32_topology_replay.json."
+}

@@ -53,16 +53,18 @@ per-step INPUT hypothesis** (`docs/evidence/r30_loader_sequence.json`): through 
 shared noise/time, RLinf's loader descended faster than the reference loader's (last-5 0.074 vs 0.162;
 step-0 0.165 vs 0.251 on identical weights+noise/time), but at batch-16/seed-0 the reference-loader
 trajectory did NOT track the reference production curve (r24 ≈0.090), so it is NOT the production proof
-(the "PROVED" wording is withdrawn). **R31 reran it production-faithful at GLOBAL batch 256** (seed-42,
-`num_workers=8`, `create_behavior_data_loader_torch` vs the production `create_behavior_sft_data_loader`)
-via gradient accumulation (`docs/evidence/r31_loader_sequence_prod.json`): **both replays track their
-production curves in the aggregate** — reference-loader last-10 0.106 vs r24 0.102 (Δ0.004), RLinf-loader
-0.089 vs r22 0.073 (Δ0.016), both within the DEC-1(b) 0.03 band — **and RLinf's loader is faster**
-(0.089 < 0.106), the same direction as production. So the first-50 faster-descent is localized to the
-**data loader's per-step batch composition** (not a model/optimizer/clip/LR/FSDP defect). Caveats: the
-tracking is aggregate (last-10 mean), not step-by-step (per-step max |Δ| ~0.14 from fixed noise/time +
-shuffle), and the global-256 effect (~0.017) is modest. The AC-11 decision (accept the loader
-difference / align the loader / feed the reference batches) is the only open task15 item. The earlier
+(the "PROVED" wording is withdrawn). R31's global-256 replay (also superseded — its "production-faithful"
+label was withdrawn for bypassing the loader topology). **R32 then dumped both loaders at the REAL
+production topology (8-rank, `num_workers=8`)** with manifests + per-rank/per-step hashes
+(`docs/evidence/r32_loader_topology.json`) and found: **(1)** both loaders are RANK-REPLICATED (all 8
+ranks emit the same 32-frame micro-batch → effective batch **32**, not 256; the forked DataLoader
+workers don't see the rank), and **(2)** their rank-0 streams contain the **SAME frames** (images
+identical, state/actions ~5e-8). **So in production both loaders feed the SAME data → the R30/R31
+"RLinf loader feeds a different/faster batch" hypothesis is REFUTED** (it was a `world_size=1`
+artifact); the AC-11 loader plan-evolution proposal is **WITHDRAWN**. The batch-32 replay of the shared
+data tracks the RLinf production curve r22 but not the reference's r24, so the r22-vs-r24 gap is
+**re-opened** — new leads (unproven): the reference production's actual effective batch (rank-disjoint
+256 vs RLinf's rank-replicated 32?), noise/time RNG, or a 50-step residual. task15 stays NOT met. The earlier
 R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
 retracted. The residual is a **real systematic divergence (RLinf descends faster / lower)**,
 task15-blocking. See **"Round 20 / 21 / 22"** below. The
@@ -353,17 +355,68 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
-### R31 — production-faithful replay at GLOBAL batch 256: both loaders track their production curves; RLinf's loader is faster
-R31 reruns the loader-sequence replay at the production recipe (Codex R30 review;
+### R32 — production-topology dumps: the loaders feed the SAME data → R30/R31 loader hypothesis REFUTED
+R32 dumped BOTH loaders' first-50 per-rank micro-batches at the REAL production topology (8 ranks ×
+`num_workers=8`) via `torchrun` (`tools/_loader_topology_dump.py`; manifests + per-rank/per-step
+identity hashes in `docs/evidence/r32_*_topology_hashes.json`; summary
+`docs/evidence/r32_loader_topology.json`).
+
+**Composition finding (measured, from the per-rank frame hashes):**
+- **RLinf** `num_workers=8` (production): **RANK-REPLICATED** — all 8 ranks emit the SAME 32-frame
+  micro-batch (step-0 rank0∩rank1 = 32/32; unique frames per global step = **32**, not 256).
+- **Reference** `num_workers=8` (production): **RANK-REPLICATED** — same, 32 unique/step.
+- RLinf `num_workers=0` (control): rank-DISJOINT, 256 unique/step. → the forked DataLoader workers do
+  NOT see the distributed rank, so with `num_workers>0` all ranks replicate rank-0's partition.
+
+So at the production topology BOTH loaders have an **effective per-step batch of 32** (the all-reduce of
+8 identical 32-frame grads = the 32-frame grad), NOT the configured global 256. **R31's global-256
+replay used the wrong effective batch.**
+
+**Same-data finding (measured):** the reference and RLinf rank-0 batch-32 streams (dumped
+`--with-images`) contain the **SAME frames** — images identical (max|Δ|=0.0 after HWC→CHW), state/actions
+~5e-8, prompts 99.9997 % identical. So at the production topology both loaders stream the SAME seed-42
+data; the batch-32 replay of both rank-0 streams (`docs/evidence/r32_topology_replay.json`) gives an
+**IDENTICAL** trajectory (gap −0.0001).
+
+**⇒ The R30/R31 "RLinf loader feeds a different/faster per-step batch" hypothesis is REFUTED.** It was
+an artifact of the non-production topology (R31 ran RLinf at `world_size=1` = rank-disjoint 256 unique;
+R30 at batch-16). In production both loaders feed the SAME data. The prior AC-11 loader plan-evolution
+proposal is **WITHDRAWN**.
+
+**What remains (the batch-32 replay):** the identical replay trajectory tracks the RLinf production curve
+r22 (replay last-10 0.075 vs r22 0.073) but lands BELOW the reference production curve r24 (vs 0.102;
+step-49 replay 0.052 vs r22 0.048 vs r24 0.090). So the RLinf stack reproduces r22 on the shared data
+but the reference production (r24) is higher. With the loader (same data) and the single-GPU stack
+(R26–R29) both ruled out, the production r22-vs-r24 gap is **re-opened**. **New leads (hypotheses, NOT
+proven) for R33:** (a) the reference PRODUCTION run (`train_pytorch_new.py`, nccl) may be rank-DISJOINT
+(effective batch 256) while RLinf production is rank-REPLICATED (effective 32) — if RLinf's nccl run
+shares the worker-rank-replication this gloo dump observed but the reference's does NOT, that is a real
+RLinf effective-batch bug (config 256, effective 32); (b) the noise/time RNG; (c) a 50-step-compounding
+residual R28's 20-step test did not capture. **Verify the two production runs' ACTUAL effective batch /
+rank behavior next.** task15 stays **NOT met**; no plan evolution proposed.
+
+### R31 — global-256 replay (NOT production topology): "production-faithful" WITHDRAWN per Codex R31 review; see R32
+> **RETRACTION (Codex R31 review):** R31's "production-faithful" label is **WITHDRAWN**. The replay
+> correctly used GLOBAL batch 256 + the production recipe knobs, but it bypassed the production loader
+> **topology**: the reference sequence was dumped with `num_workers=0` (vs production `num_workers=8`)
+> and the RLinf sequence was iterated in a **single non-distributed process** (`world_size=1`),
+> consuming 8 sequential micro-batches as a global step. RLinf's `BehaviorSftDataset` folds
+> `rank`/`world_size`/`worker_id`/`num_workers` into its chunk partition, so `world_size=1` streams ALL
+> chunks, not rank 0's disjoint 1/8 — and worker count changes worker seeds/chunk order. Since the
+> quantity under test IS the loader's per-step batch composition, this topology deviation invalidates
+> the "production-faithful" claim. The aggregate curve-tracking below is **directional evidence only**.
+> **R32** dumps both loaders at the real 8-rank/`num_workers=8` topology with manifests + per-rank/
+> per-step hashes. task15 stays OPEN.
+
+R31 reran the loader-sequence replay at the production recipe knobs (Codex R30 review;
 `docs/evidence/r31_loader_sequence_prod.json`; `tools/sft_loader_sequence_prod_probe.py`). Verified
 that the reference (r24) and RLinf (r22) production runs use the **same** knobs — GLOBAL batch **256**
-(micro 32 × 8), `turning_on_radio`, `peak_lr=2.5e-5`, `warmup=1000`, `use_skill:false` — so only the
-loader differs. RLinf's `Pi0` runs the SAME loop (fp32 weights + autocast bf16, AdamW+clip+warmup-LR) +
-SHARED fixed noise/time for 50 steps at global batch 256 via **gradient accumulation** (8 chunks × 32,
-each scaled by 32/256 → the 256-sample mean grad; logged loss = 256-sample mean), on (a) the reference
-loader's first-50 global-256 sequence (`create_behavior_data_loader_torch`) and (b) RLinf's own SFT
-loader's (`create_behavior_sft_data_loader` with the production builder params: `batch_size=micro=32`,
-`num_workers=8`, `seed=42`, `use_skill=False`; == `build_behavior_sft_dataloader`, a thin wrapper).
+(micro 32 × 8), `turning_on_radio`, `peak_lr=2.5e-5`, `warmup=1000`, `use_skill:false`. RLinf's `Pi0`
+ran the SAME loop (fp32 weights + autocast bf16, AdamW+clip+warmup-LR) + SHARED fixed noise/time for 50
+steps at global batch 256 via **gradient accumulation** (8 chunks × 32), on (a) the reference loader's
+first-50 sequence (`create_behavior_data_loader_torch`, `num_workers=0` — NOT production) and (b)
+RLinf's SFT loader's (`create_behavior_sft_data_loader`, `world_size=1` — NOT the production 8-rank
+partition).
 
 Result — **both replays track their production curves (last-10 mean within the DEC-1(b) 0.03 band), and
 RLinf's loader is faster:**
@@ -560,11 +613,15 @@ until that run exists.
   `tests/unit_tests/_ref_seq_batch_dump.py` → `docs/evidence/r30_loader_sequence.json` (batch-16,
   seed-0; directional only — RLinf loader faster, but the reference replay did not track r24;
   corrected to a hypothesis, superseded by R31).
-- **Loader-sequence replay, production-faithful** (R31): `tools/sft_loader_sequence_prod_probe.py` →
-  `docs/evidence/r31_loader_sequence_prod.json` (GLOBAL batch 256 via gradient accumulation, production
-  loader config; both replays track their production curves within 0.03 — reference 0.106 vs r24 0.102,
-  RLinf 0.089 vs r22 0.073 — and RLinf's loader is faster; aggregate-not-per-step + modest-effect
-  caveats; provenance + per-step rows + curve comparison + AC-11 proposal).
+- **Loader-sequence replay, global-256** (R31): `tools/sft_loader_sequence_prod_probe.py` →
+  `docs/evidence/r31_loader_sequence_prod.json` ("production-faithful" WITHDRAWN — bypassed the loader
+  topology, world_size=1; superseded by R32).
+- **Loader TOPOLOGY dumps + replay** (R32): `tools/_loader_topology_dump.py` +
+  `tools/sft_loader_topology_replay.py` → `docs/evidence/r32_loader_topology.json` +
+  `r32_topology_replay.json` + `r32_*_topology_hashes.json` (8-rank/`num_workers=8`; manifests +
+  per-rank/per-step hashes; BOTH loaders rank-replicated → effective batch 32; rank-0 streams contain
+  the SAME frames → the R30/R31 loader hypothesis is REFUTED; the batch-32 replay of the shared data
+  tracks r22 not r24; r22-vs-r24 re-opened).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
@@ -593,11 +650,16 @@ production stack equals the reference on identical inputs. **R30 gave reduced-sc
 consistent with the per-step-input hypothesis** (`r30_loader_sequence.json`): through the identical
 loop + shared noise/time, RLinf's loader descended faster than the reference loader's (last-5 0.074 vs
 0.162; step-0 0.165 vs 0.251) — but at batch-16/seed-0 the reference-loader trajectory did NOT track
-the reference production curve (r24 ≈0.090), so the "PROVED" wording is withdrawn. **R31 reran this
-production-faithful at GLOBAL batch 256** (`r31_loader_sequence_prod.json`): both replays track their
-production curves in the aggregate (reference 0.106 vs r24 0.102, RLinf 0.089 vs r22 0.073, both within
-0.03) and RLinf's loader is faster (0.089 < 0.106) — localizing the first-50 faster-descent to the
-**data loader's per-step batch composition**, with caveats (aggregate-not-per-step tracking; modest
-~0.017 effect). The **only open task15 item is the AC-11 decision** (accept the loader difference via
-plan evolution / align the loader / feed the reference batches). task15 stays NOT met pending that;
-task16 (advisory ~1 h trend) and task18 (final AC-13) remain blocked on it.
+the reference production curve (r24 ≈0.090), so the "PROVED" wording is withdrawn. **R31 reran it at
+GLOBAL batch 256** (`r31_loader_sequence_prod.json`): both replays tracked their production curves in
+the aggregate (reference 0.106 vs r24 0.102, RLinf 0.089 vs r22 0.073, within 0.03) and RLinf's loader
+was faster — **but R31's "production-faithful" label is WITHDRAWN** (Codex R31 review): it used
+`num_workers=0` (reference) and `world_size=1` (RLinf) instead of the production 8-rank/`num_workers=8`
+rank-aware topology, which drives the per-step batch composition under test. **R32 then dumped both
+loaders at the real production topology** (8-rank, `num_workers=8`) and found both RANK-REPLICATED
+(effective batch 32) with rank-0 streams containing the **SAME frames** — so the loaders feed the same
+data and the **R30/R31 loader hypothesis is REFUTED** (the AC-11 loader proposal is withdrawn). The
+batch-32 replay of the shared data tracks r22 but not r24, so the r22-vs-r24 gap is **re-opened** (new
+leads: the reference production's actual effective batch / rank behavior, noise/time, or a 50-step
+residual — R33). task15 stays NOT met; task16 (advisory ~1 h trend) and task18 (final AC-13) remain
+blocked on it.
