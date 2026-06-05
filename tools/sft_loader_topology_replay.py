@@ -87,11 +87,23 @@ def _build_obs(flat, step, device):
 
     return Observation.from_dict(
         {
-            "image": {k: torch.from_numpy(flat[f"image__{k}"][step]).to(device, torch.float32) for k in _IMG},
-            "image_mask": {k: torch.from_numpy(flat[f"image_mask__{k}"][step]).to(device) for k in _IMG},
+            "image": {
+                k: torch.from_numpy(flat[f"image__{k}"][step]).to(device, torch.float32)
+                for k in _IMG
+            },
+            "image_mask": {
+                k: torch.from_numpy(flat[f"image_mask__{k}"][step]).to(device)
+                for k in _IMG
+            },
             "state": torch.from_numpy(flat["state"][step]).to(device, torch.float32),
-            "tokenized_prompt": torch.from_numpy(flat["tokenized_prompt"][step]).to(device).long(),
-            "tokenized_prompt_mask": torch.from_numpy(flat["tokenized_prompt_mask"][step]).to(device).bool(),
+            "tokenized_prompt": torch.from_numpy(flat["tokenized_prompt"][step])
+            .to(device)
+            .long(),
+            "tokenized_prompt_mask": torch.from_numpy(
+                flat["tokenized_prompt_mask"][step]
+            )
+            .to(device)
+            .bool(),
         }
     )
 
@@ -112,7 +124,14 @@ def _replay(model, base_cpu, npz_path, noise, time, device):
     with torch.no_grad():
         for p, b in zip(model.parameters(), base_cpu):
             p.data.copy_(b.to(device))
-    opt = torch.optim.AdamW(model.parameters(), lr=_PEAK_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD, foreach=False)
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=_PEAK_LR,
+        betas=_BETAS,
+        eps=_EPS,
+        weight_decay=_WD,
+        foreach=False,
+    )
     rows = []
     for step in range(_N_STEPS):
         lr = _lr_at(step)
@@ -124,29 +143,54 @@ def _replay(model, base_cpu, npz_path, noise, time, device):
         tm = torch.from_numpy(time[step]).to(device)
         opt.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(obs, act, train=True, rng=None, noise=nz, time=tm).float().mean()
+            loss = (
+                model(obs, act, train=True, rng=None, noise=nz, time=tm).float().mean()
+            )
         loss.backward()
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=_CLIP)
         opt.step()
-        rows.append({"step": step, "loss": round(float(loss), 6), "grad_norm": round(float(gn), 5)})
-        print(f"  step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f}", flush=True)
+        rows.append(
+            {
+                "step": step,
+                "loss": round(float(loss), 6),
+                "grad_norm": round(float(gn), 5),
+            }
+        )
+        print(
+            f"  step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f}",
+            flush=True,
+        )
     return rows
 
 
 def _same_frames(rlinf_npz, ref_npz):
     """Reproducible cross-loader identity comparison of the two rank-0 batch-32 streams."""
     a, b = np.load(rlinf_npz), np.load(ref_npz)
-    ai = a["image__base_0_rgb"]  # RLinf may be (...,224,224,3) HWC; reference (...,3,224,224) CHW
+    ai = a[
+        "image__base_0_rgb"
+    ]  # RLinf may be (...,224,224,3) HWC; reference (...,3,224,224) CHW
     if ai.shape[-1] == 3 and b["image__base_0_rgb"].shape[-3] == 3:
         ai = np.transpose(ai, (0, 1, 4, 2, 3))
-    img_diff = float(np.abs(ai.astype("f8") - b["image__base_0_rgb"].astype("f8")).max())
+    img_diff = float(
+        np.abs(ai.astype("f8") - b["image__base_0_rgb"].astype("f8")).max()
+    )
     st_diff = float(np.abs(a["state"].astype("f8") - b["state"].astype("f8")).max())
-    act_diff = float(np.abs(a["actions"].astype("f8") - b["actions"].astype("f8")).max())
+    act_diff = float(
+        np.abs(a["actions"].astype("f8") - b["actions"].astype("f8")).max()
+    )
     tp_eq = float((a["tokenized_prompt"] == b["tokenized_prompt"]).mean())
+
     # per-step: do the two streams hold the same 32 frames (by per-frame (state,actions) hash)?
     def _fh(npz, step):
         s, ac = npz["state"][step], npz["actions"][step]
-        return {hashlib.sha256(np.ascontiguousarray(s[i]).tobytes() + np.ascontiguousarray(ac[i]).tobytes()).hexdigest()[:16] for i in range(s.shape[0])}
+        return {
+            hashlib.sha256(
+                np.ascontiguousarray(s[i]).tobytes()
+                + np.ascontiguousarray(ac[i]).tobytes()
+            ).hexdigest()[:16]
+            for i in range(s.shape[0])
+        }
+
     overlaps = [len(_fh(a, s) & _fh(b, s)) for s in range(a["state"].shape[0])]
     return {
         "image_base_0_rgb_max_abs_diff": round(img_diff, 8),
@@ -180,7 +224,9 @@ def main():
     ap.add_argument("--out", default="/mnt/public/xzxuan/tmp/r32_topology_replay.json")
     args = ap.parse_args()
 
-    assert os.path.exists(_RLINF_NPZ) and os.path.exists(_REF_NPZ), "topology rank-0 dumps missing"
+    assert os.path.exists(_RLINF_NPZ) and os.path.exists(_REF_NPZ), (
+        "topology rank-0 dumps missing"
+    )
     rs = np.random.RandomState(_SEED)
     noise = rs.randn(_N_STEPS, _BATCH, 32, 32).astype(np.float32)
     time = rs.beta(1.5, 1.0, size=(_N_STEPS, _BATCH)).astype(np.float32) * 0.999 + 0.001
@@ -212,7 +258,9 @@ def main():
         }
         for i in range(_N_STEPS)
     ]
-    rlinf_faster = rlinf_vs_r22["replay_last10_mean"] < ref_vs_r24["replay_last10_mean"] - 0.005
+    rlinf_faster = (
+        rlinf_vs_r22["replay_last10_mean"] < ref_vs_r24["replay_last10_mean"] - 0.005
+    )
     result = {
         "purpose": "R32 topology-faithful replay at the CORRECT effective batch 32 (both production "
         "loaders are rank-replicated per docs/evidence/r32_loader_topology.json). RLinf's Pi0 runs the "
@@ -262,7 +310,16 @@ def main():
     with open(args.out, "w", newline="\n") as f:
         json.dump(result, f, indent=2)
         f.write("\n")
-    print(json.dumps({"ref_vs_r24": ref_vs_r24, "rlinf_vs_r22": rlinf_vs_r22, "rlinf_faster": rlinf_faster}, indent=2))
+    print(
+        json.dumps(
+            {
+                "ref_vs_r24": ref_vs_r24,
+                "rlinf_vs_r22": rlinf_vs_r22,
+                "rlinf_faster": rlinf_faster,
+            },
+            indent=2,
+        )
+    )
     print(f"wrote {args.out}")
 
 

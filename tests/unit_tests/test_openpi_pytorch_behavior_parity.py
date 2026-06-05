@@ -36,7 +36,9 @@ from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
     normalize_quantile,
     unnormalize_quantile,
 )
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+    PaligemmaTokenizer,
+)
 
 _NORM_STATS_DIR = pathlib.Path(
     "/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999/physical-intelligence/behavior"

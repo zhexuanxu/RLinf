@@ -48,7 +48,9 @@ _WRAPPER_PREFIXES = (
 _NORM_STATS_SUBDIR = pathlib.Path("physical-intelligence") / "behavior"
 
 
-def _strip_wrapper_prefix(state_dict: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _strip_wrapper_prefix(
+    state_dict: Mapping[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
     """Drop wrapper/FSDP key prefixes and cast float tensors to bf16.
 
     Removes any leading combination of the known wrapper/FSDP prefixes from each
@@ -62,7 +64,7 @@ def _strip_wrapper_prefix(state_dict: Mapping[str, torch.Tensor]) -> dict[str, t
         while True:
             for prefix in _WRAPPER_PREFIXES:
                 if bare_key.startswith(prefix):
-                    bare_key = bare_key[len(prefix):]
+                    bare_key = bare_key[len(prefix) :]
                     break
             else:
                 break
@@ -135,8 +137,10 @@ def _as_state_dict(loaded: Any) -> Mapping[str, torch.Tensor]:
     """Unwrap common checkpoint containers down to a key->tensor mapping."""
     obj = loaded
     for _ in range(4):
-        if isinstance(obj, Mapping) and obj and all(
-            isinstance(v, torch.Tensor) for v in obj.values()
+        if (
+            isinstance(obj, Mapping)
+            and obj
+            and all(isinstance(v, torch.Tensor) for v in obj.values())
         ):
             return obj
         if isinstance(obj, Mapping):

@@ -54,13 +54,17 @@ def posemb_sincos(
     if embedding_dim % 2 != 0:
         raise ValueError(f"embedding_dim ({embedding_dim}) must be divisible by 2")
 
-    fraction = torch.linspace(0.0, 1.0, embedding_dim // 2, device=pos.device, dtype=torch.float32)
+    fraction = torch.linspace(
+        0.0, 1.0, embedding_dim // 2, device=pos.device, dtype=torch.float32
+    )
     period = min_period * (max_period / min_period) ** fraction
     sinusoid_input = torch.einsum("i,j->ij", pos.float(), 1.0 / period * 2 * torch.pi)
     # Match JAX which keeps posemb in float32. However, PT Linear does not support
     # mixed float32/bf16 matmul, so cast back to the model's embed_dtype.
     # The caller should upcast to float32 if needed for high-precision ops.
-    return torch.cat([torch.sin(sinusoid_input), torch.cos(sinusoid_input)], dim=-1).to(pos.dtype)
+    return torch.cat([torch.sin(sinusoid_input), torch.cos(sinusoid_input)], dim=-1).to(
+        pos.dtype
+    )
 
 
 class Pi0(model.BaseModel):
@@ -106,8 +110,12 @@ class Pi0(model.BaseModel):
             self.time_mlp_out = nn.Linear(action_expert_width, action_expert_width)
         else:
             self.state_proj = nn.Linear(config.action_dim, action_expert_width)
-            self.action_time_mlp_in = nn.Linear(2 * action_expert_width, action_expert_width)
-            self.action_time_mlp_out = nn.Linear(action_expert_width, action_expert_width)
+            self.action_time_mlp_in = nn.Linear(
+                2 * action_expert_width, action_expert_width
+            )
+            self.action_time_mlp_out = nn.Linear(
+                action_expert_width, action_expert_width
+            )
 
         # Action output projection
         self.action_out_proj = nn.Linear(action_expert_width, config.action_dim)
@@ -144,7 +152,9 @@ class Pi0(model.BaseModel):
             nn.init.normal_(self.action_time_mlp_out.weight, std=0.02)
             nn.init.zeros_(self.action_time_mlp_out.bias)
 
-    def embed_prefix(self, obs: model.Observation) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def embed_prefix(
+        self, obs: model.Observation
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed the prefix (images + language + optional point cloud).
 
         Returns:
@@ -162,7 +172,11 @@ class Pi0(model.BaseModel):
             tokens.append(image_tokens)
 
             # Image tokens use bidirectional attention
-            input_mask.append(einops.repeat(obs.image_masks[name], "b -> b s", s=image_tokens.shape[1]))
+            input_mask.append(
+                einops.repeat(
+                    obs.image_masks[name], "b -> b s", s=image_tokens.shape[1]
+                )
+            )
             ar_mask += [False] * image_tokens.shape[1]
 
         # Add language tokens
@@ -184,7 +198,11 @@ class Pi0(model.BaseModel):
                 pcd_tokens = pcd_tokens.unsqueeze(1)  # (B, 1, 2048)
 
             tokens.append(pcd_tokens)
-            input_mask.append(torch.ones(pcd_tokens.shape[:2], dtype=torch.bool, device=pcd_tokens.device))
+            input_mask.append(
+                torch.ones(
+                    pcd_tokens.shape[:2], dtype=torch.bool, device=pcd_tokens.device
+                )
+            )
             ar_mask += [False] * pcd_tokens.shape[1]
 
         tokens = torch.cat(tokens, dim=1)
@@ -226,13 +244,17 @@ class Pi0(model.BaseModel):
             # Add a single state token
             state_token = self.state_proj(obs.state)[:, None, :]
             tokens.append(state_token)
-            input_mask.append(torch.ones(B, 1, dtype=torch.bool, device=state_token.device))
+            input_mask.append(
+                torch.ones(B, 1, dtype=torch.bool, device=state_token.device)
+            )
 
         # Embed actions
         action_tokens = self.action_in_proj(noisy_actions)
 
         # Time embedding
-        time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
+        time_emb = posemb_sincos(
+            timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0
+        )
 
         if self.pi05:
             # Time MLP for adaRMS conditioning
@@ -244,7 +266,9 @@ class Pi0(model.BaseModel):
             adarms_cond = time_emb
         else:
             # Mix timestep + action through MLP
-            time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=self.action_horizon)
+            time_tokens = einops.repeat(
+                time_emb, "b emb -> b s emb", s=self.action_horizon
+            )
             action_time_tokens = torch.cat([action_tokens, time_tokens], dim=-1)
             action_time_tokens = self.action_time_mlp_in(action_time_tokens)
             action_time_tokens = F.silu(action_time_tokens)
@@ -254,7 +278,11 @@ class Pi0(model.BaseModel):
 
         tokens.append(action_expert_tokens)
         input_mask.append(
-            torch.ones(action_expert_tokens.shape[:2], dtype=torch.bool, device=action_expert_tokens.device)
+            torch.ones(
+                action_expert_tokens.shape[:2],
+                dtype=torch.bool,
+                device=action_expert_tokens.device,
+            )
         )
 
         tokens = torch.cat(tokens, dim=1)
@@ -300,7 +328,9 @@ class Pi0(model.BaseModel):
 
         # Sample noise and time (or use provided values for reproducibility)
         if noise is None:
-            noise = torch.randn(actions.shape, device=device, dtype=dtype, generator=rng)
+            noise = torch.randn(
+                actions.shape, device=device, dtype=dtype, generator=rng
+            )
         else:
             noise = noise.to(dtype=dtype)
         if time is None:
@@ -320,7 +350,9 @@ class Pi0(model.BaseModel):
 
         # One forward pass for prefix + suffix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation, x_t, time
+        )
 
         input_mask = torch.cat([prefix_mask, suffix_mask], dim=1)
         ar_mask = torch.cat([prefix_ar_mask, suffix_ar_mask], dim=0)
@@ -364,7 +396,9 @@ class Pi0(model.BaseModel):
         device = observation.state.device
 
         if noise is None:
-            noise = torch.randn(B, self.action_horizon, self.action_dim, device=device, generator=rng)
+            noise = torch.randn(
+                B, self.action_horizon, self.action_dim, device=device, generator=rng
+            )
 
         # Pre-fill KV cache with prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
@@ -383,15 +417,25 @@ class Pi0(model.BaseModel):
         # Euler integration
         while t >= -dt / 2:
             t_tensor = torch.full((B,), t, device=device, dtype=torch.float32)
-            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, t_tensor)
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, t_tensor
+            )
 
             # Build attention mask: suffix attends to both prefix and suffix
             suffix_len = suffix_tokens.shape[1]
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            prefix_to_suffix_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_len)
-            full_attn_mask = torch.cat([prefix_to_suffix_mask, suffix_attn_mask], dim=-1)
+            prefix_to_suffix_mask = einops.repeat(
+                prefix_mask, "b p -> b s p", s=suffix_len
+            )
+            full_attn_mask = torch.cat(
+                [prefix_to_suffix_mask, suffix_attn_mask], dim=-1
+            )
 
-            suffix_positions = torch.sum(prefix_mask, dim=-1)[:, None] + torch.cumsum(suffix_mask.int(), dim=-1) - 1
+            suffix_positions = (
+                torch.sum(prefix_mask, dim=-1)[:, None]
+                + torch.cumsum(suffix_mask.int(), dim=-1)
+                - 1
+            )
 
             _, suffix_out = self.llm(
                 [None, suffix_tokens],
@@ -418,7 +462,9 @@ class Pi0(model.BaseModel):
         time: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Default forward computes loss."""
-        return self.compute_loss(observation, actions, train=train, rng=rng, noise=noise, time=time)
+        return self.compute_loss(
+            observation, actions, train=train, rng=rng, noise=noise, time=time
+        )
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory efficiency."""

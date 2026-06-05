@@ -60,7 +60,9 @@ _MICRO = 32
 def _git_rev(repo):
     try:
         return subprocess.check_output(
-            ["git", "-C", repo, "rev-parse", "--short", "HEAD"], text=True, stderr=subprocess.DEVNULL
+            ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except Exception:
         return "unknown"
@@ -120,7 +122,9 @@ def _build_ref(rank, world, nw):
 
     cfg = _config.get_config(_REF_CONFIG)
     base = dataclasses.replace(cfg.data.base_config, behavior_dataset_root=_DATA_ROOT)
-    assets = _config.AssetsConfig(assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos")
+    assets = _config.AssetsConfig(
+        assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos"
+    )
     data = dataclasses.replace(cfg.data, base_config=base, assets=assets)
     # Keep the production num_workers + GLOBAL batch 256 (under dist -> local 256//world per rank).
     run_cfg = dataclasses.replace(cfg, data=data, batch_size=_GLOBAL, num_workers=nw)
@@ -134,7 +138,11 @@ def main():
     ap.add_argument("--n-steps", type=int, default=50)
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--tag", default="", help="suffix for the output filename")
-    ap.add_argument("--with-images", action="store_true", help="rank 0 also saves its batches (npz) for the replay")
+    ap.add_argument(
+        "--with-images",
+        action="store_true",
+        help="rank 0 also saves its batches (npz) for the replay",
+    )
     args = ap.parse_args()
     nw = args.num_workers
 
@@ -143,7 +151,11 @@ def main():
     dist.init_process_group(backend="gloo")
     rank, world = dist.get_rank(), dist.get_world_size()
 
-    loader = _build_rlinf(rank, world, nw) if args.side == "rlinf" else _build_ref(rank, world, nw)
+    loader = (
+        _build_rlinf(rank, world, nw)
+        if args.side == "rlinf"
+        else _build_ref(rank, world, nw)
+    )
     it = iter(loader) if args.side == "rlinf" else loader
 
     _IMG = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
@@ -153,20 +165,30 @@ def main():
     for _ in range(args.n_steps):
         obs, actions = next(it)
         per_step.append(_frame_hashes(obs, actions))
-        if save_imgs:  # rank 0 keeps its (effective, since rank-replicated) per-step batch
+        if (
+            save_imgs
+        ):  # rank 0 keeps its (effective, since rank-replicated) per-step batch
             for k in _IMG:
                 store.setdefault(f"image__{k}", []).append(_np(obs.images[k]))
                 store.setdefault(f"image_mask__{k}", []).append(_np(obs.image_masks[k]))
             store.setdefault("state", []).append(_np(obs.state))
             store.setdefault("tokenized_prompt", []).append(_np(obs.tokenized_prompt))
-            store.setdefault("tokenized_prompt_mask", []).append(_np(obs.tokenized_prompt_mask))
+            store.setdefault("tokenized_prompt_mask", []).append(
+                _np(obs.tokenized_prompt_mask)
+            )
             store.setdefault("actions", []).append(_np(actions))
     if save_imgs:
-        np.savez(f"{args.out}/{args.side}_rank0_batches{args.tag}.npz", **{k: np.stack(v) for k, v in store.items()})
+        np.savez(
+            f"{args.out}/{args.side}_rank0_batches{args.tag}.npz",
+            **{k: np.stack(v) for k, v in store.items()},
+        )
     local_batch = len(per_step[0]) if per_step else 0
 
     gathered = [None] * world
-    dist.all_gather_object(gathered, {"rank": rank, "per_step_frame_hashes": per_step, "local_batch": local_batch})
+    dist.all_gather_object(
+        gathered,
+        {"rank": rank, "per_step_frame_hashes": per_step, "local_batch": local_batch},
+    )
 
     if rank == 0:
         gathered.sort(key=lambda g: g["rank"])
@@ -197,8 +219,14 @@ def main():
                 "assets_dir": _ASSETS_DIR,
                 "rlinf_repo": "/mnt/public/xzxuan/repos/RLinf_pi05",
                 "rlinf_git_rev": _git_rev("/mnt/public/xzxuan/repos/RLinf_pi05"),
-                "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed" if is_ref else None,
-                "reference_git_rev": _git_rev("/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed") if is_ref else None,
+                "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed"
+                if is_ref
+                else None,
+                "reference_git_rev": _git_rev(
+                    "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed"
+                )
+                if is_ref
+                else None,
                 "loader_builder": "openpi.training.data_loader.create_behavior_data_loader_torch"
                 if is_ref
                 else "rlinf.data.datasets.behavior.create_behavior_sft_data_loader",
@@ -207,13 +235,18 @@ def main():
                 "output_reused": False,
                 "with_images": args.with_images,
             },
-            "per_rank_per_step_frame_hashes": [g["per_step_frame_hashes"] for g in gathered],
+            "per_rank_per_step_frame_hashes": [
+                g["per_step_frame_hashes"] for g in gathered
+            ],
         }
         out_path = f"{args.out}/{args.side}_topology_hashes{args.tag}.json"
         with open(out_path, "w", newline="\n") as f:
             json.dump(manifest, f)
             f.write("\n")
-        print(f"LOADER_TOPOLOGY_DUMP side={args.side} world={world} local_batch={local_batch} wrote {out_path}", flush=True)
+        print(
+            f"LOADER_TOPOLOGY_DUMP side={args.side} world={world} local_batch={local_batch} wrote {out_path}",
+            flush=True,
+        )
 
     dist.barrier()
     dist.destroy_process_group()

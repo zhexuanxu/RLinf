@@ -12,7 +12,9 @@ import torch.nn.functional as F
 from .utils import _str_to_dtype
 
 
-def posemb_sincos_2d(h: int, w: int, width: int, temperature: float = 10000.0) -> torch.Tensor:
+def posemb_sincos_2d(
+    h: int, w: int, width: int, temperature: float = 10000.0
+) -> torch.Tensor:
     """2D sine-cosine positional embedding following MoCo v3 logic."""
     y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
 
@@ -53,11 +55,15 @@ class MlpBlock(nn.Module):
 class Encoder1DBlock(nn.Module):
     """Single transformer encoder block (MHSA + MLP)."""
 
-    def __init__(self, dim: int, num_heads: int, mlp_dim: int | None = None, dropout: float = 0.0):
+    def __init__(
+        self, dim: int, num_heads: int, mlp_dim: int | None = None, dropout: float = 0.0
+    ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.norm2 = nn.LayerNorm(dim, eps=1e-6)
-        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        self.attn = nn.MultiheadAttention(
+            dim, num_heads, dropout=dropout, batch_first=True
+        )
         self.mlp = MlpBlock(dim, mlp_dim, dropout)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
@@ -90,7 +96,9 @@ class Encoder(nn.Module):
         use_gradient_checkpointing: bool = True,
     ):
         super().__init__()
-        self.layers = nn.ModuleList([Encoder1DBlock(dim, num_heads, mlp_dim, dropout) for _ in range(depth)])
+        self.layers = nn.ModuleList(
+            [Encoder1DBlock(dim, num_heads, mlp_dim, dropout) for _ in range(depth)]
+        )
         self.norm = nn.LayerNorm(dim, eps=1e-6)
         self.gradient_checkpointing = use_gradient_checkpointing
 
@@ -129,7 +137,9 @@ class SigLIPViT(nn.Module):
         self.mlp_dim = params["mlp_dim"]
         self.patch_size = params.get("patch_size", (16, 16))
         self.pool_type = pool_type
-        self.dtype_mm = _str_to_dtype(dtype_mm) if isinstance(dtype_mm, str) else dtype_mm
+        self.dtype_mm = (
+            _str_to_dtype(dtype_mm) if isinstance(dtype_mm, str) else dtype_mm
+        )
 
         # Patch embedding (Conv2d)
         self.stem = nn.Conv2d(
@@ -183,7 +193,9 @@ class SigLIPViT(nn.Module):
         if not hasattr(self, "_pos_emb_cache"):
             self._pos_emb_cache = {}
 
-    def _get_pos_emb(self, h: int, w: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    def _get_pos_emb(
+        self, h: int, w: int, dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
         """Get or compute positional embeddings for given feature map size."""
         key = (h, w)
         if key not in self._pos_emb_cache:

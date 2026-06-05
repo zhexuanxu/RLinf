@@ -101,9 +101,7 @@ class MultiStepRolloutWorker(Worker):
                     vla_cfg.precision = self.cfg.rollout.model.precision
                     vla_cfg.model_path = entry.model_path
                 vla_model_i = get_model(vla_cfg)
-                self._vla_models_with_skills.append(
-                    (vla_model_i, str(entry.skill))
-                )
+                self._vla_models_with_skills.append((vla_model_i, str(entry.skill)))
             # Primary model for weight_syncer / cuda_graph compatibility.
             self.hf_model: BasePolicy = self._vla_models_with_skills[0][0]
             self.log_info(
@@ -281,12 +279,20 @@ class MultiStepRolloutWorker(Worker):
         # VLM sampling parameters (used by the dual-system agentloop).
         if self.cfg.get("vlm", None) is not None:
             self._vlm_sampling_params = {
-                "do_sample": self.cfg.vlm.get("sampling_params", {}).get("do_sample", True),
-                "temperature": self.cfg.vlm.get("sampling_params", {}).get("temperature", 1.0),
+                "do_sample": self.cfg.vlm.get("sampling_params", {}).get(
+                    "do_sample", True
+                ),
+                "temperature": self.cfg.vlm.get("sampling_params", {}).get(
+                    "temperature", 1.0
+                ),
                 "top_p": self.cfg.vlm.get("sampling_params", {}).get("top_p", 1.0),
                 "top_k": self.cfg.vlm.get("sampling_params", {}).get("top_k", 20),
-                "repetition_penalty": self.cfg.vlm.get("sampling_params", {}).get("repetition_penalty", 1.0),
-                "max_new_tokens": self.cfg.vlm.get("sampling_params", {}).get("max_new_tokens", 512),
+                "repetition_penalty": self.cfg.vlm.get("sampling_params", {}).get(
+                    "repetition_penalty", 1.0
+                ),
+                "max_new_tokens": self.cfg.vlm.get("sampling_params", {}).get(
+                    "max_new_tokens", 512
+                ),
             }
 
     def update_dagger_beta(self):
@@ -739,9 +745,7 @@ class MultiStepRolloutWorker(Worker):
         # Merge optional dones tensor (present in eval mode for memory reset).
         dones_list = [obs_batch.get("dones", None) for obs_batch in obs_batches]
         if any(d is not None for d in dones_list):
-            merged_dones = torch.cat(
-                [d for d in dones_list if d is not None], dim=0
-            )
+            merged_dones = torch.cat([d for d in dones_list if d is not None], dim=0)
         else:
             merged_dones = None
 

@@ -26,7 +26,9 @@ import numpy as np
 from PIL import Image
 
 
-def resize_with_pad(images: np.ndarray, height: int, width: int, method=Image.BILINEAR) -> np.ndarray:
+def resize_with_pad(
+    images: np.ndarray, height: int, width: int, method=Image.BILINEAR
+) -> np.ndarray:
     """Resize a batch of ``[..., H, W, C]`` images to ``height x width`` with padding.
 
     Validates the external contract: ``images`` must be a ``numpy`` array of rank
@@ -42,7 +44,11 @@ def resize_with_pad(images: np.ndarray, height: int, width: int, method=Image.BI
             f"resize_with_pad expects images of rank >= 3 ([..., H, W, C]); "
             f"got shape {images.shape}."
         )
-    if not (isinstance(height, int) and isinstance(width, int)) or height <= 0 or width <= 0:
+    if (
+        not (isinstance(height, int) and isinstance(width, int))
+        or height <= 0
+        or width <= 0
+    ):
         raise ValueError(
             f"resize_with_pad target (height, width) must be positive ints; "
             f"got ({height!r}, {width!r})."
@@ -57,12 +63,17 @@ def resize_with_pad(images: np.ndarray, height: int, width: int, method=Image.BI
     original_shape = images.shape
     images = images.reshape(-1, *original_shape[-3:])
     resized = np.stack(
-        [_resize_with_pad_pil(Image.fromarray(im), height, width, method=method) for im in images]
+        [
+            _resize_with_pad_pil(Image.fromarray(im), height, width, method=method)
+            for im in images
+        ]
     )
     return resized.reshape(*original_shape[:-3], *resized.shape[-3:])
 
 
-def _resize_with_pad_pil(image: Image.Image, height: int, width: int, method: int) -> np.ndarray:
+def _resize_with_pad_pil(
+    image: Image.Image, height: int, width: int, method: int
+) -> np.ndarray:
     """Resize one PIL image to ``height x width`` without distortion (zero-padded)."""
     cur_width, cur_height = image.size
     if cur_width == width and cur_height == height:

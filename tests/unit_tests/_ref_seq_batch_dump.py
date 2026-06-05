@@ -54,12 +54,16 @@ def main(out_dir, n_steps, batch_size):
         import openpi.training.data_loader as _data_loader
 
         cfg = _config.get_config(_CONFIG)
-        base = dataclasses.replace(cfg.data.base_config, behavior_dataset_root=_DATA_ROOT)
+        base = dataclasses.replace(
+            cfg.data.base_config, behavior_dataset_root=_DATA_ROOT
+        )
         assets = _config.AssetsConfig(
             assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos"
         )
         data = dataclasses.replace(cfg.data, base_config=base, assets=assets)
-        run_cfg = dataclasses.replace(cfg, data=data, batch_size=batch_size, num_workers=0)
+        run_cfg = dataclasses.replace(
+            cfg, data=data, batch_size=batch_size, num_workers=0
+        )
         it = iter(_data_loader.create_behavior_data_loader_torch(run_cfg, shuffle=True))
 
         store = {}
@@ -71,7 +75,9 @@ def main(out_dir, n_steps, batch_size):
                 if m is not None:
                     store.setdefault(f"image_mask__{k}", []).append(_np(m[k]))
             store.setdefault("state", []).append(_np(observation.state))
-            store.setdefault("tokenized_prompt", []).append(_np(observation.tokenized_prompt))
+            store.setdefault("tokenized_prompt", []).append(
+                _np(observation.tokenized_prompt)
+            )
             tpm = getattr(observation, "tokenized_prompt_mask", None)
             if tpm is not None:
                 store.setdefault("tokenized_prompt_mask", []).append(_np(tpm))
@@ -88,7 +94,10 @@ def main(out_dir, n_steps, batch_size):
         result["err"] = f"{type(e).__name__}: {str(e)[:300]}"
         result["tb"] = traceback.format_exc()[-1000:]
 
-    print("REF_SEQ_BATCH " + json.dumps({k: result[k] for k in ("ok", "err") if k in result}))
+    print(
+        "REF_SEQ_BATCH "
+        + json.dumps({k: result[k] for k in ("ok", "err") if k in result})
+    )
     if "tb" in result and not result["ok"]:
         print(result["tb"])
 

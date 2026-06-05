@@ -40,7 +40,14 @@ def get_config(variant: Variant) -> Config:
 
 
 class MLP(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int, hidden_depth: int, output_dim: int, activation: str = "gelu"):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int,
+        hidden_depth: int,
+        output_dim: int,
+        activation: str = "gelu",
+    ):
         super().__init__()
         layers = []
         cur_dim = in_dim
@@ -58,7 +65,12 @@ class MLP(nn.Module):
 
 class PointNetSimplified(nn.Module):
     def __init__(
-        self, point_channels: int, output_dim: int, hidden_dim: int, hidden_depth: int, activation: str = "gelu"
+        self,
+        point_channels: int,
+        output_dim: int,
+        hidden_dim: int,
+        hidden_depth: int,
+        activation: str = "gelu",
     ):
         super().__init__()
         self._mlp = MLP(

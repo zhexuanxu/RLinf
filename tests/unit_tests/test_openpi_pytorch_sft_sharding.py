@@ -91,14 +91,21 @@ def test_explicit_rank_partitions_disjoint_even_when_dist_reports_rank0(monkeypa
     for r in range(world_size):
         # dist always reports rank 0 (the spawn-worker bug), but explicit rank = r.
         ds = _select_under_rank(
-            monkeypatch, r, world_size, num_chunks=num_chunks, explicit=(r, world_size), dist_rank=0
+            monkeypatch,
+            r,
+            world_size,
+            num_chunks=num_chunks,
+            explicit=(r, world_size),
+            dist_rank=0,
         )
         first_chunks.append(ds._active_chunks)
     # Each rank's active chunk set must be disjoint from the others (not replicated).
     sets = [set(c) for c in first_chunks]
     for i in range(world_size):
         for j in range(i + 1, world_size):
-            assert sets[i].isdisjoint(sets[j]), "explicit rank did not yield a disjoint partition"
+            assert sets[i].isdisjoint(sets[j]), (
+                "explicit rank did not yield a disjoint partition"
+            )
     # And the union covers every chunk exactly once (complete partition, no duplicates).
     union = [c for s in sets for c in s]
     assert len(union) == len(set(union)) == num_chunks

@@ -111,11 +111,16 @@ def _load_batches(tmp, device):
                     for k in _IMG
                 },
                 "image_mask": {
-                    k: torch.from_numpy(d[f"image_mask__{k}"][bi]).to(device) for k in _IMG
+                    k: torch.from_numpy(d[f"image_mask__{k}"][bi]).to(device)
+                    for k in _IMG
                 },
                 "state": torch.from_numpy(d["state"][bi]).to(device, torch.float32),
-                "tokenized_prompt": torch.from_numpy(d["tokenized_prompt"][bi]).to(device).long(),
-                "tokenized_prompt_mask": torch.from_numpy(d["tokenized_prompt_mask"][bi])
+                "tokenized_prompt": torch.from_numpy(d["tokenized_prompt"][bi])
+                .to(device)
+                .long(),
+                "tokenized_prompt_mask": torch.from_numpy(
+                    d["tokenized_prompt_mask"][bi]
+                )
                 .to(device)
                 .bool(),
             }
@@ -134,7 +139,9 @@ def _rlinf_replay(tmp, device="cuda"):
     master = [p.detach().clone().float() for p in model.parameters()]
     for m in master:
         m.requires_grad_(True)
-    opt = torch.optim.AdamW(master, lr=_PEAK_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD)
+    opt = torch.optim.AdamW(
+        master, lr=_PEAK_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD
+    )
     params = list(model.parameters())
     rows = []
     for step, (obs, act, noise, time) in enumerate(batches):
@@ -167,7 +174,10 @@ def _rlinf_replay(tmp, device="cuda"):
                 "lr": lr,
             }
         )
-        print(f"RLINF step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f}", flush=True)
+        print(
+            f"RLINF step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f}",
+            flush=True,
+        )
     return rows
 
 
@@ -184,7 +194,10 @@ def main():
         os.remove(dump_path)
     print("Running the reference N-step replay (reference venv) ...", flush=True)
     proc = subprocess.run(
-        [_REF_VENV_PY, _REF_DUMP, args.tmp], capture_output=True, text=True, timeout=3600
+        [_REF_VENV_PY, _REF_DUMP, args.tmp],
+        capture_output=True,
+        text=True,
+        timeout=3600,
     )
     print(proc.stdout[-1500:], proc.stderr[-700:], flush=True)
     assert proc.returncode == 0, f"reference subprocess returned {proc.returncode}"
@@ -279,7 +292,16 @@ def main():
     with open(args.out, "w", newline="\n") as f:
         json.dump(result, f, indent=2)
         f.write("\n")
-    print(json.dumps({"mean_abs_loss_diff": mean_loss_diff, "max_abs_loss_diff": max_loss_diff, "rows": rows}, indent=2))
+    print(
+        json.dumps(
+            {
+                "mean_abs_loss_diff": mean_loss_diff,
+                "max_abs_loss_diff": max_loss_diff,
+                "rows": rows,
+            },
+            indent=2,
+        )
+    )
     print(f"wrote {args.out}")
 
 

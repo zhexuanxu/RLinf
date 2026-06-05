@@ -126,7 +126,9 @@ def _ref_step_chunks(flat, step, device):
     for c in range(_CHUNKS):
         lo, hi = c * _MICRO, (c + 1) * _MICRO
         imgs = {k: torch.from_numpy(flat[f"image__{k}"][step][lo:hi]) for k in _IMG}
-        masks = {k: torch.from_numpy(flat[f"image_mask__{k}"][step][lo:hi]) for k in _IMG}
+        masks = {
+            k: torch.from_numpy(flat[f"image_mask__{k}"][step][lo:hi]) for k in _IMG
+        }
         obs = _obs_from_arrays(
             imgs,
             masks,
@@ -174,7 +176,12 @@ def _replay(model, base_cpu, step_chunks_fn, noise, time, device):
         for p, b in zip(model.parameters(), base_cpu):
             p.data.copy_(b.to(device))
     opt = torch.optim.AdamW(
-        model.parameters(), lr=_PEAK_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD, foreach=False
+        model.parameters(),
+        lr=_PEAK_LR,
+        betas=_BETAS,
+        eps=_EPS,
+        weight_decay=_WD,
+        foreach=False,
     )
     rows = []
     for step in range(_N_STEPS):
@@ -189,13 +196,26 @@ def _replay(model, base_cpu, step_chunks_fn, noise, time, device):
             nz = torch.from_numpy(noise[step][lo:hi]).to(device)
             tm = torch.from_numpy(time[step][lo:hi]).to(device)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss = model(obs, act, train=True, rng=None, noise=nz, time=tm).float().mean()
+                loss = (
+                    model(obs, act, train=True, rng=None, noise=nz, time=tm)
+                    .float()
+                    .mean()
+                )
             (loss * (_MICRO / _GLOBAL)).backward()  # accumulate -> 256-sample mean grad
             step_loss += float(loss) * (_MICRO / _GLOBAL)
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=_CLIP)
         opt.step()
-        rows.append({"step": step, "loss": round(step_loss, 6), "grad_norm": round(float(gn), 5), "lr": lr})
-        print(f"  step {step}: loss={step_loss:.5f} grad_norm={float(gn):.4f}", flush=True)
+        rows.append(
+            {
+                "step": step,
+                "loss": round(step_loss, 6),
+                "grad_norm": round(float(gn), 5),
+                "lr": lr,
+            }
+        )
+        print(
+            f"  step {step}: loss={step_loss:.5f} grad_norm={float(gn):.4f}", flush=True
+        )
     return rows
 
 
@@ -217,20 +237,34 @@ def _track(rows, curve, k=10):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tmp", default="/mnt/public/xzxuan/tmp")
-    ap.add_argument("--out", default="/mnt/public/xzxuan/tmp/r31_loader_sequence_prod.json")
-    ap.add_argument("--redump", action="store_true", help="force re-dump the reference sequence")
+    ap.add_argument(
+        "--out", default="/mnt/public/xzxuan/tmp/r31_loader_sequence_prod.json"
+    )
+    ap.add_argument(
+        "--redump", action="store_true", help="force re-dump the reference sequence"
+    )
     args = ap.parse_args()
 
     ref_path = f"{args.tmp}/ref_seq_batches.npz"
     ref_rc = "reused"
     # Reuse an existing complete dump (>1 GB) to skip the ~13-min single-worker re-dump;
     # otherwise (re)dump, removing any small/partial stale file first.
-    if os.path.exists(ref_path) and os.path.getsize(ref_path) > 1 << 30 and not args.redump:
-        print(f"Reusing existing reference sequence dump ({os.path.getsize(ref_path)} bytes) ...", flush=True)
+    if (
+        os.path.exists(ref_path)
+        and os.path.getsize(ref_path) > 1 << 30
+        and not args.redump
+    ):
+        print(
+            f"Reusing existing reference sequence dump ({os.path.getsize(ref_path)} bytes) ...",
+            flush=True,
+        )
     else:
         if os.path.exists(ref_path):
             os.remove(ref_path)  # stale-output guard
-        print("Dumping the reference loader GLOBAL-256 sequence (reference venv) ...", flush=True)
+        print(
+            "Dumping the reference loader GLOBAL-256 sequence (reference venv) ...",
+            flush=True,
+        )
         proc = subprocess.run(
             [_REF_VENV_PY, _REF_DUMP, args.tmp, str(_N_STEPS), str(_GLOBAL)],
             capture_output=True,
@@ -245,7 +279,9 @@ def main():
     # Shared fixed noise/time so the ONLY variable across the two replays is the loader.
     rs = np.random.RandomState(_SEED)
     noise = rs.randn(_N_STEPS, _GLOBAL, 32, 32).astype(np.float32)
-    time = rs.beta(1.5, 1.0, size=(_N_STEPS, _GLOBAL)).astype(np.float32) * 0.999 + 0.001
+    time = (
+        rs.beta(1.5, 1.0, size=(_N_STEPS, _GLOBAL)).astype(np.float32) * 0.999 + 0.001
+    )
 
     device = "cuda"
     model = _rlinf_model(device)
@@ -257,14 +293,24 @@ def main():
     with np.load(ref_path) as _npz:
         ref_flat = {k: _npz[k] for k in _npz.files}
     print("Replaying the REFERENCE loader GLOBAL-256 sequence ...", flush=True)
-    ref_rows = _replay(model, base_cpu, lambda s: _ref_step_chunks(ref_flat, s, device), noise, time, device)
+    ref_rows = _replay(
+        model,
+        base_cpu,
+        lambda s: _ref_step_chunks(ref_flat, s, device),
+        noise,
+        time,
+        device,
+    )
 
     import gc
 
     gc.collect()
     torch.cuda.empty_cache()
 
-    print("Replaying the RLINF loader GLOBAL-256 sequence (live production loader) ...", flush=True)
+    print(
+        "Replaying the RLINF loader GLOBAL-256 sequence (live production loader) ...",
+        flush=True,
+    )
     from rlinf.data.datasets.behavior import create_behavior_sft_data_loader
 
     rlinf_loader = create_behavior_sft_data_loader(
@@ -283,7 +329,12 @@ def main():
     )
     rlinf_iter = iter(rlinf_loader)
     rlinf_rows = _replay(
-        model, base_cpu, lambda s: _rlinf_step_chunks(rlinf_iter, device), noise, time, device
+        model,
+        base_cpu,
+        lambda s: _rlinf_step_chunks(rlinf_iter, device),
+        noise,
+        time,
+        device,
     )
 
     r24 = _curve(_R24_CSV, "loss")
@@ -367,7 +418,12 @@ def main():
     with open(args.out, "w", newline="\n") as f:
         json.dump(result, f, indent=2)
         f.write("\n")
-    print(json.dumps({"ref_vs_r24": ref_vs_r24, "rlinf_vs_r22": rlinf_vs_r22, "proven": proven}, indent=2))
+    print(
+        json.dumps(
+            {"ref_vs_r24": ref_vs_r24, "rlinf_vs_r22": rlinf_vs_r22, "proven": proven},
+            indent=2,
+        )
+    )
     print(f"wrote {args.out}")
 
 

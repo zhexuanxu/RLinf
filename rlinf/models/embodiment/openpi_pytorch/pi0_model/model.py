@@ -56,7 +56,9 @@ def resize_with_pad_torch(
     resized_h = int(cur_h / ratio)
     resized_w = int(cur_w / ratio)
 
-    resized = tF.interpolate(images, size=(resized_h, resized_w), mode=mode, align_corners=False)
+    resized = tF.interpolate(
+        images, size=(resized_h, resized_w), mode=mode, align_corners=False
+    )
 
     if images.dtype == torch.uint8:
         resized = torch.round(resized).clamp(0, 255).to(torch.uint8)
@@ -69,7 +71,9 @@ def resize_with_pad_torch(
     pad_w1 = pad_w0 + rem_w
 
     fill_val = 0 if images.dtype == torch.uint8 else -1.0
-    padded = tF.pad(resized, (pad_w0, pad_w1, pad_h0, pad_h1), mode="constant", value=fill_val)
+    padded = tF.pad(
+        resized, (pad_w0, pad_w1, pad_h0, pad_h1), mode="constant", value=fill_val
+    )
 
     # (B, C, H, W) -> (B, H, W, C)
     padded = padded.permute(0, 2, 3, 1)
@@ -96,7 +100,9 @@ class Observation:
     def from_dict(cls, data: dict[str, Any]) -> Observation:
         """Convert a nested dict to an Observation."""
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
-            raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
+            raise ValueError(
+                "tokenized_prompt and tokenized_prompt_mask must be provided together."
+            )
 
         images = data["image"]
         image_masks = data["image_mask"]
@@ -106,7 +112,9 @@ class Observation:
             if images[key].dtype == torch.uint8:
                 images[key] = images[key].to(torch.float32) / 255.0 * 2.0 - 1.0
             elif images[key].dtype == np.uint8:
-                images[key] = torch.from_numpy(images[key].astype(np.float32)) / 255.0 * 2.0 - 1.0
+                images[key] = (
+                    torch.from_numpy(images[key].astype(np.float32)) / 255.0 * 2.0 - 1.0
+                )
 
         return cls(
             images=images,
@@ -172,7 +180,9 @@ def preprocess_observation(
     Resizes images to the target resolution with padding.
     """
     if not set(image_keys).issubset(observation.images):
-        raise ValueError(f"images dict missing keys: expected {image_keys}, got {list(observation.images)}")
+        raise ValueError(
+            f"images dict missing keys: expected {image_keys}, got {list(observation.images)}"
+        )
 
     batch_shape = observation.state.shape[:-1]
 
@@ -206,13 +216,25 @@ def preprocess_observation(
 
                     h, w = aug_image.shape[1], aug_image.shape[2]
                     crop_h, crop_w = int(h * 0.95), int(w * 0.95)
-                    top = torch.randint(0, h - crop_h + 1, (1,), generator=rng).item() if rng is not None else 0
-                    left = torch.randint(0, w - crop_w + 1, (1,), generator=rng).item() if rng is not None else 0
+                    top = (
+                        torch.randint(0, h - crop_h + 1, (1,), generator=rng).item()
+                        if rng is not None
+                        else 0
+                    )
+                    left = (
+                        torch.randint(0, w - crop_w + 1, (1,), generator=rng).item()
+                        if rng is not None
+                        else 0
+                    )
                     aug_image = TF.crop(aug_image, top, left, crop_h, crop_w)
                     aug_image = TF.resize(aug_image, [h, w], antialias=True)
 
                     # Random rotation (-5 to 5 degrees)
-                    angle = (torch.rand(1, generator=rng).item() * 10 - 5) if rng is not None else 0.0
+                    angle = (
+                        (torch.rand(1, generator=rng).item() * 10 - 5)
+                        if rng is not None
+                        else 0.0
+                    )
                     aug_image = TF.rotate(aug_image, angle, fill=0)
 
                 # Color jitter
@@ -275,11 +297,19 @@ class BaseModelConfig(abc.ABC):
     def fake_obs(self, batch_size: int = 1) -> Observation:
         """Create fake observations for testing."""
         return Observation(
-            images={k: torch.ones(batch_size, *IMAGE_RESOLUTION, 3) for k in IMAGE_KEYS},
-            image_masks={k: torch.ones(batch_size, dtype=torch.bool) for k in IMAGE_KEYS},
+            images={
+                k: torch.ones(batch_size, *IMAGE_RESOLUTION, 3) for k in IMAGE_KEYS
+            },
+            image_masks={
+                k: torch.ones(batch_size, dtype=torch.bool) for k in IMAGE_KEYS
+            },
             state=torch.ones(batch_size, self.action_dim),
-            tokenized_prompt=torch.ones(batch_size, self.max_token_len, dtype=torch.long),
-            tokenized_prompt_mask=torch.ones(batch_size, self.max_token_len, dtype=torch.bool),
+            tokenized_prompt=torch.ones(
+                batch_size, self.max_token_len, dtype=torch.long
+            ),
+            tokenized_prompt_mask=torch.ones(
+                batch_size, self.max_token_len, dtype=torch.bool
+            ),
         )
 
     def fake_act(self, batch_size: int = 1) -> torch.Tensor:

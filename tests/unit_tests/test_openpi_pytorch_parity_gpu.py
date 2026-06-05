@@ -55,7 +55,9 @@ _BF16_TOL = 8e-2
 
 def _raw_observation():
     np.random.seed(0)
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+        PaligemmaTokenizer,
+    )
 
     images = {
         k: np.random.randint(0, 256, (1, 224, 224, 3), dtype=np.uint8)

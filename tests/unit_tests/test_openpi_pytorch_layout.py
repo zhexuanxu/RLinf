@@ -62,9 +62,7 @@ _SCANNED_SUFFIXES = (".py", ".yaml", ".yml")
 def test_required_utility_modules_importable():
     """The AC-1 directional converter + export + image-tool modules all import."""
     for mod in _REQUIRED_UTILS_MODULES:
-        importlib.import_module(
-            f"rlinf.models.embodiment.openpi_pytorch.utils.{mod}"
-        )
+        importlib.import_module(f"rlinf.models.embodiment.openpi_pytorch.utils.{mod}")
 
 
 def test_top_level_is_only_action_model():

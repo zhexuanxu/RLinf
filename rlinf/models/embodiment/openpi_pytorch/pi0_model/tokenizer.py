@@ -52,7 +52,11 @@ class PaligemmaTokenizer:
 
     def __init__(self, max_len: int = 48, model_path: pathlib.Path | str | None = None):
         self._max_len = max_len
-        path = pathlib.Path(model_path) if model_path is not None else _DEFAULT_TOKENIZER_PATH
+        path = (
+            pathlib.Path(model_path)
+            if model_path is not None
+            else _DEFAULT_TOKENIZER_PATH
+        )
         if not path.exists():
             raise FileNotFoundError(f"PaliGemma tokenizer model not found at: {path}")
         with path.open("rb") as f:
@@ -65,15 +69,17 @@ class PaligemmaTokenizer:
         cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
         if state is not None:
             # Pi05 format: the state is part of the discrete language input.
-            discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            discretized_state = (
+                np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            )
             state_str = " ".join(map(str, discretized_state))
             full_prompt = f"Task: {cleaned_text}, State: {state_str};\nAction: "
             tokens = self._tokenizer.encode(full_prompt, add_bos=True)
         else:
             # Pi0 format: state goes to the continuous action expert input.
-            tokens = self._tokenizer.encode(cleaned_text, add_bos=True) + self._tokenizer.encode(
-                "\n"
-            )
+            tokens = self._tokenizer.encode(
+                cleaned_text, add_bos=True
+            ) + self._tokenizer.encode("\n")
         tokens_len = len(tokens)
         if tokens_len < self._max_len:
             padding = [False] * (self._max_len - tokens_len)

@@ -43,13 +43,13 @@ def test_sft_checkpoint_exports_to_eval_format(tmp_path):
     from omegaconf import OmegaConf
 
     from rlinf.models.embodiment.openpi_pytorch import get_model
-    from rlinf.models.embodiment.openpi_pytorch.utils.export_sft_checkpoint import (
-        export_sft_checkpoint_for_eval,
-    )
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+    from rlinf.models.embodiment.openpi_pytorch.utils.export_sft_checkpoint import (
+        export_sft_checkpoint_for_eval,
+    )
 
     cfg = Pi0Config(
         dtype="bfloat16",
@@ -113,13 +113,13 @@ def test_sft_checkpoint_dir_exports_from_real_layout(tmp_path):
     from omegaconf import OmegaConf
 
     from rlinf.models.embodiment.openpi_pytorch import get_model
-    from rlinf.models.embodiment.openpi_pytorch.utils.export_sft_checkpoint import (
-        export_sft_checkpoint_dir_for_eval,
-    )
     from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
         OpenPiPytorchActionModel,
     )
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+    from rlinf.models.embodiment.openpi_pytorch.utils.export_sft_checkpoint import (
+        export_sft_checkpoint_dir_for_eval,
+    )
 
     cfg = Pi0Config(
         dtype="bfloat16",

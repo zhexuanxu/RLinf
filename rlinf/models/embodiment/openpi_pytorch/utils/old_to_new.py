@@ -136,7 +136,10 @@ def old_to_new_state_dict(old_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
         if dk in old_sd:
             new_sd[f"{np}mlps.0.w_linear"] = old_sd[dk].T.contiguous()
 
-        for old_n, new_n in [("input_layernorm", "pre_attention_norms"), ("post_attention_layernorm", "pre_ffw_norms")]:
+        for old_n, new_n in [
+            ("input_layernorm", "pre_attention_norms"),
+            ("post_attention_layernorm", "pre_ffw_norms"),
+        ]:
             ok = f"{op}{old_n}.weight"
             if ok in old_sd:
                 new_sd[f"{np}{new_n}.0.scale"] = old_sd[ok]
@@ -167,7 +170,10 @@ def old_to_new_state_dict(old_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
         if dk in old_sd:
             new_sd[f"{np}mlps.1.w_linear"] = old_sd[dk].T.contiguous()
 
-        for old_n, new_n in [("input_layernorm", "pre_attention_norms"), ("post_attention_layernorm", "pre_ffw_norms")]:
+        for old_n, new_n in [
+            ("input_layernorm", "pre_attention_norms"),
+            ("post_attention_layernorm", "pre_ffw_norms"),
+        ]:
             for suf in (".weight", ".bias"):
                 ok = f"{op}{old_n}.dense{suf}"
                 if ok in old_sd:
@@ -194,7 +200,14 @@ def old_to_new_state_dict(old_sd: dict[str, torch.Tensor]) -> dict[str, torch.Te
     # --- Action head (same names in both formats) ---
     for k in old_sd:
         if k.startswith(
-            ("action_in_proj", "action_out_proj", "time_mlp_", "state_proj", "action_time_mlp_", "pointnet.")
+            (
+                "action_in_proj",
+                "action_out_proj",
+                "time_mlp_",
+                "state_proj",
+                "action_time_mlp_",
+                "pointnet.",
+            )
         ):
             new_sd[k] = old_sd[k]
 
@@ -257,7 +270,9 @@ def convert_old_to_new(
     out_path = output_model / "model.safetensors"
     safetensors.torch.save_file(new_sd, str(out_path))
 
-    config_src = (input_model if input_model.is_dir() else input_model.parent) / "config.json"
+    config_src = (
+        input_model if input_model.is_dir() else input_model.parent
+    ) / "config.json"
     if config_src.exists():
         shutil.copy2(config_src, output_model / "config.json")
 
@@ -267,13 +282,24 @@ def convert_old_to_new(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-model", required=True, help="old checkpoint dir or model.safetensors")
-    parser.add_argument("--input-norm-stats", required=True, help="norm_stats.json to copy across")
-    parser.add_argument("--output-model", required=True, help="output (new-format) checkpoint dir")
-    parser.add_argument("--output-norm-stats", required=True, help="destination norm_stats.json path")
+    parser.add_argument(
+        "--input-model", required=True, help="old checkpoint dir or model.safetensors"
+    )
+    parser.add_argument(
+        "--input-norm-stats", required=True, help="norm_stats.json to copy across"
+    )
+    parser.add_argument(
+        "--output-model", required=True, help="output (new-format) checkpoint dir"
+    )
+    parser.add_argument(
+        "--output-norm-stats", required=True, help="destination norm_stats.json path"
+    )
     args = parser.parse_args()
     convert_old_to_new(
-        args.input_model, args.input_norm_stats, args.output_model, args.output_norm_stats
+        args.input_model,
+        args.input_norm_stats,
+        args.output_model,
+        args.output_norm_stats,
     )
     return 0
 

@@ -75,11 +75,17 @@ def main(out_dir, n_steps, world_size):
         cfg = _config.get_config(_CONFIG)
         global_batch = cfg.batch_size
         per_rank = global_batch // world_size  # the production effective_batch_size
-        base = dataclasses.replace(cfg.data.base_config, behavior_dataset_root=_DATA_ROOT)
-        assets = _config.AssetsConfig(assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos")
+        base = dataclasses.replace(
+            cfg.data.base_config, behavior_dataset_root=_DATA_ROOT
+        )
+        assets = _config.AssetsConfig(
+            assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos"
+        )
         data = dataclasses.replace(cfg.data, base_config=base, assets=assets)
         # Single-process mirror of rank 0: the loader yields per-rank (32-frame) micro-batches.
-        run_cfg = dataclasses.replace(cfg, data=data, batch_size=per_rank, num_workers=_NUM_WORKERS)
+        run_cfg = dataclasses.replace(
+            cfg, data=data, batch_size=per_rank, num_workers=_NUM_WORKERS
+        )
         it = iter(_data_loader.create_behavior_data_loader_torch(run_cfg, shuffle=True))
 
         per_step_unique, per_step_rank_hashes = [], []
@@ -120,7 +126,16 @@ def main(out_dir, n_steps, world_size):
         result["err"] = f"{type(e).__name__}: {str(e)[:300]}"
         result["tb"] = traceback.format_exc()[-1000:]
 
-    print("REF_FANOUT " + json.dumps({k: result[k] for k in ("ok", "err", "unique_frames_per_global_step", "verdict") if k in result}))
+    print(
+        "REF_FANOUT "
+        + json.dumps(
+            {
+                k: result[k]
+                for k in ("ok", "err", "unique_frames_per_global_step", "verdict")
+                if k in result
+            }
+        )
+    )
     if "tb" in result and not result["ok"]:
         print(result["tb"])
 

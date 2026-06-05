@@ -76,15 +76,22 @@ def _slice(flat, noise, time, lo, hi, device):
     obs = Observation.from_dict(
         {
             "image": {
-                k: torch.from_numpy(flat[f"image__{k}"][lo:hi]).to(device, torch.float32)
+                k: torch.from_numpy(flat[f"image__{k}"][lo:hi]).to(
+                    device, torch.float32
+                )
                 for k in _IMG
             },
             "image_mask": {
-                k: torch.from_numpy(flat[f"image_mask__{k}"][lo:hi]).to(device) for k in _IMG
+                k: torch.from_numpy(flat[f"image_mask__{k}"][lo:hi]).to(device)
+                for k in _IMG
             },
             "state": torch.from_numpy(flat["state"][lo:hi]).to(device, torch.float32),
-            "tokenized_prompt": torch.from_numpy(flat["tokenized_prompt"][lo:hi]).to(device).long(),
-            "tokenized_prompt_mask": torch.from_numpy(flat["tokenized_prompt_mask"][lo:hi])
+            "tokenized_prompt": torch.from_numpy(flat["tokenized_prompt"][lo:hi])
+            .to(device)
+            .long(),
+            "tokenized_prompt_mask": torch.from_numpy(
+                flat["tokenized_prompt_mask"][lo:hi]
+            )
             .to(device)
             .bool(),
         }
@@ -142,7 +149,9 @@ def main(tmp):
     model.train()
     obs, act, nz, tm = _slice(flat, noise, time, lo, hi, device)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD)
+    opt = torch.optim.AdamW(
+        model.parameters(), lr=_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD
+    )
     model.zero_grad(set_to_none=True)
     # Call forward (model(...)), NOT compute_loss directly: under FSDP the param
     # all-gather runs in the forward hook, so a direct method call would see sharded params.
@@ -152,7 +161,9 @@ def main(tmp):
     if world > 1:
         import torch.distributed as dist
 
-        gn = model.clip_grad_norm_(max_norm=_CLIP)  # FSDP1 global L2 norm (all-reduced) + clip
+        gn = model.clip_grad_norm_(
+            max_norm=_CLIP
+        )  # FSDP1 global L2 norm (all-reduced) + clip
         loss_g = loss.detach().clone()
         dist.all_reduce(loss_g, op=dist.ReduceOp.AVG)
         loss_val = float(loss_g)

@@ -119,7 +119,9 @@ class BehaviorInputs(DataTransformFn):
             "image_mask": {
                 "base_0_rgb": np.True_,
                 "left_wrist_0_rgb": np.True_,
-                "right_wrist_0_rgb": np.True_ if self.use_all_wrist_images else np.False_,
+                "right_wrist_0_rgb": np.True_
+                if self.use_all_wrist_images
+                else np.False_,
             },
         }
 

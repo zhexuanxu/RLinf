@@ -1129,10 +1129,7 @@ def _validate_openpi_pytorch_eval_cfg(cfg: DictConfig, task_type: str) -> None:
         assert (
             env_type is not None
             and SupportedEnvType(env_type) == SupportedEnvType.BEHAVIOR
-        ), (
-            "openpi_pytorch supports only BEHAVIOR eval; "
-            f"{env_path}={env_type!r}."
-        )
+        ), f"openpi_pytorch supports only BEHAVIOR eval; {env_path}={env_type!r}."
 
 
 def validate_sft_cfg(cfg: DictConfig) -> DictConfig:

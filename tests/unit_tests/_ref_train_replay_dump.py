@@ -86,7 +86,9 @@ def run_replay(model, compute_loss, batches, noises, times, device):
     master = [p.detach().clone().float() for p in model.parameters()]
     for m in master:
         m.requires_grad_(True)
-    opt = torch.optim.AdamW(master, lr=_PEAK_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD)
+    opt = torch.optim.AdamW(
+        master, lr=_PEAK_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD
+    )
     params = list(model.parameters())
     rows = []
     for step in range(len(batches)):
@@ -99,7 +101,9 @@ def run_replay(model, compute_loss, batches, noises, times, device):
         model.zero_grad(set_to_none=True)
         for m in master:
             m.grad = None
-        loss = compute_loss(model, batches[step], noises[step], times[step]).float().mean()
+        loss = (
+            compute_loss(model, batches[step], noises[step], times[step]).float().mean()
+        )
         loss.backward()
         for p, m in zip(params, master):  # bf16 grad -> fp32 master grad
             m.grad = p.grad.detach().float() if p.grad is not None else None
@@ -115,7 +119,10 @@ def run_replay(model, compute_loss, batches, noises, times, device):
                 "lr": lr,
             }
         )
-        print(f"REF step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f} lr={lr:.3e}", flush=True)
+        print(
+            f"REF step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f} lr={lr:.3e}",
+            flush=True,
+        )
     return rows
 
 
@@ -132,12 +139,16 @@ def main(out_dir):
 
         device = "cuda"
         cfg = _config.get_config(_CONFIG)
-        base = dataclasses.replace(cfg.data.base_config, behavior_dataset_root=_DATA_ROOT)
+        base = dataclasses.replace(
+            cfg.data.base_config, behavior_dataset_root=_DATA_ROOT
+        )
         assets = _config.AssetsConfig(
             assets_dir=_ASSETS_DIR, asset_id="behavior-1k/2025-challenge-demos"
         )
         data = dataclasses.replace(cfg.data, base_config=base, assets=assets)
-        run_cfg = dataclasses.replace(cfg, data=data, batch_size=_BATCH_SIZE, num_workers=0)
+        run_cfg = dataclasses.replace(
+            cfg, data=data, batch_size=_BATCH_SIZE, num_workers=0
+        )
         it = iter(_data_loader.create_behavior_data_loader_torch(run_cfg, shuffle=True))
 
         model = pi0_new.Pi0(pi0_config_new.Pi0Config(**cfg.model.__dict__)).to(device)
@@ -161,7 +172,9 @@ def main(out_dir):
                 if m is not None:
                     store.setdefault(f"image_mask__{k}", []).append(_np(m[k]))
             store.setdefault("state", []).append(_np(observation.state))
-            store.setdefault("tokenized_prompt", []).append(_np(observation.tokenized_prompt))
+            store.setdefault("tokenized_prompt", []).append(
+                _np(observation.tokenized_prompt)
+            )
             tpm = getattr(observation, "tokenized_prompt_mask", None)
             if tpm is not None:
                 store.setdefault("tokenized_prompt_mask", []).append(_np(tpm))
@@ -187,7 +200,9 @@ def main(out_dir):
 
         def _compute_loss(m, batch, noise, time):
             obs, act = batch
-            return m.compute_loss(obs, act, train=True, rng=None, noise=noise, time=time)
+            return m.compute_loss(
+                obs, act, train=True, rng=None, noise=noise, time=time
+            )
 
         rows = run_replay(model, _compute_loss, batches, noise_t, time_t, device)
 
@@ -227,7 +242,10 @@ def main(out_dir):
         result["err"] = f"{type(e).__name__}: {str(e)[:300]}"
         result["tb"] = traceback.format_exc()[-1200:]
 
-    print("REF_TRAIN_REPLAY " + json.dumps({k: result[k] for k in ("ok", "err") if k in result}))
+    print(
+        "REF_TRAIN_REPLAY "
+        + json.dumps({k: result[k] for k in ("ok", "err") if k in result})
+    )
     if "tb" in result and not result["ok"]:
         print(result["tb"])
 

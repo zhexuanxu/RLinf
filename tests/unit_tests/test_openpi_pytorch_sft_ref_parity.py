@@ -82,7 +82,9 @@ def ref_dump(tmp_path_factory):
         if ln.startswith("REF_DUMP_RESULT ")
     ]
     if not lines:
-        pytest.skip(f"reference dump produced no result; stderr tail: {proc.stderr[-300:]}")
+        pytest.skip(
+            f"reference dump produced no result; stderr tail: {proc.stderr[-300:]}"
+        )
     result = json.loads(lines[-1].split("REF_DUMP_RESULT ", 1)[1])
     return out, result
 

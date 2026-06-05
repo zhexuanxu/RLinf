@@ -115,5 +115,9 @@ def test_sft_transform_matches_eval_processor():
 
     # Actions: normalize THEN pad to 32 (head normalized, tail exactly zero).
     expected = normalize_quantile(raw_action, norm_stats["actions"]).astype(np.float32)
-    np.testing.assert_allclose(item["actions"][..., :23], expected, rtol=1e-5, atol=1e-5)
-    np.testing.assert_array_equal(item["actions"][..., 23:], np.zeros((32, 9), np.float32))
+    np.testing.assert_allclose(
+        item["actions"][..., :23], expected, rtol=1e-5, atol=1e-5
+    )
+    np.testing.assert_array_equal(
+        item["actions"][..., 23:], np.zeros((32, 9), np.float32)
+    )

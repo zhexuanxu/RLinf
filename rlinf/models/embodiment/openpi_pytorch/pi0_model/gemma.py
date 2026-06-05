@@ -79,7 +79,10 @@ def get_config(variant: Variant) -> Config:
             num_heads=8,
             num_kv_heads=1,
             head_dim=256,
-            lora_configs={"attn": lora.LoRAConfig(rank=16, alpha=16.0), "ffn": lora.LoRAConfig(rank=16, alpha=16.0)},
+            lora_configs={
+                "attn": lora.LoRAConfig(rank=16, alpha=16.0),
+                "ffn": lora.LoRAConfig(rank=16, alpha=16.0),
+            },
         )
     if variant == "gemma_2b_lora_32":
         return Config(
@@ -89,7 +92,10 @@ def get_config(variant: Variant) -> Config:
             num_heads=8,
             num_kv_heads=1,
             head_dim=256,
-            lora_configs={"attn": lora.LoRAConfig(rank=32, alpha=32.0), "ffn": lora.LoRAConfig(rank=32, alpha=32.0)},
+            lora_configs={
+                "attn": lora.LoRAConfig(rank=32, alpha=32.0),
+                "ffn": lora.LoRAConfig(rank=32, alpha=32.0),
+            },
         )
     if variant == "gemma_300m_lora":
         # 311M params
@@ -100,7 +106,10 @@ def get_config(variant: Variant) -> Config:
             num_heads=8,
             num_kv_heads=1,
             head_dim=256,
-            lora_configs={"attn": lora.LoRAConfig(rank=32, alpha=32.0), "ffn": lora.LoRAConfig(rank=32, alpha=32.0)},
+            lora_configs={
+                "attn": lora.LoRAConfig(rank=32, alpha=32.0),
+                "ffn": lora.LoRAConfig(rank=32, alpha=32.0),
+            },
         )
     raise ValueError(f"Unknown variant: {variant}")
 
@@ -119,7 +128,9 @@ class RMSNorm(nn.Module):
             nn.init.zeros_(self.ada_modulation.weight)
             nn.init.zeros_(self.ada_modulation.bias)
 
-    def forward(self, x: torch.Tensor, cond: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(
+        self, x: torch.Tensor, cond: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Forward pass.
 
         Args:
@@ -170,6 +181,7 @@ class Embedder(nn.Module):
     def decode(self, x: torch.Tensor) -> torch.Tensor:
         return F.linear(x, self.embedding.weight)
 
+
 # TODO: try use sdpa_attn
 class Attention(nn.Module):
     """Multi-expert Grouped Query Attention with RoPE and LoRA."""
@@ -195,15 +207,33 @@ class Attention(nn.Module):
                 raise NotImplementedError
             if config.num_kv_heads == config.num_heads:
                 # Combined QKV projection
-                self.q_proj.append(nn.Linear(config.width, 3 * config.num_heads * config.head_dim, bias=False))
+                self.q_proj.append(
+                    nn.Linear(
+                        config.width, 3 * config.num_heads * config.head_dim, bias=False
+                    )
+                )
                 self.k_proj.append(None)  # handled by q_proj
                 self.v_proj.append(None)
             else:
-                self.q_proj.append(nn.Linear(config.width, config.num_heads * config.head_dim, bias=False))
-                self.k_proj.append(nn.Linear(config.width, config.num_kv_heads * config.head_dim, bias=False))
-                self.v_proj.append(nn.Linear(config.width, config.num_kv_heads * config.head_dim, bias=False))
+                self.q_proj.append(
+                    nn.Linear(
+                        config.width, config.num_heads * config.head_dim, bias=False
+                    )
+                )
+                self.k_proj.append(
+                    nn.Linear(
+                        config.width, config.num_kv_heads * config.head_dim, bias=False
+                    )
+                )
+                self.v_proj.append(
+                    nn.Linear(
+                        config.width, config.num_kv_heads * config.head_dim, bias=False
+                    )
+                )
 
-            self.o_proj.append(nn.Linear(config.num_heads * config.head_dim, config.width, bias=False))
+            self.o_proj.append(
+                nn.Linear(config.num_heads * config.head_dim, config.width, bias=False)
+            )
 
         # Initialize weights
         self._init_weights()
@@ -213,10 +243,17 @@ class Attention(nn.Module):
             # Q projection
             nn.init.normal_(self.q_proj[i].weight, std=1.0 / math.sqrt(config.width))
             if self.k_proj[i] is not None:
-                nn.init.normal_(self.k_proj[i].weight, std=1.0 / math.sqrt(config.width))
-                nn.init.normal_(self.v_proj[i].weight, std=1.0 / math.sqrt(config.width))
+                nn.init.normal_(
+                    self.k_proj[i].weight, std=1.0 / math.sqrt(config.width)
+                )
+                nn.init.normal_(
+                    self.v_proj[i].weight, std=1.0 / math.sqrt(config.width)
+                )
             # O projection
-            nn.init.normal_(self.o_proj[i].weight, std=1.0 / math.sqrt(config.num_heads * config.head_dim))
+            nn.init.normal_(
+                self.o_proj[i].weight,
+                std=1.0 / math.sqrt(config.num_heads * config.head_dim),
+            )
 
     def forward(
         self,
@@ -313,7 +350,9 @@ class Attention(nn.Module):
 
         # einsum "BKGTS,BSKH->BTKGH"
         encoded = torch.einsum("BKGTS,BSKH->BTKGH", probs, v_r.to(dtype))
-        encoded = encoded.reshape(encoded.shape[0], encoded.shape[1], K * G, self.head_dim)
+        encoded = encoded.reshape(
+            encoded.shape[0], encoded.shape[1], K * G, self.head_dim
+        )
         # encoded: (B, T_total, num_heads, head_dim)
 
         # Split back to per-expert outputs
@@ -362,7 +401,12 @@ class FeedForward(nn.Module):
 class Block(nn.Module):
     """Transformer block with multi-expert attention and FFN."""
 
-    def __init__(self, configs: Sequence[Config], adarms: Sequence[bool] | bool = False, dropout: float = 0.0):
+    def __init__(
+        self,
+        configs: Sequence[Config],
+        adarms: Sequence[bool] | bool = False,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.configs = configs
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -372,15 +416,21 @@ class Block(nn.Module):
         self.adarms = list(adarms)
 
         self.attn = Attention(configs)
-        self.pre_attention_norms = nn.ModuleList([RMSNorm(c.width, adaptive=adarms[i]) for i, c in enumerate(configs)])
-        self.pre_ffw_norms = nn.ModuleList([RMSNorm(c.width, adaptive=adarms[i]) for i, c in enumerate(configs)])
+        self.pre_attention_norms = nn.ModuleList(
+            [RMSNorm(c.width, adaptive=adarms[i]) for i, c in enumerate(configs)]
+        )
+        self.pre_ffw_norms = nn.ModuleList(
+            [RMSNorm(c.width, adaptive=adarms[i]) for i, c in enumerate(configs)]
+        )
 
         # FFN: use LoRA version if lora config is present, else standard
         self.mlps = nn.ModuleList()
         for config in configs:
             lora_cfg = config.lora_configs.get("ffn")
             if lora_cfg is not None:
-                self.mlps.append(LoRAFeedForward(config.width, config.mlp_dim, lora_cfg))
+                self.mlps.append(
+                    LoRAFeedForward(config.width, config.mlp_dim, lora_cfg)
+                )
             else:
                 self.mlps.append(FeedForward(config.width, config.mlp_dim))
 
@@ -421,7 +471,10 @@ class Block(nn.Module):
         post_attn = [self.dropout(p) if p is not None else None for p in post_attn]
 
         # Gated residual for attention
-        xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, post_attn, gates, strict=True)]
+        xs = [
+            _gated_residual(x, y, gate)
+            for x, y, gate in zip(xs, post_attn, gates, strict=True)
+        ]
 
         # Pre-FFN norm
         out = []
@@ -438,7 +491,10 @@ class Block(nn.Module):
 
         # Dropout and gated residual for FFN
         out = [self.dropout(o) if o is not None else None for o in out]
-        xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, out, gates, strict=True)]
+        xs = [
+            _gated_residual(x, y, gate)
+            for x, y, gate in zip(xs, out, gates, strict=True)
+        ]
 
         return xs, kv_cache
 
@@ -467,10 +523,15 @@ class Module(nn.Module):
         )
 
         self.layers = nn.ModuleList(
-            [Block(configs, adarms=self.adarms, dropout=dropout) for _ in range(configs[0].depth)]
+            [
+                Block(configs, adarms=self.adarms, dropout=dropout)
+                for _ in range(configs[0].depth)
+            ]
         )
 
-        self.final_norms = nn.ModuleList([RMSNorm(c.width, adaptive=self.adarms[i]) for i, c in enumerate(configs)])
+        self.final_norms = nn.ModuleList(
+            [RMSNorm(c.width, adaptive=self.adarms[i]) for i, c in enumerate(configs)]
+        )
 
         self.gradient_checkpointing = use_gradient_checkpointing
 
@@ -517,7 +578,11 @@ class Module(nn.Module):
         if kv_cache is None:
             layer_kv_caches = [None] * len(self.layers)
         else:
-            layer_kv_caches = list(kv_cache) if isinstance(kv_cache, list | tuple) else [kv_cache] * len(self.layers)
+            layer_kv_caches = (
+                list(kv_cache)
+                if isinstance(kv_cache, list | tuple)
+                else [kv_cache] * len(self.layers)
+            )
 
         new_layer_kv_caches = []
         for i, layer in enumerate(self.layers):
@@ -551,10 +616,14 @@ class Module(nn.Module):
         return outputs, kv_cache
 
 
-def _apply_rope(x: torch.Tensor, *, positions: torch.Tensor, max_wavelength: float = 10000.0) -> torch.Tensor:
+def _apply_rope(
+    x: torch.Tensor, *, positions: torch.Tensor, max_wavelength: float = 10000.0
+) -> torch.Tensor:
     """Apply RoPE to input tensor."""
     head_dim = x.shape[-1]
-    freq_exponents = (2.0 / head_dim) * torch.arange(head_dim // 2, dtype=torch.float32, device=x.device)
+    freq_exponents = (2.0 / head_dim) * torch.arange(
+        head_dim // 2, dtype=torch.float32, device=x.device
+    )
     timescale = max_wavelength**freq_exponents
     radians = positions[..., None].float() / timescale[None, None, :]
     radians = radians[..., None, :]  # (B, T, 1, head_dim//2)

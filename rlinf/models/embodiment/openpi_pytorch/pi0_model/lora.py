@@ -22,7 +22,9 @@ class LoRAConfig:
 
     @property
     def scaling_value(self) -> float:
-        return self.alpha / math.sqrt(self.rank) if self.rslora else self.alpha / self.rank
+        return (
+            self.alpha / math.sqrt(self.rank) if self.rslora else self.alpha / self.rank
+        )
 
 
 class Einsum(nn.Module):
@@ -73,12 +75,16 @@ class Einsum(nn.Module):
             nn.init.normal_(w_a, std=0.01)
             self.w_a = nn.Parameter(w_a)
             self.w_b = nn.Parameter(w_b)
-            self._eqn_a, self._eqn_b = self._make_lora_eqns(eqn, axes, lora_config.label)
+            self._eqn_a, self._eqn_b = self._make_lora_eqns(
+                eqn, axes, lora_config.label
+            )
         else:
             self.w_a = None
             self.w_b = None
 
-    def _make_lora_eqns(self, eqn: str, axes: tuple[int, int], label: str) -> tuple[str, str]:
+    def _make_lora_eqns(
+        self, eqn: str, axes: tuple[int, int], label: str
+    ) -> tuple[str, str]:
         """Create einsum equations for LoRA computation."""
         if "L" in eqn:
             raise ValueError(f"L already in eqn: {eqn}")

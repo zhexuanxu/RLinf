@@ -106,7 +106,10 @@ def main():
             os.remove(p)
     print("Dumping the fixed batch (reference venv) ...", flush=True)
     ref_proc = subprocess.run(
-        [_REF_VENV_PY, _REF_DUMP, args.tmp], capture_output=True, text=True, timeout=2400
+        [_REF_VENV_PY, _REF_DUMP, args.tmp],
+        capture_output=True,
+        text=True,
+        timeout=2400,
     )
     print(ref_proc.stdout[-500:], ref_proc.stderr[-500:], flush=True)
     assert ref_proc.returncode == 0, f"reference dump returned {ref_proc.returncode}"
@@ -145,7 +148,9 @@ def main():
             "batch_npz": batch_path,
             "batch_npz_sha256_16": _file_digest(batch_path),
             "noise_time_npz": f"{args.tmp}/ref_grad_noise_time.npz",
-            "noise_time_npz_sha256_16": _file_digest(f"{args.tmp}/ref_grad_noise_time.npz"),
+            "noise_time_npz_sha256_16": _file_digest(
+                f"{args.tmp}/ref_grad_noise_time.npz"
+            ),
             "grad_norm_def": "global L2 norm via clip_grad_norm_ (FSDP1's model.clip_grad_norm_ on "
             "8 ranks -- the call train_pytorch_new.py:535 uses; torch.nn.utils on 1 rank). R27 "
             "confirmed RLinf get_grad_norm_for_mixed_precision computes the same global L2 norm.",
@@ -182,7 +187,11 @@ def main():
     with open(args.out, "w", newline="\n") as f:
         json.dump(result, f, indent=2)
         f.write("\n")
-    print(json.dumps({"w1": w1, "w8": w8, "rel_pct": rel_pct, "matched": matched}, indent=2))
+    print(
+        json.dumps(
+            {"w1": w1, "w8": w8, "rel_pct": rel_pct, "matched": matched}, indent=2
+        )
+    )
     print(f"wrote {args.out}")
 
 

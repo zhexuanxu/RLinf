@@ -35,18 +35,20 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from rlinf.models.embodiment.openpi_pytorch.utils.image_tools import resize_with_pad
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
     NormStats,
     normalize_quantile,
     unnormalize_quantile,
 )
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
+    PaligemmaTokenizer,
+)
 from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
     BehaviorInputs,
     BehaviorOutputs,
 )
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import PaligemmaTokenizer
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
+from rlinf.models.embodiment.openpi_pytorch.utils.image_tools import resize_with_pad
 
 _IMAGE_KEYS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
 

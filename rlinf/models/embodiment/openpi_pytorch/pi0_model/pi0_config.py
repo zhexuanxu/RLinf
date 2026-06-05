@@ -50,8 +50,12 @@ class Pi0Config(model.BaseModelConfig):
                 "right_wrist_0_rgb": image_mask,
             },
             state=torch.ones(batch_size, self.action_dim),
-            tokenized_prompt=torch.ones(batch_size, self.max_token_len, dtype=torch.long),
-            tokenized_prompt_mask=torch.ones(batch_size, self.max_token_len, dtype=torch.bool),
+            tokenized_prompt=torch.ones(
+                batch_size, self.max_token_len, dtype=torch.long
+            ),
+            tokenized_prompt_mask=torch.ones(
+                batch_size, self.max_token_len, dtype=torch.bool
+            ),
             pcd_xyz=torch.ones(batch_size, 16, 2025, 3) if self.pcd else None,
         )
 

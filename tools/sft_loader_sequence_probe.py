@@ -112,7 +112,9 @@ def _dump_rlinf_loader(out_dir, n_steps, batch_size):
             store.setdefault(f"image_mask__{k}", []).append(_np(obs.image_masks[k]))
         store.setdefault("state", []).append(_np(obs.state))
         store.setdefault("tokenized_prompt", []).append(_np(obs.tokenized_prompt))
-        store.setdefault("tokenized_prompt_mask", []).append(_np(obs.tokenized_prompt_mask))
+        store.setdefault("tokenized_prompt_mask", []).append(
+            _np(obs.tokenized_prompt_mask)
+        )
         store.setdefault("actions", []).append(_np(actions))
     path = f"{out_dir}/rlinf_seq_batches.npz"
     np.savez(path, **{k: np.stack(v) for k, v in store.items()})
@@ -129,10 +131,13 @@ def _build_obs(flat, bi, device):
                 for k in _IMG
             },
             "image_mask": {
-                k: torch.from_numpy(flat[f"image_mask__{k}"][bi]).to(device) for k in _IMG
+                k: torch.from_numpy(flat[f"image_mask__{k}"][bi]).to(device)
+                for k in _IMG
             },
             "state": torch.from_numpy(flat["state"][bi]).to(device, torch.float32),
-            "tokenized_prompt": torch.from_numpy(flat["tokenized_prompt"][bi]).to(device).long(),
+            "tokenized_prompt": torch.from_numpy(flat["tokenized_prompt"][bi])
+            .to(device)
+            .long(),
             "tokenized_prompt_mask": torch.from_numpy(flat["tokenized_prompt_mask"][bi])
             .to(device)
             .bool(),
@@ -162,7 +167,12 @@ def _replay(model, base_cpu, seq_path, noise, time, device):
             p.data.copy_(b.to(device))
     # foreach=False avoids AdamW's large multi-tensor temporaries (single-GPU memory).
     opt = torch.optim.AdamW(
-        model.parameters(), lr=_PEAK_LR, betas=_BETAS, eps=_EPS, weight_decay=_WD, foreach=False
+        model.parameters(),
+        lr=_PEAK_LR,
+        betas=_BETAS,
+        eps=_EPS,
+        weight_decay=_WD,
+        foreach=False,
     )
     rows = []
     for step in range(noise.shape[0]):
@@ -175,12 +185,24 @@ def _replay(model, base_cpu, seq_path, noise, time, device):
         tm = torch.from_numpy(time[step]).to(device)
         opt.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(obs, act, train=True, rng=None, noise=nz, time=tm).float().mean()
+            loss = (
+                model(obs, act, train=True, rng=None, noise=nz, time=tm).float().mean()
+            )
         loss.backward()
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=_CLIP)
         opt.step()
-        rows.append({"step": step, "loss": round(float(loss), 6), "grad_norm": round(float(gn), 5), "lr": lr})
-        print(f"  step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f}", flush=True)
+        rows.append(
+            {
+                "step": step,
+                "loss": round(float(loss), 6),
+                "grad_norm": round(float(gn), 5),
+                "lr": lr,
+            }
+        )
+        print(
+            f"  step {step}: loss={float(loss):.5f} grad_norm={float(gn):.4f}",
+            flush=True,
+        )
     return rows
 
 
@@ -210,12 +232,17 @@ def main():
     # Shared fixed noise/time so the ONLY variable across the two replays is the batch source.
     rs = np.random.RandomState(_SEED)
     noise = rs.randn(_N_STEPS, _BATCH_SIZE, 32, 32).astype(np.float32)
-    time = (rs.beta(1.5, 1.0, size=(_N_STEPS, _BATCH_SIZE)).astype(np.float32) * 0.999 + 0.001)
+    time = (
+        rs.beta(1.5, 1.0, size=(_N_STEPS, _BATCH_SIZE)).astype(np.float32) * 0.999
+        + 0.001
+    )
     np.savez(f"{args.tmp}/seq_noise_time.npz", noise=noise, time=time)
 
     device = "cuda"
     model = _rlinf_model(device)
-    base_cpu = [p.detach().cpu().clone() for p in model.parameters()]  # base weights on CPU
+    base_cpu = [
+        p.detach().cpu().clone() for p in model.parameters()
+    ]  # base weights on CPU
 
     print("Replaying the REFERENCE loader sequence through RLinf ...", flush=True)
     ref_rows = _replay(model, base_cpu, ref_path, noise, time, device)
@@ -236,7 +263,9 @@ def main():
             "step": i,
             "ref_loader_loss": ref_rows[i]["loss"],
             "rlinf_loader_loss": rlinf_rows[i]["loss"],
-            "loss_diff_ref_minus_rlinf": round(ref_rows[i]["loss"] - rlinf_rows[i]["loss"], 6),
+            "loss_diff_ref_minus_rlinf": round(
+                ref_rows[i]["loss"] - rlinf_rows[i]["loss"], 6
+            ),
             "ref_loader_grad_norm": ref_rows[i]["grad_norm"],
             "rlinf_loader_grad_norm": rlinf_rows[i]["grad_norm"],
         }
@@ -274,8 +303,12 @@ def main():
             "clip_grad_norm_(1.0), openpi_cosine warmup LR peak=2.5e-5 warmup=1000",
             "output": args.out,
         },
-        "ref_loader_first5_mean": round(float(np.mean([r["loss"] for r in ref_rows[:5]])), 6),
-        "rlinf_loader_first5_mean": round(float(np.mean([r["loss"] for r in rlinf_rows[:5]])), 6),
+        "ref_loader_first5_mean": round(
+            float(np.mean([r["loss"] for r in ref_rows[:5]])), 6
+        ),
+        "rlinf_loader_first5_mean": round(
+            float(np.mean([r["loss"] for r in rlinf_rows[:5]])), 6
+        ),
         "ref_loader_last5_mean": round(ref_final, 6),
         "rlinf_loader_last5_mean": round(rlinf_final, 6),
         "last5_gap_ref_minus_rlinf": round(ref_final - rlinf_final, 6),
@@ -311,7 +344,19 @@ def main():
     with open(args.out, "w", newline="\n") as f:
         json.dump(result, f, indent=2)
         f.write("\n")
-    print(json.dumps({k: result[k] for k in ("ref_loader_last5_mean", "rlinf_loader_last5_mean", "last5_gap_ref_minus_rlinf")}, indent=2))
+    print(
+        json.dumps(
+            {
+                k: result[k]
+                for k in (
+                    "ref_loader_last5_mean",
+                    "rlinf_loader_last5_mean",
+                    "last5_gap_ref_minus_rlinf",
+                )
+            },
+            indent=2,
+        )
+    )
     print(f"wrote {args.out}")
 
 
