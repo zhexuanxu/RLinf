@@ -381,6 +381,32 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
+### R38 — ADVISORY ~1h long-run loss-trend (DEC-1(c)): RLinf tracks the reference (r=0.975)
+R38 runs task16, the ADVISORY tier of DEC-1 (evidence-only, never a CI gate). It launches the NORMAL
+UNPINNED `use_skill:false` 8-GPU production SFT (`python examples/sft/train_vla_sft.py --config-name
+behavior_pi05_vla runner.max_steps=800`, the real streaming loader — NOT the R37 pinned path) for a ~1-hour
+window, extracts the rank-AVG `train/loss`/`learning_rate`/`grad_norm` per step, and compares the long-run
+TREND/direction to the reference run's committed log (`pi05_b1k-pt-2k-8gpu-fmp-wo_prefetch-xzx.log`, whose
+clean `Step N: ... loss=...` lines give the reference curve) via `tools/sft_advisory_trend_eval.py` →
+`docs/evidence/r38_advisory_1h_trend.{csv,json}`.
+
+**Result — the long-run trend tracks the reference:**
+| metric | RLinf (unpinned) | reference |
+|--------|------------------|-----------|
+| first-10 mean | 0.2397 | 0.2438 |
+| last-50 mean | **0.0117** | **0.0182** |
+| both descend | yes | yes |
+| aligned-curve Pearson `r` | **0.975** | — |
+| within-0.03 (aligned, context only) | **788/800** | — |
+
+Over the ~1h/800-step window the unpinned RLinf loss descends with the same direction/shape as the
+reference (Pearson `r=0.975`), and even 788/800 aligned steps fall within 0.03 (reported for CONTEXT only —
+this is the advisory tier, a direction/shape match, NOT a hard per-step gate: the two production runs use
+independent noise/time + shuffle so per-step values differ; RLinf descends slightly faster at the tail,
+0.0117 vs 0.0182). Provenance (command, return code, tensorboard event file, RLinf + reference source
+revisions, model/norm-stats/tokenizer sha256 hashes) is in the JSON. This satisfies DEC-1(c) (task16) as
+ADVISORY evidence.
+
 ### R37 — PINNED input through the ACTUAL 8-GPU FSDP stack: the strict first-50 gate is MET (50/50)
 R37 takes the strict-path completion Codex's R36 review required: instead of waiting on a plan evolution
 for the R35 production 40/50, it pins RLinf's production first-50 behavior to the reference batch/noise/time
@@ -860,6 +886,12 @@ until that run exists.
   (b) first-50 gate MET through the production stack; provenance: command, source revisions, return codes,
   tensorboard event file, npz hashes, `r36_inputs_identical_all_steps`). CPU unit tests
   `tests/unit_tests/test_openpi_pytorch_pinned_loader.py` (per-rank sharding + noise/time passthrough).
+- **ADVISORY ~1h long-run trend** (R38, task16, DEC-1(c)): `tools/sft_advisory_trend_eval.py` →
+  `docs/evidence/r38_advisory_1h_trend.{csv,json}` (the NORMAL UNPINNED `use_skill:false` 8-GPU production
+  SFT run 800 steps ≈ 1 h; per-step RLinf `train/loss`/LR/grad-norm vs the reference long-run log curve;
+  **both descend, Pearson r=0.975, 788/800 aligned within 0.03 for context**; ADVISORY direction/shape
+  match, never a CI gate; provenance: command, return code, tensorboard event file, RLinf + reference
+  source revisions, model/norm-stats/tokenizer sha256 hashes).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is
