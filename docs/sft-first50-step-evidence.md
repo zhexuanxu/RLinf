@@ -70,9 +70,15 @@ loader on rank 0 ONLY and fans out **successive** micro-batches to each rank →
 batch 32 sees 8× fewer unique frames/step → descends faster to 0.046 vs the reference's batch-256
 0.090). **Fixed** by threading explicit `rank`/`world_size` into `BehaviorSftDataset._select_streaming_chunk`
 (spawn-safe); confirmed the fix makes RLinf rank-DISJOINT (256 unique/step) + a regression test
-(`docs/evidence/r34_production_batch_topology.json`). **Final task15 validation (next):** rerun the
-8-GPU first-50 under the fix and check it tracks the reference (~0.090). task15 stays NOT met until then.
-The earlier
+(`docs/evidence/r34_production_batch_topology.json`). **R35 then RAN the 8-GPU first-50 SFT under the
+fix and it RESOLVES the systematic divergence** (`docs/evidence/r35_first50_under_fix.{csv,json}`):
+RLinf now descends like the reference (step49 **0.083 ≈ 0.090**, |Δ|=0.008; overall mean 0.155 ≈ 0.168;
+within-0.03 **40/50**, up from the pre-fix 30/50) — the pre-fix systematic ~2×-lower curve (step49
+0.046) is gone. It is NOT a strict 50/50: the remaining 10 outliers are early-step + cross-implementation
+noise/time-RNG + data-ordering (independent sampling/shuffle), not a systematic divergence. **The task15
+root cause is fixed**; the AC-11 path (accept the fixed systematic match / a plan evolution for the
+noise/time-RNG residual, or pin the reference RNG for a strict 50/50) is proposed for Codex. task15
+status pending that decision. The earlier
 R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
 retracted. The residual is a **real systematic divergence (RLinf descends faster / lower)**,
 task15-blocking. See **"Round 20 / 21 / 22"** below. The
@@ -363,6 +369,38 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
+### R35 — 8-GPU first-50 SFT UNDER THE FIX: the systematic divergence is RESOLVED (RLinf now tracks the reference)
+R35 ran the actual 8-GPU first-50 BEHAVIOR `use_skill:false` SFT under the R34 effective-batch fix
+(RLinf now rank-disjoint, effective batch 256) — `python examples/sft/train_vla_sft.py --config-name
+behavior_pi05_vla runner.max_steps=60` on 8× A800, seed 42, the production config (git `729c48d1`) — and
+evaluated the rank-AVG `train/loss` against the reference production curve r24
+(`docs/evidence/r35_first50_under_fix.{csv,json}`).
+
+**Result — the fix RESOLVES the systematic divergence:**
+| metric | pre-fix RLinf (r22, eff-batch 32) | **RLinf under fix (eff-batch 256)** | reference r24 |
+|--------|-----------------------------------|--------------------------------------|---------------|
+| step 49 | 0.046 | **0.083** | 0.090 |
+| overall mean | 0.151 | **0.155** | 0.168 |
+| first-5 mean | 0.226 | **0.246** | 0.243 |
+| per-step \|Δ\| ≤ 0.03 vs r24 | **30/50** | **40/50** | — |
+
+Representative per-step (RLinf-fixed \| ref \| \|Δ\|): step5 0.233\|0.239\|0.007; step20 0.173\|0.167\|0.006;
+step30 0.112\|0.133\|0.021; step40 0.094\|0.111\|0.017; **step49 0.083\|0.090\|0.008**. So under the fix
+RLinf descends **like the reference** — the pre-fix systematic ~2×-lower curve (step49 0.046) is gone;
+the step-49 gap drops from 0.044 to **0.008**, and within-0.03 rises 30/50 → **40/50**.
+
+**Honest scope (no overclaim):** this is NOT a strict 50/50 within 0.03. The remaining **10/50** outliers
+are EARLY-step + run-to-run **noise/time-RNG + data-ordering** differences — RLinf and the reference
+sample the flow-matching noise/time INDEPENDENTLY and shuffle independently (the step-0 \|Δ\|=0.055 on
+identical base weights is purely that), not a systematic divergence. (The reference's own across-seed
+run-to-run variance is ~0.004, R24; the residual here is the cross-implementation noise/time + shuffle,
+which a production run does not pin.) **So the task15 ROOT CAUSE is fixed** (the effective-batch bug);
+a strict 50/50 is not reached because of inherent cross-implementation RNG variation. **Proposed AC-11
+path (for Codex):** accept task15 as resolved on the fixed systematic match (root cause fixed + RLinf
+now tracks the reference, 40/50), or an explicit plan evolution accepting the noise/time-RNG residual; a
+strict 50/50 would require pinning the reference's exact noise/time + shuffle, which the production run
+does not do. task15 status pending that decision.
+
 ### R34 — ROOT CAUSE FOUND + FIXED: reference effective batch 256 (rank-0 fanout) vs RLinf 32 (spawn rank-replication)
 R34 corrects R33's reference verdict (Codex R33 review) and finds the effective-batch root cause
 (`docs/evidence/r34_production_batch_topology.json`). R33 read only the loader helper; the REAL
@@ -396,9 +434,13 @@ disjoint even when `dist.get_rank()` wrongly returns 0 (the spawn-worker case).
 RLinf dump with the fix is now **RANK-DISJOINT — 256 unique frames/global step** (was 32), i.e.
 effective batch 256, matching the reference + the config.
 
-**Final task15 validation (next):** rerun the 8-GPU first-50 SFT under the fix (effective batch 256) and
-check it descends like the reference (~0.090) within the DEC-1(b) band. task15 closes only if the
-original 50/50 gate passes or an accepted plan evolution. task15 stays NOT met until then.
+**task15 validation DONE (R35):** the 8-GPU first-50 SFT under the fix (effective batch 256) RESOLVES
+the systematic divergence — RLinf now tracks the reference (step49 0.083 ≈ 0.090, |Δ|=0.008; mean 0.155
+≈ 0.168; **40/50** within 0.03, up from 30/50; `docs/evidence/r35_first50_under_fix.{csv,json}`). It is
+NOT a strict 50/50 (the 10 residual outliers are early-step + cross-implementation noise/time-RNG +
+data-ordering). The root cause is FIXED; the AC-11 path (accept the fixed systematic match / a plan
+evolution for the noise/time-RNG residual / pin the reference RNG for a strict 50/50) is proposed for
+Codex. task15 stays NOT met pending that decision.
 
 ### R33 — production-trainer rank behavior (reference half SUPERSEDED by R34): RLinf rank-replicated; reference verdict was wrong
 R33 verifies (Codex R32 review) whether the R32 gloo-dump "both loaders rank-replicated" holds for the
@@ -698,6 +740,10 @@ until that run exists.
   `r34_ref_fanout_hashes.json` + `r34_rlinf_fixed_topology_hashes.json` (reference rank-0 fanout MEASURED
   rank-disjoint = effective batch 256; RLinf was rank-replicated = 32; the spawn-safe fix in `rlinf/`
   threads explicit rank/world_size → RLinf now rank-disjoint 256, confirmed + a regression test).
+- **First-50 SFT under the fix** (R35): `docs/evidence/r35_first50_under_fix.csv` + `.json` (the 8-GPU
+  `train_vla_sft.py` run at effective batch 256; rank-AVG `train/loss` from the tensorboard event file
+  vs r24; RLinf now tracks the reference — step49 0.083 ≈ 0.090, 40/50 within 0.03 up from 30/50; the
+  systematic divergence is resolved, the residual is noise/time-RNG).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is

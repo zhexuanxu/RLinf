@@ -21,7 +21,7 @@
   "root_cause": "The reference production trains at EFFECTIVE batch 256 (rank-disjoint fanout) while RLinf trained at EFFECTIVE batch 32 (rank-replicated, spawn workers lose the dist rank) -- an 8x effective-batch difference, the likely driver of the r22-vs-r24 gap (RLinf at batch 32 sees 8x fewer unique frames/step and descends faster to 0.046 vs the reference's batch-256 0.090). This corrects the R33 verdict that BOTH were effective batch 32 (that read only the loader helper, not the trainer's rank-0 fanout).",
   "fix": "Thread explicit rank/world_size: build_behavior_sft_dataloader passes its rank/world_size into create_behavior_sft_data_loader -> BehaviorSftDataset (stored as _dist_rank/_dist_world_size); _select_streaming_chunk prefers the explicit values (falling back to torch.distributed only when not provided), so spawned workers partition by the correct per-rank id -> RANK-DISJOINT (effective batch 256, matching the config + the reference). fsdp_vla_sft_worker already passes self._world_size/self._rank, so the fix is wired into production with no worker change.",
   "provenance": {
-    "rlinf_git_rev": "ccfbc84d",
+    "rlinf_git_rev": "729c48d1",
     "reference_git_rev": "cd99b39",
     "reference_fanout_command": "<ref_venv>/python tests/unit_tests/_ref_fanout_dump.py /mnt/public/xzxuan/tmp 50 8",
     "config": "pi05_b1k-turning_on_radio_cs32_bs32_lr2.5e-5_step30k",
@@ -42,7 +42,9 @@
     "step0_rank0_rank1_overlap_of_32": 0,
     "verdict": "RANK-DISJOINT \u2014 after the fix RLinf emits 256 unique frames per global step (was 32 before), i.e. effective batch 256, matching the reference + the configured global_batch_size=256.",
     "hashes_file": "docs/evidence/r34_rlinf_fixed_topology_hashes.json",
-    "hashes_file_sha256_16": "a4c72cfaffe9fbbe",
-    "regression_test": "tests/unit_tests/test_openpi_pytorch_sft_sharding.py::test_explicit_rank_partitions_disjoint_even_when_dist_reports_rank0"
+    "hashes_file_sha256_16": "08b968ad4a9736da",
+    "regression_test": "tests/unit_tests/test_openpi_pytorch_sft_sharding.py::test_explicit_rank_partitions_disjoint_even_when_dist_reports_rank0",
+    "rlinf_git_rev_of_fixed_dump": "729c48d1",
+    "provenance_note": "regenerated R35 from the CLEAN fixed commit 729c48d1 (the R34 first dump was on a dirty pre-commit tree recording ccfbc84d; corrected per Codex R34 review)."
   }
 }
