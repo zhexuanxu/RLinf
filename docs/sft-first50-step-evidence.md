@@ -71,18 +71,22 @@ batch 32 sees 8× fewer unique frames/step → descends faster to 0.046 vs the r
 0.090). **Fixed** by threading explicit `rank`/`world_size` into `BehaviorSftDataset._select_streaming_chunk`
 (spawn-safe); confirmed the fix makes RLinf rank-DISJOINT (256 unique/step) + a regression test
 (`docs/evidence/r34_production_batch_topology.json`). **R35 then RAN the 8-GPU first-50 SFT under the
-fix and it RESOLVES the systematic divergence** (`docs/evidence/r35_first50_under_fix.{csv,json}`):
-RLinf now descends like the reference (step49 **0.083 ≈ 0.090**, |Δ|=0.008; overall mean 0.155 ≈ 0.168;
-within-0.03 **40/50**, up from the pre-fix 30/50) — the pre-fix systematic ~2×-lower curve (step49
-0.046) is gone. It is NOT a strict 50/50: the remaining 10 outliers are early-step + cross-implementation
-noise/time-RNG + data-ordering (independent sampling/shuffle), not a systematic divergence. **The task15
-root cause is fixed**; the AC-11 path (accept the fixed systematic match / a plan evolution for the
-noise/time-RNG residual, or pin the reference RNG for a strict 50/50) is proposed for Codex. task15
-status pending that decision. The earlier
-R20 "RNG/aggregation" and R21 "missing-augmentation" attributions were both wrong and are
-retracted. The residual is a **real systematic divergence (RLinf descends faster / lower)**,
-task15-blocking. See **"Round 20 / 21 / 22"** below. The
-R16 run that follows is retained as the pre-fix baseline.
+fix** (`docs/evidence/r35_first50_under_fix.{csv,json}`): the effective-batch fix MATERIALLY IMPROVED
+the curve — RLinf descends much closer to the reference (step49 0.083 ≈ 0.090; overall mean 0.155 ≈
+0.168; the pre-fix systematic ~2×-lower end (step49 0.046) is gone), and per-step |Δ| ≤ 0.03 rises from
+the pre-fix **30/50 to 40/50**. **But the strict DEC-1 (b) first-50 gate is still UNMET** (40/50, not
+50/50; the ±2σ count is 17/50). **R36 then PROVED the cause of those 10 outliers is the per-step
+INPUT**: a pinned same-input experiment fed BOTH the reference model and RLinf the IDENTICAL reference
+rank-0-fanout batches + shared noise/time (hashes verified identical all 50 steps) → the per-step losses
+match **50/50, max |Δ|=0.0003** (`docs/evidence/r36_pinned_residual.json`). So on identical inputs RLinf
+== the reference exactly, and the production 40/50 residual is the cross-implementation noise/time-RNG +
+shuffle (the two production runs sample independently), NOT a model/optimizer/effective-batch residual.
+**task15 remains ACTIVE** (the effective-batch root cause is fixed and the residual is proven benign, but
+the strict first-50 *production* gate is 40/50, not 50/50; task15 closes on an accepted plan evolution or
+a strict 50/50 production run with the reference's pinned RNG). The earlier R20 "RNG/aggregation" and
+R21 "missing-augmentation" attributions
+were both wrong and are retracted. See **"Round 20 / 21 / 22"** below. The R16 run that follows is
+retained as the pre-fix baseline.
 
 ## Run
 
@@ -369,14 +373,44 @@ backward + identical LR, yet RLinf diverges. So the remaining difference is the 
 training step** — the FSDP gradient all-reduce, the gradient clipping, or the optimizer step — which
 the single-GPU R26 probe does not exercise.
 
-### R35 — 8-GPU first-50 SFT UNDER THE FIX: the systematic divergence is RESOLVED (RLinf now tracks the reference)
+### R36 — PINNED same-input experiment: the R35 residual is PROVEN to be the per-step INPUT (50/50 on identical inputs)
+R36 tests the R35 residual hypothesis directly (Codex R35 review): it feeds BOTH the reference
+`models_pytorch_new.Pi0` and RLinf's `Pi0` the **IDENTICAL** reference rank-0-fanout first-50 global-256
+batch sequence + **SHARED** fixed noise/time, with the same loop (fp32 weights + autocast bf16,
+AdamW+clip+warmup-LR, effective batch 256 via 8 chunks × 32), and compares the per-step losses
+(`docs/evidence/r36_pinned_residual.json`; `tools/sft_pinned_residual_probe.py` +
+`tests/unit_tests/_ref_pinned_run.py`).
+
+Result — on identical inputs the two arms are **identical**:
+- **inputs identical all 50 steps** (the per-step state/actions/noise/time sha256 hashes match across
+  both arms — the audit proves the inputs were the same);
+- **within-0.03: 50/50**, **max |Δ| = 0.0003** (per-step ref vs rlinf loss; e.g. step0 0.3049 vs 0.3046,
+  step49 0.0844 vs 0.0844).
+
+**⇒ So on IDENTICAL inputs RLinf == the reference (50/50), which PROVES the R35 production first-50
+residual (40/50) is the per-step INPUT** — the two independent production runs sample flow-matching
+noise/time independently and shuffle independently; it is NOT a model/optimizer/effective-batch
+residual (those are all verified identical: R26 backward, R28 loop, R29 FSDP, R34 effective batch). The
+R35 residual attribution is now **proven, not a hypothesis**.
+
+**Where this leaves task15:** the effective-batch ROOT CAUSE is fixed (R34); under the fix RLinf tracks
+the reference (R35, 40/50; step49 0.083 ≈ 0.090); and on identical inputs RLinf == the reference exactly
+(R36, 50/50, |Δ|≤0.0003). The strict DEC-1 (b) first-50 gate on the *production* run is 40/50, not 50/50,
+**solely** because the two production runs use independent noise/time + shuffle (now proven). **AC-11
+path (proposed for Codex):** (A) a plan evolution — accept task15 on the proven chain (root cause fixed +
+RLinf == reference on identical inputs 50/50 + the production residual proven to be benign
+cross-implementation RNG/shuffle); or (B) pin RLinf's BEHAVIOR SFT noise/time + shuffle to the
+reference's exact sequence for a strict 50/50 production run. task15 remains ACTIVE pending that
+decision (not closed on 40/50 without an accepted plan evolution).
+
+### R35 — 8-GPU first-50 SFT UNDER THE FIX: materially improved (40/50), but the strict DEC-1(b) gate is still UNMET
 R35 ran the actual 8-GPU first-50 BEHAVIOR `use_skill:false` SFT under the R34 effective-batch fix
 (RLinf now rank-disjoint, effective batch 256) — `python examples/sft/train_vla_sft.py --config-name
 behavior_pi05_vla runner.max_steps=60` on 8× A800, seed 42, the production config (git `729c48d1`) — and
 evaluated the rank-AVG `train/loss` against the reference production curve r24
 (`docs/evidence/r35_first50_under_fix.{csv,json}`).
 
-**Result — the fix RESOLVES the systematic divergence:**
+**Result — the fix materially improves the curve (but does not pass the strict gate):**
 | metric | pre-fix RLinf (r22, eff-batch 32) | **RLinf under fix (eff-batch 256)** | reference r24 |
 |--------|-----------------------------------|--------------------------------------|---------------|
 | step 49 | 0.046 | **0.083** | 0.090 |
@@ -389,17 +423,17 @@ step30 0.112\|0.133\|0.021; step40 0.094\|0.111\|0.017; **step49 0.083\|0.090\|0
 RLinf descends **like the reference** — the pre-fix systematic ~2×-lower curve (step49 0.046) is gone;
 the step-49 gap drops from 0.044 to **0.008**, and within-0.03 rises 30/50 → **40/50**.
 
-**Honest scope (no overclaim):** this is NOT a strict 50/50 within 0.03. The remaining **10/50** outliers
-are EARLY-step + run-to-run **noise/time-RNG + data-ordering** differences — RLinf and the reference
-sample the flow-matching noise/time INDEPENDENTLY and shuffle independently (the step-0 \|Δ\|=0.055 on
-identical base weights is purely that), not a systematic divergence. (The reference's own across-seed
-run-to-run variance is ~0.004, R24; the residual here is the cross-implementation noise/time + shuffle,
-which a production run does not pin.) **So the task15 ROOT CAUSE is fixed** (the effective-batch bug);
-a strict 50/50 is not reached because of inherent cross-implementation RNG variation. **Proposed AC-11
-path (for Codex):** accept task15 as resolved on the fixed systematic match (root cause fixed + RLinf
-now tracks the reference, 40/50), or an explicit plan evolution accepting the noise/time-RNG residual; a
-strict 50/50 would require pinning the reference's exact noise/time + shuffle, which the production run
-does not do. task15 status pending that decision.
+**Honest scope (no overclaim):** this is **NOT** a strict 50/50 within 0.03 — the DEC-1 (b) gate is a
+per-step first-50 gate, and 40/50 (±2σ: 17/50) does **not** pass it. The 10 failing steps are 0, 9, 10,
+11, 13, 14, 15, 25, 26, 29. **R36 then PROVED the cause of those 10 outliers is the per-step INPUT** —
+the pinned same-input experiment (R36, below) fed BOTH the reference model and RLinf the IDENTICAL
+reference rank-0-fanout batches + shared noise/time (hashes verified identical) and they matched 50/50
+(max |Δ|=0.0003). So the production residual is the cross-implementation noise/time-RNG + shuffle (the
+two production runs sample independently), NOT a model/optimizer/effective-batch residual. **task15
+remains ACTIVE:** the effective-batch ROOT CAUSE is fixed (R34), the curve is materially improved (R35),
+and the residual is proven benign (R36) — but the strict first-50 *production* gate is 40/50, not 50/50;
+task15 closes only on a 50/50 production run (with the reference's pinned RNG) under the original gate or
+an explicitly accepted plan evolution (not on 40/50).
 
 ### R34 — ROOT CAUSE FOUND + FIXED: reference effective batch 256 (rank-0 fanout) vs RLinf 32 (spawn rank-replication)
 R34 corrects R33's reference verdict (Codex R33 review) and finds the effective-batch root cause
@@ -434,13 +468,18 @@ disjoint even when `dist.get_rank()` wrongly returns 0 (the spawn-worker case).
 RLinf dump with the fix is now **RANK-DISJOINT — 256 unique frames/global step** (was 32), i.e.
 effective batch 256, matching the reference + the config.
 
-**task15 validation DONE (R35):** the 8-GPU first-50 SFT under the fix (effective batch 256) RESOLVES
-the systematic divergence — RLinf now tracks the reference (step49 0.083 ≈ 0.090, |Δ|=0.008; mean 0.155
-≈ 0.168; **40/50** within 0.03, up from 30/50; `docs/evidence/r35_first50_under_fix.{csv,json}`). It is
-NOT a strict 50/50 (the 10 residual outliers are early-step + cross-implementation noise/time-RNG +
-data-ordering). The root cause is FIXED; the AC-11 path (accept the fixed systematic match / a plan
-evolution for the noise/time-RNG residual / pin the reference RNG for a strict 50/50) is proposed for
-Codex. task15 stays NOT met pending that decision.
+**task15 validation RAN (R35), strict gate UNMET, task15 ACTIVE:** the 8-GPU first-50 SFT under the fix
+(effective batch 256) materially improved the curve — RLinf descends much closer to the reference
+(step49 0.083 ≈ 0.090; mean 0.155 ≈ 0.168; **40/50** within 0.03, up from the pre-fix 30/50;
+`docs/evidence/r35_first50_under_fix.{csv,json}`). The production run is **NOT** a strict 50/50, so the
+DEC-1 (b) *production* gate is **still UNMET** — but **R36 PROVED** the cause of the 10 outliers (steps
+0,9,10,11,13,14,15,25,26,29) is the per-step **INPUT**: on the IDENTICAL reference rank-0-fanout batches
++ shared noise/time (hashes verified identical), RLinf == the reference **50/50, max |Δ|=0.0003**
+(`docs/evidence/r36_pinned_residual.json`). So the production residual is benign cross-implementation
+noise/time-RNG + shuffle (the two production runs sample independently), NOT a model/optimizer residual.
+The effective-batch ROOT CAUSE is fixed (R34) and the residual is proven benign (R36), but task15 remains
+**ACTIVE** and closes only on a 50/50 production run (with the reference's pinned RNG) under the original
+gate or an explicitly accepted plan evolution.
 
 ### R33 — production-trainer rank behavior (reference half SUPERSEDED by R34): RLinf rank-replicated; reference verdict was wrong
 R33 verifies (Codex R32 review) whether the R32 gloo-dump "both loaders rank-replicated" holds for the
@@ -744,6 +783,14 @@ until that run exists.
   `train_vla_sft.py` run at effective batch 256; rank-AVG `train/loss` from the tensorboard event file
   vs r24; RLinf now tracks the reference — step49 0.083 ≈ 0.090, 40/50 within 0.03 up from 30/50; the
   systematic divergence is resolved, the residual is noise/time-RNG).
+- **PINNED same-input residual experiment** (R36): `tools/sft_pinned_residual_probe.py` +
+  `tests/unit_tests/_ref_pinned_run.py` → `docs/evidence/r36_pinned_residual.json` (BOTH the reference
+  `models_pytorch_new.Pi0` and RLinf `Pi0` run the IDENTICAL reference rank-0-fanout first-50 global-256
+  batches + SHARED numpy noise/time at effective batch 256 via 8×32 accumulation; the per-step
+  batch/noise/time sha256 hashes are recorded and verified identical for all 50 steps; the per-step
+  losses match **50/50, max |Δ|=0.0003** → the R35 production residual is PROVEN to be the per-step INPUT
+  (cross-implementation noise/time-RNG + shuffle), not a model/optimizer/effective-batch residual;
+  provenance block + per-step rows + reference venv/src/git rev + return codes).
 
 ### task15 status and next step (R24)
 The flat-loss MECHANISM is fixed and proven (probe above), but **task15's hard DEC-1 (b) gate is

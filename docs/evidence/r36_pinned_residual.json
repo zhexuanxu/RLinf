@@ -1,0 +1,431 @@
+{
+  "purpose": "R36 PINNED same-input residual experiment: BOTH the reference models_pytorch_new.Pi0 and RLinf Pi0 run the IDENTICAL reference rank-0-fanout first-50 global-256 batch sequence + SHARED fixed noise/time, with the SAME fp32-weights/autocast-bf16 AdamW+clip+warmup-LR loop at effective batch 256 (8 chunks x 32). Tests whether, on identical inputs, RLinf == the reference per-step (50/50) -- which would prove the R35 production 40/50 residual is the per-step INPUT.",
+  "provenance": {
+    "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_pinned_residual_probe.py --out docs/evidence/r36_pinned_residual.json",
+    "repo_cwd": "/mnt/public/xzxuan/repos/RLinf_pi05",
+    "reference_venv": "/mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python",
+    "reference_src": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+    "reference_arm": "tests/unit_tests/_ref_pinned_run.py",
+    "ref_subprocess_returncode": "reused",
+    "ref_git_rev": "cd99b39",
+    "base_weights": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
+    "base_weights_sha256_16": "f6391204c480d6c5",
+    "n_steps": 50,
+    "world_size": 8,
+    "global_batch": 256,
+    "micro": 32,
+    "seed": 1234,
+    "batches_npz": "/mnt/public/xzxuan/tmp/ref_pinned_batches.npz",
+    "batches_npz_sha256_16": "b67eec453cf9000e",
+    "noise_time_npz": "/mnt/public/xzxuan/tmp/ref_pinned_noise_time.npz",
+    "noise_time_npz_sha256_16": "e9cbac480459e4d1",
+    "loop": "fp32 weights + autocast bf16; AdamW(0.9,0.95)/eps1e-8/wd1e-10; clip_grad_norm_(1.0); openpi_cosine warmup peak=2.5e-5 warmup=1000; effective batch 256 via 8 chunks x 32.",
+    "output": "docs/evidence/r36_pinned_residual.json"
+  },
+  "inputs_identical_all_steps": true,
+  "within_0.03": "50/50",
+  "max_abs_delta": 0.000327,
+  "steps": [
+    {
+      "step": 0,
+      "ref_loss": 0.304868,
+      "rlinf_loss": 0.304589,
+      "abs_delta": 0.000279,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 1,
+      "ref_loss": 0.354867,
+      "rlinf_loss": 0.354572,
+      "abs_delta": 0.000295,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 2,
+      "ref_loss": 0.330465,
+      "rlinf_loss": 0.330563,
+      "abs_delta": 9.8e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 3,
+      "ref_loss": 0.255384,
+      "rlinf_loss": 0.255427,
+      "abs_delta": 4.3e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 4,
+      "ref_loss": 0.205949,
+      "rlinf_loss": 0.205938,
+      "abs_delta": 1.1e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 5,
+      "ref_loss": 0.183762,
+      "rlinf_loss": 0.183758,
+      "abs_delta": 4e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 6,
+      "ref_loss": 0.221723,
+      "rlinf_loss": 0.221723,
+      "abs_delta": 0.0,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 7,
+      "ref_loss": 0.335209,
+      "rlinf_loss": 0.334973,
+      "abs_delta": 0.000236,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 8,
+      "ref_loss": 0.275147,
+      "rlinf_loss": 0.275141,
+      "abs_delta": 6e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 9,
+      "ref_loss": 0.318809,
+      "rlinf_loss": 0.318482,
+      "abs_delta": 0.000327,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 10,
+      "ref_loss": 0.268981,
+      "rlinf_loss": 0.268853,
+      "abs_delta": 0.000128,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 11,
+      "ref_loss": 0.216069,
+      "rlinf_loss": 0.216121,
+      "abs_delta": 5.2e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 12,
+      "ref_loss": 0.290696,
+      "rlinf_loss": 0.290427,
+      "abs_delta": 0.000269,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 13,
+      "ref_loss": 0.304815,
+      "rlinf_loss": 0.304982,
+      "abs_delta": 0.000167,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 14,
+      "ref_loss": 0.208015,
+      "rlinf_loss": 0.208065,
+      "abs_delta": 5e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 15,
+      "ref_loss": 0.183189,
+      "rlinf_loss": 0.183253,
+      "abs_delta": 6.4e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 16,
+      "ref_loss": 0.168702,
+      "rlinf_loss": 0.168681,
+      "abs_delta": 2.1e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 17,
+      "ref_loss": 0.227074,
+      "rlinf_loss": 0.226939,
+      "abs_delta": 0.000135,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 18,
+      "ref_loss": 0.211833,
+      "rlinf_loss": 0.211904,
+      "abs_delta": 7.1e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 19,
+      "ref_loss": 0.217203,
+      "rlinf_loss": 0.217229,
+      "abs_delta": 2.6e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 20,
+      "ref_loss": 0.149414,
+      "rlinf_loss": 0.149396,
+      "abs_delta": 1.8e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 21,
+      "ref_loss": 0.248961,
+      "rlinf_loss": 0.248971,
+      "abs_delta": 1e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 22,
+      "ref_loss": 0.265992,
+      "rlinf_loss": 0.265823,
+      "abs_delta": 0.000169,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 23,
+      "ref_loss": 0.187675,
+      "rlinf_loss": 0.187686,
+      "abs_delta": 1.1e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 24,
+      "ref_loss": 0.181415,
+      "rlinf_loss": 0.181502,
+      "abs_delta": 8.7e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 25,
+      "ref_loss": 0.185429,
+      "rlinf_loss": 0.185414,
+      "abs_delta": 1.5e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 26,
+      "ref_loss": 0.165861,
+      "rlinf_loss": 0.165885,
+      "abs_delta": 2.4e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 27,
+      "ref_loss": 0.161347,
+      "rlinf_loss": 0.16138,
+      "abs_delta": 3.3e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 28,
+      "ref_loss": 0.147682,
+      "rlinf_loss": 0.147646,
+      "abs_delta": 3.6e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 29,
+      "ref_loss": 0.206432,
+      "rlinf_loss": 0.206336,
+      "abs_delta": 9.6e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 30,
+      "ref_loss": 0.161477,
+      "rlinf_loss": 0.161387,
+      "abs_delta": 9e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 31,
+      "ref_loss": 0.148096,
+      "rlinf_loss": 0.148133,
+      "abs_delta": 3.7e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 32,
+      "ref_loss": 0.160485,
+      "rlinf_loss": 0.160441,
+      "abs_delta": 4.4e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 33,
+      "ref_loss": 0.105404,
+      "rlinf_loss": 0.105403,
+      "abs_delta": 1e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 34,
+      "ref_loss": 0.126619,
+      "rlinf_loss": 0.12661,
+      "abs_delta": 9e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 35,
+      "ref_loss": 0.121643,
+      "rlinf_loss": 0.121601,
+      "abs_delta": 4.2e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 36,
+      "ref_loss": 0.140653,
+      "rlinf_loss": 0.140648,
+      "abs_delta": 5e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 37,
+      "ref_loss": 0.106165,
+      "rlinf_loss": 0.106196,
+      "abs_delta": 3.1e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 38,
+      "ref_loss": 0.093128,
+      "rlinf_loss": 0.093122,
+      "abs_delta": 6e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 39,
+      "ref_loss": 0.113813,
+      "rlinf_loss": 0.113806,
+      "abs_delta": 7e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 40,
+      "ref_loss": 0.125553,
+      "rlinf_loss": 0.125536,
+      "abs_delta": 1.7e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 41,
+      "ref_loss": 0.144666,
+      "rlinf_loss": 0.144541,
+      "abs_delta": 0.000125,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 42,
+      "ref_loss": 0.089833,
+      "rlinf_loss": 0.089827,
+      "abs_delta": 6e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 43,
+      "ref_loss": 0.101899,
+      "rlinf_loss": 0.101939,
+      "abs_delta": 4e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 44,
+      "ref_loss": 0.093095,
+      "rlinf_loss": 0.093043,
+      "abs_delta": 5.2e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 45,
+      "ref_loss": 0.104963,
+      "rlinf_loss": 0.104974,
+      "abs_delta": 1.1e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 46,
+      "ref_loss": 0.078692,
+      "rlinf_loss": 0.078626,
+      "abs_delta": 6.6e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 47,
+      "ref_loss": 0.098089,
+      "rlinf_loss": 0.098084,
+      "abs_delta": 5e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 48,
+      "ref_loss": 0.12777,
+      "rlinf_loss": 0.127767,
+      "abs_delta": 3e-06,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    },
+    {
+      "step": 49,
+      "ref_loss": 0.084369,
+      "rlinf_loss": 0.084411,
+      "abs_delta": 4.2e-05,
+      "within_0.03": 1,
+      "inputs_identical": 1
+    }
+  ],
+  "verdict": "RESIDUAL IS THE INPUT (proven on identical inputs): with the per-step state/actions/noise/time hashes IDENTICAL across both arms (inputs_identical_all_steps=True), RLinf and the reference model produce matching per-step losses (50/50 within 0.03, max |\u0394|=0.0003). So on identical inputs RLinf == the reference, and the R35 production first-50 residual (40/50) is the per-step INPUT -- the two independent production runs sample flow-matching noise/time independently and shuffle independently, not a model/optimizer/effective-batch residual. AC-11 path: align RLinf's BEHAVIOR SFT ordering/RNG to the reference (so the production run uses the reference's batches+noise/time), or an explicit plan evolution accepting the cross-implementation RNG residual. task15 closes only on a 50/50 first-50 or an accepted plan evolution."
+}
