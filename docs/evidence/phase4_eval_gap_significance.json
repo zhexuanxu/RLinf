@@ -1,0 +1,38 @@
+{
+  "dec1_gap_is_material": false,
+  "dec1_material_threshold": 0.05,
+  "description": "Statistical significance of the RLinf-trained vs reference-trained BEHAVIOR success_once gap. Unpaired, stochastic eval; values parsed from each run's logged success_once + num_trajectories.",
+  "difference_95_ci": [
+    -0.048298874363819216,
+    0.17329887436381922
+  ],
+  "difference_95_ci_excludes_zero": false,
+  "gap_reference_minus_rlinf": 0.0625,
+  "reference_success_wilson_95_ci": [
+    0.24573020610600924,
+    0.40536588755478287
+  ],
+  "reference_trained": {
+    "log": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260607-08:50:42-behavior_ppo_openpi_pi05_pytorch_eval2/eval_embodiment.log",
+    "n": 128,
+    "success_once": 0.3203125,
+    "successes": 41
+  },
+  "rlinf_success_wilson_95_ci": [
+    0.18986902089941152,
+    0.3398691922955691
+  ],
+  "rlinf_trained": {
+    "log": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260607-08:13:16-behavior_ppo_openpi_pi05_pytorch_eval/eval_embodiment.log",
+    "n": 128,
+    "success_once": 0.2578125,
+    "successes": 33
+  },
+  "two_proportion_z_test": {
+    "p_value_two_sided": 0.2700460216425329,
+    "pooled_se": 0.056665875298453156,
+    "significant_at_0.05": false,
+    "z": 1.1029565796137293
+  },
+  "verdict": "NOT SIGNIFICANT \u2014 the 95% CI of the gap includes 0; the difference is within eval run-to-run noise (statistically explained, per DEC-1)."
+}

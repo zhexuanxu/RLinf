@@ -117,7 +117,6 @@ actor:
   micro_batch_size: 4
   global_batch_size: 64
   seed: 1234
-  num_steps: 10
   enable_offload: True
 
   model:

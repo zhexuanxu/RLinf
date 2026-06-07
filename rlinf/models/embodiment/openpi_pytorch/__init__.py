@@ -248,13 +248,15 @@ def get_model(cfg, torch_dtype=None):
         norm_stats_digest = _file_digest(norm_stats_dir / "norm_stats.json")
     else:
         norm_stats_digest = "deferred"
+    num_steps = int(_select("num_steps", 10))
     logger.info(
         "openpi_pytorch: loaded %s (%.2fB params) strict from %s for %s "
-        "state_metadata_digest=%s norm_stats_digest=%s",
+        "num_steps=%s state_metadata_digest=%s norm_stats_digest=%s",
         pi0_config,
         n_params / 1e9,
         weights_path,
         "training" if load_for_training else "eval",
+        num_steps,
         _state_dict_metadata_digest(state_dict),
         norm_stats_digest,
     )
@@ -276,7 +278,6 @@ def get_model(cfg, torch_dtype=None):
 
     action_chunk = int(_select("num_action_chunks", pi0_config.action_horizon))
     action_env_dim = int(_select("action_dim", 23))
-    num_steps = int(_select("num_steps", 10))
 
     processor = None
     if norm_stats is not None:
