@@ -1,0 +1,48 @@
+{
+  "description": "AC-4 same-batch raw\u2192normalized\u2192loss comparison: the reference's RAW first batch is driven through each repo's FULL transform (raw actions \u2192 its own quantile normalization \u2192 loss) with identical injected noise/time, plus an OLD/NEW(=reference-resolved) norm-stats matrix. Not pre-normalized batches.",
+  "n_frames": 8,
+  "raw_batch_hashes_match_reference": true,
+  "raw_hashes": {
+    "raw_head": "988e201dbd465bdeea45151e761addddf4699b8e84859acca8bbbdc6c1840a36",
+    "raw_left": "affbe84a8153fa9657135927da52b0603f0ffb8ffda4c7c9fb04550a7b8ff391",
+    "raw_right": "b721350a52c36e7cdda74ee8697e36688981ab31e8aa061eab96a6701ee1012b",
+    "raw_state": "0eafad65ac88d5d36b5b610a6b2ca167f914aa18402ac8e3c0050ac7fc1442de",
+    "raw_action": "97bce6eec4d89f759f4a575599426a016945941e744878356a33f5f49c74731c"
+  },
+  "tokens_byte_identical": true,
+  "masks_byte_identical": true,
+  "normalized_field_max_abs_vs_reference": {
+    "state": 2.9437646986707477e-08,
+    "actions": 2.961611755836202e-08,
+    "images_base": 0.0
+  },
+  "norm_tolerance": 0.0001,
+  "reference_same_batch_loss": 0.4028587341308594,
+  "rlinf_same_batch_loss_canonical": 0.4037799835205078,
+  "same_batch_loss_abs_delta": 0.0009212493896484375,
+  "loss_tolerance": 0.01,
+  "canonical_same_batch_matches_reference": true,
+  "norm_stats_matrix": [
+    {
+      "stats": "NEW (canonical = reference-resolved)",
+      "norm_stats_sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726",
+      "rlinf_same_batch_loss": 0.4037799835205078,
+      "loss_delta_vs_reference": 0.0009212493896484375,
+      "actions_max_abs_vs_reference": 2.961611755836202e-08
+    },
+    {
+      "stats": "OLD (pre-switch)",
+      "norm_stats_sha256": "d66ed16830a98f90dde8a315058b4a0df59f5e05734c1686d8b3f66787d0a929",
+      "rlinf_same_batch_loss": 0.3488044738769531,
+      "loss_delta_vs_reference": 0.05405426025390625,
+      "actions_max_abs_vs_NEW": 0.5312983095645905
+    }
+  ],
+  "verdict": "CANONICAL SAME-BATCH MATCH \u2014 on the IDENTICAL raw batch, RLinf's full raw\u2192normalized\u2192loss path (canonical NEW stats) reproduces the reference: tokens/masks byte-identical, normalized state/actions within 0.0001, same-batch loss 0.4038 vs reference 0.4029 (|\u0394|=0.0009 \u2264 0.01). The per-batch normalization APPLICATION is correct, so the significant ~9% eval gap is NOT a same-batch transform/norm-stats bug; it is localized to the production data TRAJECTORY (which frames / effective batch the 30000-step run actually trained on), which a single-batch test cannot exercise. The OLD stats row shows the norm-stats CHOICE does change the normalized actions + loss, confirming the matrix is sensitive; the production run used NEW (AC-1).",
+  "evidence_generation_git_revision": "dd0d428f562d15f57bc83c151609bf57368cf8da",
+  "provenance": {
+    "ref_dump": "/mnt/public/xzxuan/tmp/rlcr_r6/ref_raw_norm.npz",
+    "ref_assets_dir": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed",
+    "ref_asset_id": "behavior-1k/2025-challenge-demos"
+  }
+}

@@ -1,0 +1,3 @@
+stats,norm_stats_sha256,rlinf_same_batch_loss,loss_delta_vs_reference,actions_max_abs_vs_reference
+NEW (canonical = reference-resolved),ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726,0.4037799835205078,0.0009212493896484375,2.961611755836202e-08
+OLD (pre-switch),d66ed16830a98f90dde8a315058b4a0df59f5e05734c1686d8b3f66787d0a929,0.3488044738769531,0.05405426025390625,
