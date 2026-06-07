@@ -23,13 +23,17 @@ old-format model and validates keys/shapes, producing a COMPLETE old checkpoint;
 the four-parameter ``convert_new_to_old`` has no reference, so it FAILS LOUDLY
 rather than write an incomplete old checkpoint missing that mandatory old key.
 
-Usage (four-parameter interface; the two norm-stats paths are copied across):
+Usage. ``--input-model`` accepts a new-format checkpoint dir, a ``model.safetensors``,
+or a torch ``model.pt``. Pass ``--reference-model`` (an OLD-format model dir) to get a
+COMPLETE old checkpoint; without it the four-parameter path fails loudly (the old-only
+action-expert head cannot be reconstructed from the new format):
 
-    python -m rlinf.models.embodiment.openpi_pytorch.utils.new_to_old \\
-        --input-model       /path/to/new_format_model.safetensors \\
-        --input-norm-stats  /path/to/norm_stats.json \\
-        --output-model      /path/to/old_format_out \\
-        --output-norm-stats /path/to/old_format_out/physical-intelligence/behavior/norm_stats.json
+    python -m rlinf.models.embodiment.openpi_pytorch.utils.new_to_old \
+        --input-model       .../pi05_sft_pytorch_new/model.safetensors \
+        --input-norm-stats  .../pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json \
+        --output-model      .../pi05_sft_pytorch_new_2_old \
+        --output-norm-stats .../pi05_sft_pytorch_new_2_old/physical-intelligence/behavior/norm_stats.json \
+        --reference-model   /mnt/public/xzxuan/models/pi05_base_pytorch
 """
 
 from __future__ import annotations
@@ -225,7 +229,9 @@ def convert_trained_ckpt(
     """Convert a new-format trained checkpoint to old format aligned with a reference model.
 
     Args:
-        input_ckpt: Path to model.pt (new-format, possibly with _orig_mod. prefix).
+        input_ckpt: Path to the new-format trained weights, either a ``.safetensors``
+            file or a torch ``.pt``/``.bin`` state dict (possibly with an
+            ``_orig_mod.`` prefix).
         output_dir: Output directory for the converted checkpoint.
         reference_model: Path to the reference model directory (old format) containing
             model.safetensors and config.json.
@@ -236,7 +242,10 @@ def convert_trained_ckpt(
 
     import safetensors.torch
 
-    sd = torch.load(input_ckpt, map_location="cpu", weights_only=True)
+    if str(input_ckpt).endswith(".safetensors"):
+        sd = safetensors.torch.load_file(input_ckpt, device="cpu")
+    else:
+        sd = torch.load(input_ckpt, map_location="cpu", weights_only=True)
 
     # Strip _orig_mod. prefix (added by torch.compile)
     stripped = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
@@ -349,7 +358,9 @@ def convert_new_to_old(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--input-model", required=True, help="new checkpoint dir or model.safetensors"
+        "--input-model",
+        required=True,
+        help="new checkpoint dir, model.safetensors, or model.pt",
     )
     parser.add_argument(
         "--input-norm-stats", required=True, help="norm_stats.json to copy across"
@@ -360,13 +371,33 @@ def main() -> int:
     parser.add_argument(
         "--output-norm-stats", required=True, help="destination norm_stats.json path"
     )
-    args = parser.parse_args()
-    convert_new_to_old(
-        args.input_model,
-        args.input_norm_stats,
-        args.output_model,
-        args.output_norm_stats,
+    parser.add_argument(
+        "--reference-model",
+        default=None,
+        help="reference OLD-format model dir (e.g. .../pi05_base_pytorch). When given, "
+        "produce a COMPLETE old checkpoint via convert_trained_ckpt, sourcing the "
+        "1024-wide action-expert lm_head from this reference. Without it, the "
+        "four-parameter path fails loudly because that head cannot be reconstructed "
+        "from the new format.",
     )
+    args = parser.parse_args()
+    if args.reference_model:
+        input_path = pathlib.Path(args.input_model)
+        if input_path.is_dir():
+            input_path = _resolve_model_safetensors(input_path)
+        convert_trained_ckpt(
+            input_ckpt=str(input_path),
+            output_dir=args.output_model,
+            reference_model=args.reference_model,
+        )
+        copy_norm_stats(args.input_norm_stats, args.output_norm_stats)
+    else:
+        convert_new_to_old(
+            args.input_model,
+            args.input_norm_stats,
+            args.output_model,
+            args.output_norm_stats,
+        )
     return 0
 
 
