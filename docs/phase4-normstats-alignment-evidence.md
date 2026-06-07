@@ -61,14 +61,31 @@ real change to the normalized inputs/targets. This quantifies why the user's `as
 and confirms that any *prior* Phase-3 run on the OLD file was on a different normalization. The current run is
 not affected.
 
+## Self-verifying derivation (each touchpoint is read from its driving source)
+
+The generator and test do not hardcode the touchpoint answers — each is **derived from the source that drove
+it**, so the gate fails if any source drifts:
+
+- `sft_train` — parsed from the run's dumped `tensorboard/config.yaml` (`actor.model.openpi.assets_dir` /
+  `asset_id`) and cross-checked against `run_embodiment.log`: all 8 FSDP workers must log the same resolved
+  directory (`runlog_matches_resolved: true`, `runlog_worker_loads: 8`).
+- `rlinf_eval` — parsed from `behavior_ppo_openpi_pi05_pytorch_eval.yaml` (`actor.model.openpi.assets_dir` /
+  `asset_id`).
+- `reference` — resolved by executing the reference repo's **own** `get_config(
+  "pi05_b1k-task0000_sft_pytorch_mixed").assets_dirs` + `data.repo_id` in the reference venv, so the canonical
+  source is the reference's code, not a copied literal.
+- `converter_out` — the copied file, additionally asserted equal to its input (`equals_reference_input:
+  true`).
+
 ## Artifacts
 
 - Evidence JSON: `docs/evidence/phase4_normstats_alignment.json` (all hashes, resolved paths, run proof,
-  OLD-vs-NEW quantile diff).
-- Generator (reproducible): `tests/unit_tests/_normstats_alignment_dump.py`.
-- Exact-gate test: `tests/unit_tests/test_openpi_pytorch_normstats_alignment.py` (3 tests; resolves through
-  the production `resolve_norm_stats_dir` and asserts byte-identity across touchpoints; skip-gated when the
-  external asset files are absent).
+  OLD-vs-NEW quantile diff, per-touchpoint provenance).
+- Generator (reproducible, source-deriving): `tests/unit_tests/_normstats_alignment_dump.py`.
+- Exact-gate test: `tests/unit_tests/test_openpi_pytorch_normstats_alignment.py` (4 tests; derive each
+  touchpoint from its source, resolve through the production `resolve_norm_stats_dir`, and assert byte-identity
+  + the run-log worker cross-check; skip-gated per source when the external assets / reference venv are
+  absent).
 
 ## Consequence for the eval-gap investigation
 

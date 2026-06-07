@@ -14,102 +14,187 @@
 
 """Generate the BEHAVIOR norm-stats alignment evidence.
 
-Hashes the `norm_stats.json` reached by every touchpoint of the RLinf
-SFT-train -> convert -> eval pipeline and compares them against the reference
-(`openpi-comet-pytorch-mixed`) resolution, then records the OLD-vs-NEW quantile
-diff so the effect of the prior ``assets_dir`` switch is quantified.
+Each touchpoint of the RLinf SFT-train -> convert -> eval pipeline is DERIVED
+from the source that actually drove it -- never from a duplicated literal -- so
+the evidence (and the companion test) fail if that source drifts:
 
-The five touchpoints:
-
-* ``sft_train``  -- the directory the ACTUAL SFT run loaded from (read from that
-  run's dumped ``tensorboard/config.yaml`` + ``run_embodiment.log``), resolved
-  through the production :func:`resolve_norm_stats_dir`.
+* ``sft_train``  -- parsed from the ACTUAL run's dumped ``tensorboard/config.yaml``
+  (``model.openpi.assets_dir`` / ``asset_id``) and cross-checked against
+  ``run_embodiment.log`` (every FSDP worker must log the same resolved dir).
+* ``rlinf_eval`` -- parsed from the eval YAML's ``actor.model.openpi.assets_dir``
+  / ``asset_id``.
+* ``reference``  -- resolved by executing the reference repo's own
+  ``get_config(<name>).assets_dirs`` + ``data.repo_id`` in the reference venv, so
+  the canonical source is the reference's code, not a copied path.
 * ``converter_out`` -- the file ``sft_to_new_pytorch.py`` copied into the
-  converted eval checkpoint.
-* ``rlinf_eval`` -- the directory the eval model factory resolves from the eval
-  YAML ``assets_dir`` + ``asset_id`` (production resolver).
-* ``reference``  -- the file the reference ``TrainConfig`` default
-  ``assets_base_dir`` resolves to (the canonical source).
-* ``reference_ckpt`` -- the norm-stats shipped inside the reference eval
-  checkpoint used by the control eval (``eval2``).
+  converted checkpoint; additionally checked to equal the reference (its input).
+* ``reference_ckpt`` -- the norm-stats inside the reference eval checkpoint used
+  by the control eval; ``old_pre_switch`` is the pre-switch file, kept only to
+  quantify what the ``assets_dir`` switch changed.
 
-The ``old`` entry is the pre-switch RLinf ``assets_dir`` file, kept only to
-quantify what the switch changed; it is NOT a touchpoint of the current run.
+Every (assets_dir, asset_id) pair is resolved through the production
+:func:`resolve_norm_stats_dir`, the same resolver the SFT loader and eval factory
+use, so the hashed file is the one the pipeline really reads.
 
 Run from the repo root::
 
-    python -m tests.unit_tests._normstats_alignment_dump \
+    python tests/unit_tests/_normstats_alignment_dump.py \
         --out docs/evidence/phase4_normstats_alignment.json
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import pathlib
+import subprocess
+
+import yaml
 
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
     resolve_norm_stats_dir,
 )
 
-# --- Touchpoint sources (paths documented in the plan / read from run dumps) ---
-_REF_ASSETS_BASE = pathlib.Path(
-    "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train"
-)
-_REF_CONFIG_NAME = "pi05_b1k-task0000_sft_pytorch_mixed"
-_REF_REPO_ID = "behavior-1k/2025-challenge-demos"
+_REPO = pathlib.Path("/mnt/public/xzxuan/repos/RLinf_pi05")
 
-_SFT_RUN = pathlib.Path(
-    "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla"
+# --- Source locations (the inputs that are parsed, not the answers) ---
+_SFT_RUN = _REPO / "logs/20260605-12:39:44-behavior_pi05_vla"
+_SFT_DUMPED_CONFIG = _SFT_RUN / "tensorboard/config.yaml"
+_SFT_RUN_LOG = _SFT_RUN / "run_embodiment.log"
+_EVAL_YAML = (
+    _REPO / "examples/embodiment/config/behavior_ppo_openpi_pi05_pytorch_eval.yaml"
 )
 _CONVERTED = _SFT_RUN / "pi05_sft_pytorch_new"
-_REF_CKPT = pathlib.Path("/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew")
-_OLD_ASSETS = pathlib.Path("/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets")
 
-# (assets_dir, asset_id) pairs resolved through the production resolver. The SFT
-# and reference rows use the SAME (base/{name}, repo_id) shape openpi uses.
-_TOUCHPOINTS = {
-    "sft_train": (_REF_ASSETS_BASE / _REF_CONFIG_NAME, _REF_REPO_ID),
-    "rlinf_eval": (_CONVERTED, "physical-intelligence/behavior"),
-    "reference": (_REF_ASSETS_BASE / _REF_CONFIG_NAME, _REF_REPO_ID),
-    "reference_ckpt": (_REF_CKPT, "physical-intelligence/behavior"),
-    "old_pre_switch": (_OLD_ASSETS, _REF_REPO_ID),
-}
-# converter_out is a plain file copy, resolved directly (not via assets_dir).
-_CONVERTER_OUT = _CONVERTED / "physical-intelligence/behavior"
+# Reference resolution is delegated to the reference repo's own code.
+_REF_VENV_PY = pathlib.Path("/mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python")
+_REF_REPO = pathlib.Path("/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed")
+_REF_CONFIG_NAME = "pi05_b1k-task0000_sft_pytorch_mixed"
+
+# Comparators (not current touchpoints): the reference eval checkpoint's own
+# stats and the pre-switch file used by earlier work.
+_REF_CKPT = pathlib.Path("/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew")
+_BEHAVIOR_ASSET_ID = "physical-intelligence/behavior"
+_OLD_ASSETS = pathlib.Path("/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets")
+_OLD_REPO_ID = "behavior-1k/2025-challenge-demos"
+
+_RUN_LOG_MARKER = "Loaded BEHAVIOR norm stats from "
 
 
 def _sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _load_raw(path: pathlib.Path) -> dict:
-    data = json.loads(path.read_text())
-    return data.get("norm_stats", data)
+def _hashed(assets_dir, asset_id) -> dict:
+    """Resolve (assets_dir, asset_id) via the production resolver and hash it."""
+    directory = resolve_norm_stats_dir(assets_dir, asset_id)
+    file = directory / "norm_stats.json"
+    return {
+        "assets_dir": str(assets_dir),
+        "asset_id": asset_id,
+        "resolved_file": str(file),
+        "sha256": _sha256(file),
+        "bytes": file.stat().st_size,
+    }
 
 
-def _stat_diff(old: dict, new: dict) -> dict:
-    """Per-key max/mean abs diff of mean/std/q01/q99 between OLD and NEW."""
-
-    def _flat(x):
-        out = []
-        stack = [x]
-        while stack:
-            cur = stack.pop()
-            if isinstance(cur, list):
-                stack.extend(cur)
-            elif cur is not None:
-                out.append(float(cur))
-        return out
-
-    keys = sorted(set(old) & set(new))
-    diff = {}
+def _dig(tree, *keys):
     for key in keys:
+        if not isinstance(tree, dict) or key not in tree:
+            raise KeyError(f"missing {'.'.join(keys)} in parsed config")
+        tree = tree[key]
+    return tree
+
+
+def derive_sft_train() -> dict:
+    """Parse the run's dumped config + cross-check the run log (all workers)."""
+    cfg = yaml.safe_load(_SFT_DUMPED_CONFIG.read_text())
+    assets_dir = _dig(cfg, "actor", "model", "openpi", "assets_dir")
+    asset_id = _dig(cfg, "actor", "model", "openpi", "asset_id")
+    entry = _hashed(assets_dir, asset_id)
+    resolved_dir = str(pathlib.Path(entry["resolved_file"]).parent)
+    log_lines = _SFT_RUN_LOG.read_text().splitlines()
+    loaded = [
+        line.split(_RUN_LOG_MARKER, 1)[1].strip()
+        for line in log_lines
+        if _RUN_LOG_MARKER in line
+    ]
+    entry["runlog_loaded_dirs"] = sorted(set(loaded))
+    entry["runlog_worker_loads"] = len(loaded)
+    entry["runlog_matches_resolved"] = sorted(set(loaded)) == [resolved_dir]
+    return entry
+
+
+def derive_rlinf_eval() -> dict:
+    """Parse the eval YAML's actor.model.openpi.{assets_dir,asset_id}."""
+    cfg = yaml.safe_load(_EVAL_YAML.read_text())
+    assets_dir = _dig(cfg, "actor", "model", "openpi", "assets_dir")
+    asset_id = _dig(cfg, "actor", "model", "openpi", "asset_id")
+    return _hashed(assets_dir, asset_id)
+
+
+@functools.lru_cache(maxsize=1)
+def derive_reference() -> dict:
+    """Resolve the canonical file via the reference repo's own get_config()."""
+    code = (
+        "import sys; sys.path.insert(0, 'src')\n"
+        "from openpi.training.config import get_config\n"
+        f"c = get_config({_REF_CONFIG_NAME!r})\n"
+        "print('ASSETS_DIRS', c.assets_dirs)\n"
+        "print('REPO_ID', getattr(c.data, 'repo_id', None))\n"
+        "print('ASSET_ID', getattr(getattr(c, 'assets', None), 'asset_id', None))\n"
+    )
+    proc = subprocess.run(
+        [str(_REF_VENV_PY), "-c", code],
+        cwd=str(_REF_REPO),
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    fields = {}
+    for line in proc.stdout.splitlines():
+        for key in ("ASSETS_DIRS", "REPO_ID", "ASSET_ID"):
+            if line.startswith(key + " "):
+                fields[key] = line.split(" ", 1)[1].strip()
+    if "ASSETS_DIRS" not in fields:
+        raise RuntimeError(f"reference get_config failed: {proc.stderr[-400:]}")
+    # asset_id falls back to repo_id when AssetsConfig.asset_id is unset (None).
+    asset_id = (
+        fields.get("ASSET_ID")
+        if fields.get("ASSET_ID") not in (None, "None")
+        else fields["REPO_ID"]
+    )
+    entry = _hashed(fields["ASSETS_DIRS"], asset_id)
+    entry["reference_config_name"] = _REF_CONFIG_NAME
+    entry["reference_repo"] = str(_REF_REPO)
+    return entry
+
+
+def _flatten(value) -> list[float]:
+    out: list[float] = []
+    stack = [value]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, list):
+            stack.extend(cur)
+        elif cur is not None:
+            out.append(float(cur))
+    return out
+
+
+def _quantile_diff(old_file: pathlib.Path, new_file: pathlib.Path) -> dict:
+    def _raw(path):
+        data = json.loads(path.read_text())
+        return data.get("norm_stats", data)
+
+    old, new = _raw(old_file), _raw(new_file)
+    diff = {}
+    for key in sorted(set(old) & set(new)):
         per_field = {}
         for field in ("mean", "std", "q01", "q99"):
-            o = _flat(old[key].get(field))
-            n = _flat(new[key].get(field))
+            o, n = _flatten(old[key].get(field)), _flatten(new[key].get(field))
             if not o or not n or len(o) != len(n):
                 per_field[field] = {"dim_old": len(o), "dim_new": len(n)}
                 continue
@@ -124,65 +209,54 @@ def _stat_diff(old: dict, new: dict) -> dict:
 
 
 def build_evidence() -> dict:
-    resolved: dict[str, dict] = {}
-    for name, (assets_dir, asset_id) in _TOUCHPOINTS.items():
-        entry: dict = {"assets_dir": str(assets_dir), "asset_id": asset_id}
-        try:
-            directory = resolve_norm_stats_dir(assets_dir, asset_id)
-            file = directory / "norm_stats.json"
-            entry["resolved_file"] = str(file)
-            entry["sha256"] = _sha256(file)
-            entry["bytes"] = file.stat().st_size
-        except FileNotFoundError as exc:
-            entry["error"] = str(exc)
-        resolved[name] = entry
+    sft_train = derive_sft_train()
+    rlinf_eval = derive_rlinf_eval()
+    reference = derive_reference()
 
-    conv_file = _CONVERTER_OUT / "norm_stats.json"
-    converter_entry: dict = {"resolved_file": str(conv_file)}
-    if conv_file.is_file():
-        converter_entry["sha256"] = _sha256(conv_file)
-        converter_entry["bytes"] = conv_file.stat().st_size
-    else:
-        converter_entry["error"] = f"missing: {conv_file}"
-    resolved["converter_out"] = converter_entry
-
-    canonical = resolved["reference"].get("sha256")
-    current_touchpoints = ("sft_train", "converter_out", "rlinf_eval", "reference")
-    aligned = {
-        name: resolved[name].get("sha256") == canonical for name in current_touchpoints
+    conv_file = _CONVERTED / _BEHAVIOR_ASSET_ID / "norm_stats.json"
+    conv_sha = _sha256(conv_file)
+    converter_out = {
+        "resolved_file": str(conv_file),
+        "sha256": conv_sha,
+        "bytes": conv_file.stat().st_size,
+        "equals_reference_input": conv_sha == reference["sha256"],
     }
+    reference_ckpt = _hashed(_REF_CKPT, _BEHAVIOR_ASSET_ID)
+    old_pre_switch = _hashed(_OLD_ASSETS, _OLD_REPO_ID)
 
-    # OLD-vs-NEW quantile diff (NEW == reference == canonical).
-    old_file = resolve_norm_stats_dir(_OLD_ASSETS, _REF_REPO_ID) / "norm_stats.json"
-    new_file = (
-        resolve_norm_stats_dir(_REF_ASSETS_BASE / _REF_CONFIG_NAME, _REF_REPO_ID)
-        / "norm_stats.json"
-    )
-    stat_diff = _stat_diff(_load_raw(old_file), _load_raw(new_file))
+    canonical = reference["sha256"]
+    current = {
+        "sft_train": sft_train["sha256"],
+        "converter_out": converter_out["sha256"],
+        "rlinf_eval": rlinf_eval["sha256"],
+        "reference": reference["sha256"],
+    }
+    aligned = {name: sha == canonical for name, sha in current.items()}
+
+    old_file = pathlib.Path(old_pre_switch["resolved_file"])
+    new_file = pathlib.Path(reference["resolved_file"])
 
     return {
         "description": (
             "BEHAVIOR norm-stats alignment across the RLinf SFT-train -> convert "
-            "-> eval pipeline vs the reference. Canonical source = the reference "
-            "TrainConfig default assets_base_dir resolution (the NEW file)."
+            "-> eval pipeline vs the reference. Every touchpoint is derived from "
+            "its driving source (run dump, eval YAML, reference get_config), then "
+            "resolved through the production resolve_norm_stats_dir and hashed."
         ),
         "canonical_sha256": canonical,
-        "touchpoints": resolved,
+        "touchpoints": {
+            "sft_train": sft_train,
+            "converter_out": converter_out,
+            "rlinf_eval": rlinf_eval,
+            "reference": reference,
+            "reference_ckpt": reference_ckpt,
+            "old_pre_switch": old_pre_switch,
+        },
         "current_touchpoints_aligned": aligned,
         "all_current_touchpoints_aligned": all(aligned.values()),
-        "old_vs_new_quantile_diff": stat_diff,
-        "sft_run_proof": {
-            "run_dir": str(_SFT_RUN),
-            "dumped_config": str(_SFT_RUN / "tensorboard/config.yaml"),
-            "run_log": str(_SFT_RUN / "run_embodiment.log"),
-            "note": (
-                "run_embodiment.log records all 8 FSDP workers 'Loaded BEHAVIOR "
-                "norm stats from .../pi05_b1k-task0000_sft_pytorch_mixed/"
-                "behavior-1k/2025-challenge-demos' == the NEW canonical file; the "
-                "checkpoint was trained on the same stats eval uses (no "
-                "train-on-OLD / eval-on-NEW mismatch)."
-            ),
-        },
+        "control_eval_uses_canonical": reference_ckpt["sha256"] == canonical,
+        "old_is_a_different_file": old_pre_switch["sha256"] != canonical,
+        "old_vs_new_quantile_diff": _quantile_diff(old_file, new_file),
     }
 
 
@@ -202,7 +276,7 @@ def main() -> int:
     print(
         "all_current_touchpoints_aligned =",
         evidence["all_current_touchpoints_aligned"],
-        "canonical =",
+        "| canonical =",
         evidence["canonical_sha256"],
     )
     return 0

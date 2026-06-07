@@ -1,13 +1,15 @@
 {
   "all_current_touchpoints_aligned": true,
   "canonical_sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726",
+  "control_eval_uses_canonical": true,
   "current_touchpoints_aligned": {
     "converter_out": true,
     "reference": true,
     "rlinf_eval": true,
     "sft_train": true
   },
-  "description": "BEHAVIOR norm-stats alignment across the RLinf SFT-train -> convert -> eval pipeline vs the reference. Canonical source = the reference TrainConfig default assets_base_dir resolution (the NEW file).",
+  "description": "BEHAVIOR norm-stats alignment across the RLinf SFT-train -> convert -> eval pipeline vs the reference. Every touchpoint is derived from its driving source (run dump, eval YAML, reference get_config), then resolved through the production resolve_norm_stats_dir and hashed.",
+  "old_is_a_different_file": true,
   "old_vs_new_quantile_diff": {
     "actions": {
       "mean": {
@@ -54,15 +56,10 @@
       }
     }
   },
-  "sft_run_proof": {
-    "dumped_config": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/tensorboard/config.yaml",
-    "note": "run_embodiment.log records all 8 FSDP workers 'Loaded BEHAVIOR norm stats from .../pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos' == the NEW canonical file; the checkpoint was trained on the same stats eval uses (no train-on-OLD / eval-on-NEW mismatch).",
-    "run_dir": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla",
-    "run_log": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/run_embodiment.log"
-  },
   "touchpoints": {
     "converter_out": {
       "bytes": 6346,
+      "equals_reference_input": true,
       "resolved_file": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json",
       "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
     },
@@ -77,6 +74,8 @@
       "asset_id": "behavior-1k/2025-challenge-demos",
       "assets_dir": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed",
       "bytes": 6346,
+      "reference_config_name": "pi05_b1k-task0000_sft_pytorch_mixed",
+      "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
       "resolved_file": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json",
       "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
     },
@@ -99,6 +98,11 @@
       "assets_dir": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed",
       "bytes": 6346,
       "resolved_file": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json",
+      "runlog_loaded_dirs": [
+        "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos"
+      ],
+      "runlog_matches_resolved": true,
+      "runlog_worker_loads": 8,
       "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
     }
   }
