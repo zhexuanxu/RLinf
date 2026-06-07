@@ -17,12 +17,14 @@
 Both checkpoints are evaluated under a deterministic, knob-matched eval over
 several seed pairs (`(env.eval.seed, rollout.eval_noise_seed)`). Each eval run is
 summarized into a full run record -- the complete seed/task schedule (actor seed,
-env seed + per-rank offset formula, flow-noise seed, reset/task knobs), the model
-knobs (num_steps, dtype, model_path, assets/asset_id, norm-stats sha256, denorm
-path), and the source revision -- read from its dumped `tensorboard/config.yaml`
-+ `eval_embodiment.log`, never hardcoded. The two checkpoints' records are then
-pooled into a two-proportion z-test + 95% CI, judged against DEC-1, with a
-per-seed table so outlier seeds are visible.
+env seed + per-rank offset formula, flow-noise seed, reset/task knobs) and the
+model knobs (num_steps, dtype, model_path, assets/asset_id, norm-stats sha256,
+denorm path) -- read from its dumped `tensorboard/config.yaml` +
+`eval_embodiment.log`, never hardcoded. Per-run provenance is the run dir + its
+dumped config; `evidence_generation_git_revision` is the generator's `--git-rev`
+(when the evidence was built), not a per-run log-derived field. The two
+checkpoints' records are pooled into a two-proportion z-test + 95% CI, judged
+against DEC-1, with a per-seed table so outlier seeds are visible.
 
 The run dirs come from a committed manifest (so the documented invocation rebuilds
 the committed evidence -- no placeholder defaults). Run from the repo root::
@@ -161,8 +163,11 @@ def build_run_record(run_dir: pathlib.Path, git_rev: str) -> dict:
         "task_activity_definition_id": task.get("activity_definition_id"),
         "task_activity_instance_id": task.get("activity_instance_id"),
         # --- provenance ---
+        # Per-run provenance is the run dir + its dumped config; the git rev below
+        # is the EVIDENCE-GENERATION revision (the --git-rev passed to this
+        # generator), not a per-run log-derived field.
         "config_revision": str(run_dir / "tensorboard/config.yaml"),
-        "source_git_revision": git_rev,
+        "evidence_generation_git_revision": git_rev,
     }
 
 

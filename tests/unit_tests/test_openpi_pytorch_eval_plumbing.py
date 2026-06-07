@@ -23,6 +23,7 @@ step) within a run (so ranks do not share a schedule).
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 deterministic_eval_seed = pytest.importorskip(
@@ -102,3 +103,62 @@ def test_eval_injects_seeded_generator_advances_and_resets():
     # evaluate() resets the counter -> the first seed is reproduced.
     worker._eval_noise_step = 0
     assert worker._next_eval_noise_generator("eval").initial_seed() == g0.initial_seed()
+
+
+def _predict_worker(torch, *, deterministic, supports=True):
+    """A minimal worker that can run predict() with a kwargs-recording model."""
+    from omegaconf import OmegaConf
+
+    from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
+
+    class _RecordingModel:
+        def __init__(self):
+            self.device = torch.device("cpu")
+            self.last_kwargs = None
+
+        def predict_action_batch(self, env_obs=None, **kwargs):
+            self.last_kwargs = kwargs
+            return np.zeros((1, 1), dtype=np.float32), {"forward_inputs": {}}
+
+    worker = object.__new__(MultiStepRolloutWorker)
+    worker.cfg = OmegaConf.create(
+        {
+            "actor": {"model": {"model_type": "openpi_pytorch"}},
+            "algorithm": {"loss_type": "ppo"},
+        }
+    )
+    worker._train_sampling_params = {}
+    worker._eval_sampling_params = {}
+    worker.agentloop = None
+    worker.expert_model = None
+    worker._eval_deterministic_noise = deterministic
+    worker._eval_supports_det_noise = supports
+    worker._eval_noise_seed = 1234
+    worker._eval_noise_step = 0
+    worker._rank = 0
+    worker.device = torch.device("cpu")
+    worker.hf_model = _RecordingModel()
+    worker._timer_metrics = {}  # satisfies the @Worker.timer wrapper
+    return worker
+
+
+def _predict_kwargs(worker, mode):
+    worker.predict({}, mode=mode)
+    return worker.hf_model.last_kwargs
+
+
+def test_predict_passes_rng_only_in_deterministic_supported_eval():
+    """predict() forwards a seeded rng to predict_action_batch only in eval mode
+    with the flag on and a supported model — and never otherwise. This fails if
+    the kwargs['rng'] = eval_rng passthrough is removed."""
+    torch = pytest.importorskip("torch")
+    assert "rng" in _predict_kwargs(_predict_worker(torch, deterministic=True), "eval")
+    assert "rng" not in _predict_kwargs(
+        _predict_worker(torch, deterministic=True), "train"
+    )
+    assert "rng" not in _predict_kwargs(
+        _predict_worker(torch, deterministic=False), "eval"
+    )
+    assert "rng" not in _predict_kwargs(
+        _predict_worker(torch, deterministic=True, supports=False), "eval"
+    )

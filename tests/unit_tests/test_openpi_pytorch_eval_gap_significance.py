@@ -65,7 +65,7 @@ _REQUIRED_RECORD_KEYS = {
     "task_activity_name",
     "eval_rollout_epoch",
     "total_num_envs",
-    "source_git_revision",
+    "evidence_generation_git_revision",
 }
 
 
@@ -130,7 +130,7 @@ def test_generator_rebuilds_committed_evidence_from_manifest():
     from the committed manifest (no placeholder default; BSI-1)."""
     ev = _load()
     manifest = json.loads(_MANIFEST.read_text())
-    git_rev = ev["per_seed"][0]["rlinf_trained"]["source_git_revision"]
+    git_rev = ev["per_seed"][0]["rlinf_trained"]["evidence_generation_git_revision"]
     for pair in manifest["seed_pairs"]:
         if not (
             dump._REPO / pair["rlinf_run_dir"] / "tensorboard/config.yaml"

@@ -55,7 +55,8 @@ config + log, recording the complete seed/task schedule — `actor_seed` (1234),
 0–4, per-rank `env.eval.seed + rank*stage_num`), `flow_noise_seed` (1234–1238), `use_fixed_reset_state_ids`
 (False), the task (`turning_on_radio`, `online_object_sampling: False`), `num_env_subprocess`,
 `eval_rollout_epoch`, `total_num_envs` — plus the model knobs, norm-stats sha256, denormalization path, and the
-config + source-git revision. `all_pairs_protocol_knobs_matched: true`.
+config revision (the run dir + dumped config), plus the evidence-generation git revision (the generator's
+`--git-rev`, not a per-run log-derived field). `all_pairs_protocol_knobs_matched: true`.
 
 ## Artifacts
 
