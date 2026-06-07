@@ -1,38 +1,71 @@
 {
   "dec1_gap_is_material": false,
   "dec1_material_threshold": 0.05,
-  "description": "Statistical significance of the RLinf-trained vs reference-trained BEHAVIOR success_once gap. Unpaired, stochastic eval; values parsed from each run's logged success_once + num_trajectories.",
+  "description": "Statistical significance of the RLinf-trained vs reference-trained BEHAVIOR success_once gap under a deterministic, knob-matched eval protocol (same num_steps, dtype, norm-stats, episode set, and injected flow-noise seed). Run records + outcomes parsed from each run's dumped config + eval log.",
   "difference_95_ci": [
-    -0.048298874363819216,
-    0.17329887436381922
+    -0.10089178341665499,
+    0.11651678341665499
   ],
   "difference_95_ci_excludes_zero": false,
-  "gap_reference_minus_rlinf": 0.0625,
+  "gap_reference_minus_rlinf": 0.0078125,
+  "protocol_knobs_matched": true,
   "reference_success_wilson_95_ci": [
-    0.24573020610600924,
-    0.40536588755478287
+    0.20366999780458017,
+    0.3564076855068533
   ],
   "reference_trained": {
-    "log": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260607-08:50:42-behavior_ppo_openpi_pi05_pytorch_eval2/eval_embodiment.log",
+    "asset_id": "physical-intelligence/behavior",
+    "assets_dir": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new",
+    "config_revision": "logs/20260607-12:43:43-behavior_ppo_openpi_pi05_pytorch_eval2/tensorboard/config.yaml",
+    "denormalization_path": "BehaviorEvalProcessor.postprocess_actions -> unnormalize_quantile(actions)",
+    "episode_task_set": "BEHAVIOR use_skill:false, 128 trajectories (eval_rollout_epoch x eval.total_num_envs)",
+    "eval_deterministic_noise": true,
+    "eval_noise_seed": 1234,
+    "eval_rollout_epoch": 8,
+    "eval_seed": 1234,
+    "eval_total_num_envs": 16,
+    "model_dtype": "bfloat16",
+    "model_path": "/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew",
     "n": 128,
-    "success_once": 0.3203125,
-    "successes": 41
+    "norm_stats_sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726",
+    "num_steps": 5,
+    "precision_config": null,
+    "run_dir": "logs/20260607-12:43:43-behavior_ppo_openpi_pi05_pytorch_eval2",
+    "source_git_revision": "669929e6f73f7410111630e4b2277c9d659ec921",
+    "success_once": 0.2734375,
+    "successes": 35
   },
   "rlinf_success_wilson_95_ci": [
-    0.18986902089941152,
-    0.3398691922955691
+    0.19675501016357286,
+    0.3481529380896342
   ],
   "rlinf_trained": {
-    "log": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260607-08:13:16-behavior_ppo_openpi_pi05_pytorch_eval/eval_embodiment.log",
+    "asset_id": "physical-intelligence/behavior",
+    "assets_dir": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new",
+    "config_revision": "logs/20260607-12:19:55-behavior_ppo_openpi_pi05_pytorch_eval/tensorboard/config.yaml",
+    "denormalization_path": "BehaviorEvalProcessor.postprocess_actions -> unnormalize_quantile(actions)",
+    "episode_task_set": "BEHAVIOR use_skill:false, 128 trajectories (eval_rollout_epoch x eval.total_num_envs)",
+    "eval_deterministic_noise": true,
+    "eval_noise_seed": 1234,
+    "eval_rollout_epoch": 8,
+    "eval_seed": 1234,
+    "eval_total_num_envs": 16,
+    "model_dtype": "bfloat16",
+    "model_path": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new",
     "n": 128,
-    "success_once": 0.2578125,
-    "successes": 33
+    "norm_stats_sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726",
+    "num_steps": 5,
+    "precision_config": null,
+    "run_dir": "logs/20260607-12:19:55-behavior_ppo_openpi_pi05_pytorch_eval",
+    "source_git_revision": "669929e6f73f7410111630e4b2277c9d659ec921",
+    "success_once": 0.265625,
+    "successes": 34
   },
   "two_proportion_z_test": {
-    "p_value_two_sided": 0.2700460216425329,
-    "pooled_se": 0.056665875298453156,
+    "p_value_two_sided": 0.8879838861810019,
+    "pooled_se": 0.05546453755461647,
     "significant_at_0.05": false,
-    "z": 1.1029565796137293
+    "z": 0.1408557673866289
   },
   "verdict": "NOT SIGNIFICANT \u2014 the 95% CI of the gap includes 0; the difference is within eval run-to-run noise (statistically explained, per DEC-1)."
 }

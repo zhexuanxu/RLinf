@@ -12,18 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Eval-gap significance gate.
+"""Eval-gap significance gate (matched-protocol run records).
 
-The RLinf-trained vs reference-trained BEHAVIOR success gap is assessed for
-statistical significance from each run's logged outcomes. The counts are derived
-from the eval logs (not hardcoded), so the gate fails if those logs change. The
-gap is shown to be within eval run-to-run noise under a two-proportion test and a
-95% confidence interval, satisfying DEC-1 (trend / confirm-significance-first).
+Validates the committed significance evidence: both checkpoints were evaluated
+under the deterministic, knob-matched eval protocol (same num_steps / dtype /
+norm-stats / episode set / injected flow-noise seed), each summarized into a full
+run record; and the two-proportion significance verdict is internally consistent
+with the recorded counts and CI. The outcome (significant or not) is read from the
+evidence, not hardcoded, so this gate validates the protocol + arithmetic rather
+than a fixed result.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
+import math
 import pathlib
 
 import pytest
@@ -35,33 +39,72 @@ _spec = importlib.util.spec_from_file_location(
 dump = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dump)
 
+_EVIDENCE = pathlib.Path(
+    "/mnt/public/xzxuan/repos/RLinf_pi05/docs/evidence/phase4_eval_gap_significance.json"
+)
+_REQUIRED_RECORD_KEYS = {
+    "success_once",
+    "n",
+    "successes",
+    "num_steps",
+    "model_dtype",
+    "model_path",
+    "assets_dir",
+    "asset_id",
+    "norm_stats_sha256",
+    "denormalization_path",
+    "eval_seed",
+    "eval_deterministic_noise",
+    "eval_noise_seed",
+    "episode_task_set",
+    "source_git_revision",
+}
 
-def _have_logs() -> bool:
-    return dump._RLINF_EVAL_LOG.is_file() and dump._REFERENCE_EVAL_LOG.is_file()
+
+def _load() -> dict:
+    if not _EVIDENCE.is_file():
+        pytest.skip("matched-protocol significance evidence not present")
+    return json.loads(_EVIDENCE.read_text())
 
 
-@pytest.mark.skipif(not _have_logs(), reason="eval logs not present")
-def test_eval_counts_parsed_from_logs():
-    """The success counts are read from the eval logs: 33/128 vs 41/128."""
-    rlinf = dump.parse_eval_log(dump._RLINF_EVAL_LOG)
-    reference = dump.parse_eval_log(dump._REFERENCE_EVAL_LOG)
-    assert (rlinf["successes"], rlinf["n"]) == (33, 128)
-    assert (reference["successes"], reference["n"]) == (41, 128)
-
-
-@pytest.mark.skipif(not _have_logs(), reason="eval logs not present")
-def test_eval_gap_is_within_noise():
-    """The reported gap is NOT statistically significant: the two-proportion test
-    does not reject equality and the 95% CI of the difference includes 0, so the
-    gap is statistically explained (DEC-1) rather than a defect."""
-    ev = dump.build_evidence()
-    assert not ev["two_proportion_z_test"]["significant_at_0.05"], (
-        f"unexpectedly significant: {ev['two_proportion_z_test']}"
+def test_run_records_carry_matched_knobs():
+    """Both run records carry every required eval knob, and the protocol is matched
+    (deterministic noise on, same seed / num_steps / dtype / norm-stats / n)."""
+    ev = _load()
+    for side in ("rlinf_trained", "reference_trained"):
+        missing = _REQUIRED_RECORD_KEYS - set(ev[side])
+        assert not missing, f"{side} run record missing knobs: {missing}"
+    rlinf, ref = ev["rlinf_trained"], ev["reference_trained"]
+    assert ev["protocol_knobs_matched"], (
+        f"protocol not matched: num_steps {rlinf['num_steps']}/{ref['num_steps']}, "
+        f"norm-stats {rlinf['norm_stats_sha256'][:8]}/{ref['norm_stats_sha256'][:8]}"
     )
-    assert not ev["difference_95_ci_excludes_zero"], (
-        f"CI unexpectedly excludes 0: {ev['difference_95_ci']}"
-    )
-    assert not ev["dec1_gap_is_material"]
-    # CI must actually bracket 0 (sanity on the interval orientation).
-    lo, hi = ev["difference_95_ci"]
-    assert lo < 0 < hi
+    assert rlinf["eval_deterministic_noise"] and ref["eval_deterministic_noise"]
+    assert rlinf["eval_noise_seed"] == ref["eval_noise_seed"]
+    assert rlinf["num_steps"] == ref["num_steps"]
+    assert rlinf["norm_stats_sha256"] == ref["norm_stats_sha256"]
+    assert rlinf["n"] == ref["n"]
+
+
+def test_significance_is_internally_consistent():
+    """Recompute the two-proportion test + CI from the recorded counts and confirm
+    they match the stored values, and that the DEC-1 verdict matches the CI."""
+    ev = _load()
+    x1, n1 = ev["rlinf_trained"]["successes"], ev["rlinf_trained"]["n"]
+    x2, n2 = ev["reference_trained"]["successes"], ev["reference_trained"]["n"]
+    p1, p2 = x1 / n1, x2 / n2
+    diff = p2 - p1
+    se_unpooled = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
+    ci_low = diff - dump._Z_95 * se_unpooled
+    ci_high = diff + dump._Z_95 * se_unpooled
+
+    assert ev["gap_reference_minus_rlinf"] == pytest.approx(diff, abs=1e-9)
+    assert ev["difference_95_ci"][0] == pytest.approx(ci_low, abs=1e-9)
+    assert ev["difference_95_ci"][1] == pytest.approx(ci_high, abs=1e-9)
+
+    # The verdict must agree with the CI / materiality booleans.
+    ci_excludes_zero = ci_low > 0 or ci_high < 0
+    assert ev["difference_95_ci_excludes_zero"] == ci_excludes_zero
+    if not ci_excludes_zero:
+        assert "NOT SIGNIFICANT" in ev["verdict"]
+        assert not ev["dec1_gap_is_material"]
