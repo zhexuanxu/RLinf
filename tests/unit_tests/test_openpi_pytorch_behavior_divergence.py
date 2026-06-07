@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""AC-6 behavior-divergence gate.
+"""Behavior-divergence gate.
 
 Validates the committed evidence: the two trained-and-converted models were
 compared by BEHAVIOR (post-denormalization action chunks on a fixed batch of REAL
@@ -40,7 +40,7 @@ _HORIZON = 32
 
 def _load() -> dict:
     if not _EVIDENCE.is_file():
-        pytest.skip("AC-6 behavior-divergence evidence not present")
+        pytest.skip("behavior-divergence evidence not present")
     return json.loads(_EVIDENCE.read_text())
 
 
@@ -69,6 +69,16 @@ def test_eval_knobs_matched_across_both_models():
     assert ev["rlinf_norm_stats_sha256"] == canonical
     assert ev["reference_norm_stats_sha256"] == canonical
     assert ev["rlinf_checkpoint"] != ev["reference_checkpoint"]
+    # Checkpoint/config content hashes are recorded for provenance, and the two
+    # trained checkpoints are genuinely different model files.
+    for key in (
+        "rlinf_model_sha256",
+        "reference_model_sha256",
+        "rlinf_config_sha256",
+        "reference_config_sha256",
+    ):
+        assert ev.get(key) and len(ev[key]) == 64
+    assert ev["rlinf_model_sha256"] != ev["reference_model_sha256"]
 
 
 def test_paired_determinism_holds():
@@ -78,7 +88,7 @@ def test_paired_determinism_holds():
 
 
 def test_signal_is_behavior_not_raw_parameter_delta():
-    """The AC-6 signal is the post-denormalization action-chunk delta; raw
+    """The divergence signal is the post-denormalization action-chunk delta; raw
     per-parameter tensor deltas are explicitly rejected (the negative test)."""
     ev = _load()
     assert ev["divergence_signal"] == "action_chunk_delta_post_denormalization"
@@ -88,13 +98,13 @@ def test_signal_is_behavior_not_raw_parameter_delta():
     assert len(ev["per_chunk_position_mean_abs_delta"]) == _HORIZON
 
 
-def test_divergence_measured_and_interpreted_vs_ac3():
-    """A non-trivial behavior divergence is measured and tied to AC-3's gap."""
+def test_divergence_measured_and_interpreted_vs_eval_gap():
+    """A non-trivial behavior divergence is measured and tied to the eval gap."""
     ev = _load()
     d = ev["denormalized_action_chunk_delta"]
     for k in ("mean", "max", "p95"):
         assert d[k] >= 0.0 and d[k] == d[k]  # finite, non-negative
     # Two independently-trained policies must actually differ in behavior.
     assert d["max"] > 0.0
-    assert ev["ac3_reference_minus_rlinf_eval_gap_pct"] == pytest.approx(9.2)
+    assert ev["reference_minus_rlinf_eval_gap_pct"] == pytest.approx(9.2)
     assert "fixed_noise" in ev and ev["fixed_noise"]["seed"] == 1234

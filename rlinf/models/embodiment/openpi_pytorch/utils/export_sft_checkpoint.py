@@ -70,6 +70,13 @@ def _strip_wrapper_prefix(
                 break
         if tensor.is_floating_point():
             tensor = tensor.to(torch.bfloat16)
+        # Two distinct source keys must never collapse to the same bare key, or a
+        # tensor would be silently dropped; fail loudly instead.
+        if bare_key in bare:
+            raise ValueError(
+                f"duplicate bare key {bare_key!r} after prefix strip "
+                "(two checkpoint keys collapsed to one); refusing to drop a tensor."
+            )
         bare[bare_key] = tensor.detach().cpu().contiguous()
     return bare
 

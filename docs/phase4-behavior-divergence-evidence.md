@@ -41,6 +41,8 @@ From `docs/evidence/phase4_behavior_divergence.json` (generated under git `ae9e7
 |---|---|
 | real eval obs (env-sourced, hashed) | **true** (`main_images`/`wrist_images`/`states`/`task_descriptions` each sha256'd) |
 | num envs / task | 4 / `turning_on_radio` (env_seed 0) |
+| RLinf checkpoint `model.safetensors` / `config.json` sha | `9a31478e…` / `a5110e38…` |
+| reference checkpoint `model.safetensors` / `config.json` sha | `aa151960…` / `a4ae2082…` |
 | norm-stats sha (both models) | `ff7e1ff0…` (held constant; rlinf == reference == canonical) |
 | num_steps / dtype | 5 / bfloat16 |
 | fixed noise (seed / sha) | 1234 / `52728f95…` (shared by both models) |

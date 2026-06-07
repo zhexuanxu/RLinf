@@ -1,10 +1,14 @@
 {
   "divergence_signal": "action_chunk_delta_post_denormalization",
   "raw_parameter_delta_rejected": true,
-  "raw_parameter_delta_rejected_reason": "raw per-parameter tensor deltas between two independently-shuffled production SFT runs are not interpretable as a divergence bug; AC-6 measures behavior (action chunks) on fixed real obs + fixed noise.",
-  "evidence_generation_git_revision": "ae9e774a4846b5506b8e883ddf64f6e8c0643945",
+  "raw_parameter_delta_rejected_reason": "raw per-parameter tensor deltas between two independently-shuffled production SFT runs are not interpretable as a divergence bug; this measures behavior (action chunks) on fixed real obs + fixed noise.",
+  "evidence_generation_git_revision": "8326866b579814b06e2d59953ec621958ab6ca65",
   "rlinf_checkpoint": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new",
   "reference_checkpoint": "/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew",
+  "rlinf_model_sha256": "9a31478ea4c649fe3823a833f852522129b98005971d95590774c776f69c407a",
+  "reference_model_sha256": "aa151960cecd616cb499dd5c7d12764a564b9f5cd79be8d8597dfa54f71b4060",
+  "rlinf_config_sha256": "a5110e380870d04f5bb0bf0fd46230a7e7274f3b120922917b5b33933fea4e8d",
+  "reference_config_sha256": "a4ae208203adfdd64c5fdbd4b0dc257e4ebbc82e464cb146dd0377051b25fc0a",
   "num_steps": 5,
   "dtype": "bfloat16",
   "asset_id": "physical-intelligence/behavior",
@@ -184,6 +188,6 @@
     0.30169641971588135,
     0.29577261209487915
   ],
-  "ac3_reference_minus_rlinf_eval_gap_pct": 9.2,
-  "interpretation": "The two independently-trained policies produce materially different action chunks on the SAME real eval observations + SAME fixed noise (behavior-level divergence), consistent with the significant +9.2% reference-minus-RLinf eval-success gap (AC-3). The divergence is behavioral, not a raw-weight artifact."
+  "reference_minus_rlinf_eval_gap_pct": 9.2,
+  "interpretation": "The two independently-trained policies produce materially different action chunks on the SAME real eval observations + SAME fixed noise (behavior-level divergence), consistent with the significant +9.2% pooled reference-minus-RLinf eval-success gap. The divergence is behavioral, not a raw-weight artifact."
 }

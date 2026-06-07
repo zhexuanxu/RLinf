@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dump a fixed batch of REAL BEHAVIOR eval observations (behavior-divergence AC).
+"""Dump a fixed batch of REAL BEHAVIOR eval observations for behavior comparison.
 
 Constructs the SAME ``BehaviorEnv`` that ``get_env_cls`` returns for the BEHAVIOR
 ``use_skill:false`` eval path (the OmniGibson-backed env, ``env/behavior_r1pro``

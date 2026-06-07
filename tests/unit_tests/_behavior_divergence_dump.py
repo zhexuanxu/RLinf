@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Behavior-divergence generator (AC-6): action-chunk deltas, not raw weights.
+"""Behavior-divergence generator: action-chunk deltas, not raw weights.
 
 Loads BOTH trained-and-converted checkpoints -- the RLinf-trained one and the
 reference-trained one -- through the IDENTICAL production ``get_model`` factory,
@@ -23,8 +23,8 @@ weights). It replays the SAME fixed batch of REAL BEHAVIOR eval observations
 ``predict_action_batch`` eval path with the SAME fixed flow-matching noise + seeded
 rng at ``num_steps=5`` / bf16, and reports the per-chunk action deltas
 (post-denormalization) plus the normalized model-action deltas -- the behavior-level
-divergence the plan requires (NOT raw per-parameter tensor deltas, which are
-uninterpretable across independently-shuffled runs).
+divergence between the two trained policies (NOT raw per-parameter tensor deltas,
+which are uninterpretable across independently-shuffled runs).
 
 Run with the embodied venv on a GPU::
 
@@ -50,13 +50,14 @@ _ASSET_ID = "physical-intelligence/behavior"
 _CANONICAL_NORM_STATS_SHA = (
     "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
 )
-_NUM_STEPS = 5  # the tuned eval num_steps (DEC-2); matched across both models.
+_NUM_STEPS = 5  # the tuned eval num_steps; matched across both models.
 _NOISE_SEED = 1234
 _ACTION_HORIZON = 32
 _MODEL_ACTION_DIM = 32
 _ACTION_ENV_DIM = 23
-# AC-3 pooled result (reference-minus-RLinf success_once gap), for interpretation.
-_AC3_GAP_PCT = 9.2
+# Pooled reference-minus-RLinf success_once eval gap (5 matched seed pairs), for
+# interpretation of the behavior delta's magnitude.
+_EVAL_GAP_PCT = 9.2
 
 
 def _sha_file(path) -> str:
@@ -176,12 +177,20 @@ def main():
         "raw_parameter_delta_rejected": True,
         "raw_parameter_delta_rejected_reason": (
             "raw per-parameter tensor deltas between two independently-shuffled "
-            "production SFT runs are not interpretable as a divergence bug; AC-6 "
+            "production SFT runs are not interpretable as a divergence bug; this "
             "measures behavior (action chunks) on fixed real obs + fixed noise."
         ),
         "evidence_generation_git_revision": args.git_rev,
         "rlinf_checkpoint": _RLINF_CKPT,
         "reference_checkpoint": _REF_CKPT,
+        "rlinf_model_sha256": _sha_file(
+            pathlib.Path(_RLINF_CKPT) / "model.safetensors"
+        ),
+        "reference_model_sha256": _sha_file(
+            pathlib.Path(_REF_CKPT) / "model.safetensors"
+        ),
+        "rlinf_config_sha256": _sha_file(pathlib.Path(_RLINF_CKPT) / "config.json"),
+        "reference_config_sha256": _sha_file(pathlib.Path(_REF_CKPT) / "config.json"),
         "num_steps": _NUM_STEPS,
         "dtype": "bfloat16",
         "asset_id": _ASSET_ID,
@@ -218,12 +227,12 @@ def main():
         "per_action_dim_max_abs_delta": [float(x) for x in per_dim_max],
         "per_chunk_position_mean_abs_delta": [float(x) for x in per_pos],
         "per_chunk_position_max_abs_delta": [float(x) for x in per_pos_max],
-        "ac3_reference_minus_rlinf_eval_gap_pct": _AC3_GAP_PCT,
+        "reference_minus_rlinf_eval_gap_pct": _EVAL_GAP_PCT,
         "interpretation": (
             "The two independently-trained policies produce materially different "
             "action chunks on the SAME real eval observations + SAME fixed noise "
             "(behavior-level divergence), consistent with the significant +9.2% "
-            "reference-minus-RLinf eval-success gap (AC-3). The divergence is "
+            "pooled reference-minus-RLinf eval-success gap. The divergence is "
             "behavioral, not a raw-weight artifact."
         ),
     }
