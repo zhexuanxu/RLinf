@@ -1,0 +1,20 @@
+{
+  "description": "Deterministic, knob-matched BEHAVIOR eval seed pairs (env.eval.seed, rollout.eval_noise_seed) for the RLinf-trained (converted) and reference-trained checkpoints. 128 episodes per run; 5 pairs = 640 episodes/model.",
+  "seed_pairs": [
+    {"index": 0, "env_seed": 0, "noise_seed": 1234,
+     "rlinf_run_dir": "logs/20260607-12:19:55-behavior_ppo_openpi_pi05_pytorch_eval",
+     "reference_run_dir": "logs/20260607-12:43:43-behavior_ppo_openpi_pi05_pytorch_eval2"},
+    {"index": 1, "env_seed": 1, "noise_seed": 1235,
+     "rlinf_run_dir": "logs/20260607-13:27:40-behavior_ppo_openpi_pi05_pytorch_eval",
+     "reference_run_dir": "logs/20260607-13:52:12-behavior_ppo_openpi_pi05_pytorch_eval2"},
+    {"index": 2, "env_seed": 2, "noise_seed": 1236,
+     "rlinf_run_dir": "logs/20260607-14:16:48-behavior_ppo_openpi_pi05_pytorch_eval",
+     "reference_run_dir": "logs/20260607-14:41:04-behavior_ppo_openpi_pi05_pytorch_eval2"},
+    {"index": 3, "env_seed": 3, "noise_seed": 1237,
+     "rlinf_run_dir": "logs/20260607-15:06:01-behavior_ppo_openpi_pi05_pytorch_eval",
+     "reference_run_dir": "logs/20260607-15:30:03-behavior_ppo_openpi_pi05_pytorch_eval2"},
+    {"index": 4, "env_seed": 4, "noise_seed": 1238,
+     "rlinf_run_dir": "logs/20260607-15:53:59-behavior_ppo_openpi_pi05_pytorch_eval",
+     "reference_run_dir": "logs/20260607-16:17:54-behavior_ppo_openpi_pi05_pytorch_eval2"}
+  ]
+}

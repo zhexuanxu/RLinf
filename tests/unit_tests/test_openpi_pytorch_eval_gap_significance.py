@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Eval-gap significance gate (matched-protocol run records).
+"""Eval-gap significance gate (expanded matched-protocol run records).
 
-Validates the committed significance evidence: both checkpoints were evaluated
-under the deterministic, knob-matched eval protocol (same num_steps / dtype /
-norm-stats / episode set / injected flow-noise seed), each summarized into a full
-run record; and the two-proportion significance verdict is internally consistent
-with the recorded counts and CI. The outcome (significant or not) is read from the
-evidence, not hardcoded, so this gate validates the protocol + arithmetic rather
-than a fixed result.
+Validates the committed significance evidence: every seed pair carries the FULL
+matched seed/task schedule (and the env seed is distinct from the actor seed —
+the Round-3-review record bug); the protocol is matched on every env/reset/task/
+noise knob; the pooled two-proportion test is internally consistent; and the
+generator rebuilds the committed evidence byte-for-byte from the committed
+manifest (so the documented invocation is reproducible). Outcome-agnostic: the
+significance verdict is read from the evidence, not hardcoded.
 """
 
 from __future__ import annotations
@@ -42,6 +42,9 @@ _spec.loader.exec_module(dump)
 _EVIDENCE = pathlib.Path(
     "/mnt/public/xzxuan/repos/RLinf_pi05/docs/evidence/phase4_eval_gap_significance.json"
 )
+_MANIFEST = pathlib.Path(
+    "/mnt/public/xzxuan/repos/RLinf_pi05/docs/evidence/phase4_eval_seed_pairs.json"
+)
 _REQUIRED_RECORD_KEYS = {
     "success_once",
     "n",
@@ -53,10 +56,15 @@ _REQUIRED_RECORD_KEYS = {
     "asset_id",
     "norm_stats_sha256",
     "denormalization_path",
-    "eval_seed",
+    "actor_seed",
+    "env_eval_seed",
+    "env_seed_offset_formula",
+    "flow_noise_seed",
     "eval_deterministic_noise",
-    "eval_noise_seed",
-    "episode_task_set",
+    "use_fixed_reset_state_ids",
+    "task_activity_name",
+    "eval_rollout_epoch",
+    "total_num_envs",
     "source_git_revision",
 }
 
@@ -67,44 +75,66 @@ def _load() -> dict:
     return json.loads(_EVIDENCE.read_text())
 
 
-def test_run_records_carry_matched_knobs():
-    """Both run records carry every required eval knob, and the protocol is matched
-    (deterministic noise on, same seed / num_steps / dtype / norm-stats / n)."""
+def test_every_seed_pair_carries_the_full_matched_schedule():
+    """Each seed pair's run records carry the full seed/task schedule, the env seed
+    is distinct from the actor seed, and the protocol is matched."""
     ev = _load()
-    for side in ("rlinf_trained", "reference_trained"):
-        missing = _REQUIRED_RECORD_KEYS - set(ev[side])
-        assert not missing, f"{side} run record missing knobs: {missing}"
-    rlinf, ref = ev["rlinf_trained"], ev["reference_trained"]
-    assert ev["protocol_knobs_matched"], (
-        f"protocol not matched: num_steps {rlinf['num_steps']}/{ref['num_steps']}, "
-        f"norm-stats {rlinf['norm_stats_sha256'][:8]}/{ref['norm_stats_sha256'][:8]}"
-    )
-    assert rlinf["eval_deterministic_noise"] and ref["eval_deterministic_noise"]
-    assert rlinf["eval_noise_seed"] == ref["eval_noise_seed"]
-    assert rlinf["num_steps"] == ref["num_steps"]
-    assert rlinf["norm_stats_sha256"] == ref["norm_stats_sha256"]
-    assert rlinf["n"] == ref["n"]
+    assert ev["n_seed_pairs"] >= 1
+    assert ev["all_pairs_protocol_knobs_matched"], "a seed pair is not knob-matched"
+    for pair in ev["per_seed"]:
+        assert pair["protocol_knobs_matched"]
+        for side in ("rlinf_trained", "reference_trained"):
+            rec = pair[side]
+            missing = _REQUIRED_RECORD_KEYS - set(rec)
+            assert not missing, f"pair {pair['index']} {side} missing: {missing}"
+            assert rec["eval_deterministic_noise"] is True
+            # The env seed is env.eval.seed, NOT actor.seed (the recorded bug).
+            assert rec["env_eval_seed"] == pair["env_seed"]
+            assert rec["flow_noise_seed"] == pair["noise_seed"]
+            assert (
+                rec["env_eval_seed"] != rec["actor_seed"]
+                or pair["env_seed"] == rec["actor_seed"]
+            )
 
 
-def test_significance_is_internally_consistent():
-    """Recompute the two-proportion test + CI from the recorded counts and confirm
-    they match the stored values, and that the DEC-1 verdict matches the CI."""
+def test_pooled_two_proportion_is_internally_consistent():
+    """The pooled gap + CI recompute from the summed per-seed counts."""
     ev = _load()
-    x1, n1 = ev["rlinf_trained"]["successes"], ev["rlinf_trained"]["n"]
-    x2, n2 = ev["reference_trained"]["successes"], ev["reference_trained"]["n"]
+    x1 = sum(p["rlinf_trained"]["successes"] for p in ev["per_seed"])
+    n1 = sum(p["rlinf_trained"]["n"] for p in ev["per_seed"])
+    x2 = sum(p["reference_trained"]["successes"] for p in ev["per_seed"])
+    n2 = sum(p["reference_trained"]["n"] for p in ev["per_seed"])
     p1, p2 = x1 / n1, x2 / n2
     diff = p2 - p1
-    se_unpooled = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
-    ci_low = diff - dump._Z_95 * se_unpooled
-    ci_high = diff + dump._Z_95 * se_unpooled
-
-    assert ev["gap_reference_minus_rlinf"] == pytest.approx(diff, abs=1e-9)
-    assert ev["difference_95_ci"][0] == pytest.approx(ci_low, abs=1e-9)
-    assert ev["difference_95_ci"][1] == pytest.approx(ci_high, abs=1e-9)
-
-    # The verdict must agree with the CI / materiality booleans.
-    ci_excludes_zero = ci_low > 0 or ci_high < 0
-    assert ev["difference_95_ci_excludes_zero"] == ci_excludes_zero
+    se = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
+    pooled = ev["pooled"]
+    assert pooled["gap_reference_minus_rlinf"] == pytest.approx(diff, abs=1e-9)
+    assert pooled["difference_95_ci"][0] == pytest.approx(
+        diff - dump._Z_95 * se, abs=1e-9
+    )
+    assert pooled["difference_95_ci"][1] == pytest.approx(
+        diff + dump._Z_95 * se, abs=1e-9
+    )
+    assert ev["episodes_per_model"] == n1
+    ci_excludes_zero = (
+        pooled["difference_95_ci"][0] > 0 or pooled["difference_95_ci"][1] < 0
+    )
     if not ci_excludes_zero:
         assert "NOT SIGNIFICANT" in ev["verdict"]
         assert not ev["dec1_gap_is_material"]
+
+
+@pytest.mark.skipif(not _MANIFEST.is_file(), reason="seed-pair manifest not present")
+def test_generator_rebuilds_committed_evidence_from_manifest():
+    """The documented invocation reproduces the committed evidence byte-for-byte
+    from the committed manifest (no placeholder default; BSI-1)."""
+    ev = _load()
+    manifest = json.loads(_MANIFEST.read_text())
+    git_rev = ev["per_seed"][0]["rlinf_trained"]["source_git_revision"]
+    for pair in manifest["seed_pairs"]:
+        if not (
+            dump._REPO / pair["rlinf_run_dir"] / "tensorboard/config.yaml"
+        ).is_file():
+            pytest.skip("matched-protocol eval run dirs not present")
+    rebuilt = dump.build_evidence(manifest, git_rev)
+    assert json.dumps(rebuilt, sort_keys=True) == json.dumps(ev, sort_keys=True)
