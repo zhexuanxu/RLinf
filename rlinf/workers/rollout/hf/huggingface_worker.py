@@ -73,6 +73,11 @@ class MultiStepRolloutWorker(Worker):
         )
         self._eval_noise_seed = int(self.cfg.rollout.get("eval_noise_seed", 0))
         self._eval_noise_step = 0
+        # Only the openpi_pytorch flow-matching sampler accepts an injected rng.
+        self._eval_supports_det_noise = (
+            SupportedModel(self.cfg.actor.model.model_type)
+            == SupportedModel.OPENPI_PYTORCH
+        )
         self.expert_model = None
 
         self.total_num_train_envs = cfg.env.train.total_num_envs
@@ -363,6 +368,29 @@ class MultiStepRolloutWorker(Worker):
             dst_rank=self._rank,
         )
 
+    def _next_eval_noise_generator(self, mode: str):
+        """Seeded per-step generator for deterministic/paired eval, or ``None``.
+
+        Returns ``None`` (production stochastic sampling, unchanged) unless eval
+        mode + the openpi_pytorch model + ``rollout.eval_deterministic_noise`` are
+        all active. The seed is reproducible per ``(rank, step)``
+        (:func:`deterministic_eval_seed`); the per-step counter advances on each
+        call and is reset at the start of :meth:`evaluate`, so two eval runs with
+        the same config inject the same noise schedule.
+        """
+        if not (
+            self._eval_deterministic_noise
+            and mode == "eval"
+            and self._eval_supports_det_noise
+        ):
+            return None
+        seed = deterministic_eval_seed(
+            self._eval_noise_seed, self._rank, self._eval_noise_step
+        )
+        self._eval_noise_step += 1
+        device = getattr(self.hf_model, "device", self.device)
+        return torch.Generator(device=device).manual_seed(seed)
+
     @Worker.timer("predict")
     def predict(
         self, env_obs: dict[str, Any], mode: Literal["train", "eval"] = "train"
@@ -398,18 +426,9 @@ class MultiStepRolloutWorker(Worker):
         # Deterministic eval: inject a reproducible per-step generator into the
         # openpi_pytorch flow-matching sampler so a knob-matched eval is paired
         # across runs. Off by default, so production eval sampling is unchanged.
-        if (
-            self._eval_deterministic_noise
-            and mode == "eval"
-            and SupportedModel(self.cfg.actor.model.model_type)
-            == SupportedModel.OPENPI_PYTORCH
-        ):
-            seed = deterministic_eval_seed(
-                self._eval_noise_seed, self._rank, self._eval_noise_step
-            )
-            self._eval_noise_step += 1
-            device = getattr(self.hf_model, "device", self.device)
-            kwargs["rng"] = torch.Generator(device=device).manual_seed(seed)
+        eval_rng = self._next_eval_noise_generator(mode)
+        if eval_rng is not None:
+            kwargs["rng"] = eval_rng
 
         # Dual-system agentloop path: reuses the same kwargs computed above
         # so the VLA call is fully consistent with the standard path.

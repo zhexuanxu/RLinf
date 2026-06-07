@@ -133,7 +133,7 @@ actor:
     openpi:
       action_env_dim: ${actor.model.action_dim}
       # Canonical BEHAVIOR task-0000 norm stats — the SAME assets the SFT path
-      # resolves, so eval and SFT share one norm-stats distribution (AC-8).
+      # resolves, so eval and SFT share one norm-stats distribution.
       assets_dir: /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new
       # this is same to /mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew/physical-intelligence/behavior/norm_stats.json
       asset_id: physical-intelligence/behavior

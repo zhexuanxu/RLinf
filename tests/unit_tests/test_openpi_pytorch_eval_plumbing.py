@@ -49,3 +49,56 @@ def test_seed_depends_on_base_seed():
     # A different base seed yields a different noise schedule (so the protocol's
     # seed is recorded and varied deliberately, not incidentally).
     assert deterministic_eval_seed(1234, 0, 0) != deterministic_eval_seed(5678, 0, 0)
+
+
+def _fake_worker(torch, *, deterministic, supports=True, rank=0, seed=1234):
+    """A minimal worker exposing only what _next_eval_noise_generator reads."""
+    from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
+
+    worker = object.__new__(MultiStepRolloutWorker)
+    worker._eval_deterministic_noise = deterministic
+    worker._eval_supports_det_noise = supports
+    worker._eval_noise_seed = seed
+    worker._eval_noise_step = 0
+    worker._rank = rank
+    worker.device = torch.device("cpu")
+
+    class _Model:
+        device = torch.device("cpu")
+
+    worker.hf_model = _Model()
+    return worker
+
+
+def test_predict_injects_no_rng_in_train_mode():
+    torch = pytest.importorskip("torch")
+    worker = _fake_worker(torch, deterministic=True)
+    assert worker._next_eval_noise_generator("train") is None
+    assert worker._eval_noise_step == 0
+
+
+def test_predict_injects_no_rng_when_flag_off():
+    torch = pytest.importorskip("torch")
+    worker = _fake_worker(torch, deterministic=False)
+    assert worker._next_eval_noise_generator("eval") is None
+
+
+def test_predict_injects_no_rng_for_unsupported_model():
+    torch = pytest.importorskip("torch")
+    worker = _fake_worker(torch, deterministic=True, supports=False)
+    assert worker._next_eval_noise_generator("eval") is None
+
+
+def test_eval_injects_seeded_generator_advances_and_resets():
+    torch = pytest.importorskip("torch")
+    worker = _fake_worker(torch, deterministic=True, seed=1234, rank=0)
+    g0 = worker._next_eval_noise_generator("eval")
+    assert isinstance(g0, torch.Generator)
+    assert worker._eval_noise_step == 1
+    assert g0.initial_seed() == deterministic_eval_seed(1234, 0, 0)
+    g1 = worker._next_eval_noise_generator("eval")
+    assert worker._eval_noise_step == 2
+    assert g1.initial_seed() == deterministic_eval_seed(1234, 0, 1) != g0.initial_seed()
+    # evaluate() resets the counter -> the first seed is reproduced.
+    worker._eval_noise_step = 0
+    assert worker._next_eval_noise_generator("eval").initial_seed() == g0.initial_seed()
