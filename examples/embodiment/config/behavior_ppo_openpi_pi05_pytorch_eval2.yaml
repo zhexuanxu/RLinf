@@ -106,9 +106,8 @@ rollout:
   model:
     # NEW-format checkpoint produced by openpi_pytorch.utils.old_to_new from
     # the old BEHAVIOR eval checkpoint (jax_task0000_sft_29999).
-    model_path: /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new
+    model_path: /mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew
     # /mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew
-    # /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new
     precision: ${actor.model.precision}
 
 actor:
@@ -132,6 +131,7 @@ actor:
       # Canonical BEHAVIOR task-0000 norm stats — the SAME assets the SFT path
       # resolves, so eval and SFT share one norm-stats distribution (AC-8).
       assets_dir: /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new
+      # this is same to /mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew/physical-intelligence/behavior/norm_stats.json
       asset_id: physical-intelligence/behavior
       # "behavior-1k/2025-challenge-demos"
 
