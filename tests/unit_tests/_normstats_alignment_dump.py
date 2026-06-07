@@ -49,6 +49,7 @@ import functools
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 
 import yaml
@@ -81,6 +82,9 @@ _OLD_ASSETS = pathlib.Path("/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets")
 _OLD_REPO_ID = "behavior-1k/2025-challenge-demos"
 
 _RUN_LOG_MARKER = "Loaded BEHAVIOR norm stats from "
+# Independent signal for the FSDP world size: distinct ranks that loaded the base
+# model. The norm-stats loads must match this count (every rank loaded the stats).
+_RANK_PATTERN = re.compile(r"ActorGroup\(rank=(\d+)\)")
 
 
 def _sha256(path: pathlib.Path) -> str:
@@ -115,15 +119,22 @@ def derive_sft_train() -> dict:
     asset_id = _dig(cfg, "actor", "model", "openpi", "asset_id")
     entry = _hashed(assets_dir, asset_id)
     resolved_dir = str(pathlib.Path(entry["resolved_file"]).parent)
-    log_lines = _SFT_RUN_LOG.read_text().splitlines()
+    log_text = _SFT_RUN_LOG.read_text()
     loaded = [
         line.split(_RUN_LOG_MARKER, 1)[1].strip()
-        for line in log_lines
+        for line in log_text.splitlines()
         if _RUN_LOG_MARKER in line
     ]
+    # Expected worker count derived independently of the norm-stats lines: the
+    # distinct FSDP ranks that loaded the base model.
+    expected_workers = len(set(_RANK_PATTERN.findall(log_text)))
     entry["runlog_loaded_dirs"] = sorted(set(loaded))
     entry["runlog_worker_loads"] = len(loaded)
+    entry["runlog_expected_workers"] = expected_workers
     entry["runlog_matches_resolved"] = sorted(set(loaded)) == [resolved_dir]
+    entry["runlog_worker_count_matches_expected"] = (
+        expected_workers > 0 and len(loaded) == expected_workers
+    )
     return entry
 
 

@@ -67,8 +67,11 @@ The generator and test do not hardcode the touchpoint answers — each is **deri
 it**, so the gate fails if any source drifts:
 
 - `sft_train` — parsed from the run's dumped `tensorboard/config.yaml` (`actor.model.openpi.assets_dir` /
-  `asset_id`) and cross-checked against `run_embodiment.log`: all 8 FSDP workers must log the same resolved
-  directory (`runlog_matches_resolved: true`, `runlog_worker_loads: 8`).
+  `asset_id`) and cross-checked against `run_embodiment.log`: all FSDP workers must log the same resolved
+  directory (`runlog_matches_resolved: true`), and the number of norm-stats loads (`runlog_worker_loads: 8`)
+  must equal the world size derived independently from the distinct base-model load ranks
+  (`runlog_expected_workers: 8`, `runlog_worker_count_matches_expected: true`). The exact-gate test requires
+  this count to be the expected `8`, so it fails if any worker's load line disappears.
 - `rlinf_eval` — parsed from `behavior_ppo_openpi_pi05_pytorch_eval.yaml` (`actor.model.openpi.assets_dir` /
   `asset_id`).
 - `reference` — resolved by executing the reference repo's **own** `get_config(

@@ -7,7 +7,12 @@
     "loss_max_abs_diff": 0.0,
     "normalized_action_max_abs_diff": 0.0,
     "num_steps": 5,
-    "tolerance": 0.01
+    "tolerance": 0.01,
+    "wrapper": {
+      "eval_denormalized_action_max_abs_diff": 0.0,
+      "eval_normalized_model_action_max_abs_diff": 0.0,
+      "sft_loss_max_abs_diff": 0.0
+    }
   },
   "structural_match": {
     "dtypes_equal": true,

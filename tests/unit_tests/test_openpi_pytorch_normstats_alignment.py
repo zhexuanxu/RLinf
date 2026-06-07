@@ -83,15 +83,27 @@ def test_all_current_touchpoints_resolve_one_canonical_file():
     )
 
 
+_EXPECTED_SFT_WORKERS = 8  # this run's FSDP world size (single node, 8 GPUs)
+
+
 @pytest.mark.skipif(not _have_sft(), reason="SFT run dump/log not present")
 def test_sft_runlog_confirms_every_worker_loaded_the_resolved_file():
     """The run log must show every FSDP worker loading the SAME directory that
-    the dumped config resolves to (no worker silently loaded a different file)."""
+    the dumped config resolves to, and the number of norm-stats loads must equal
+    the FSDP world size derived independently from the base-model load ranks (no
+    worker silently loaded a different file or skipped the load)."""
     sft = dump.derive_sft_train()
     assert sft["runlog_matches_resolved"], (
         f"run log dirs {sft['runlog_loaded_dirs']} != resolved {sft['resolved_file']}"
     )
-    assert sft["runlog_worker_loads"] >= 1
+    # Loads must match the independently-derived world size, and that world size
+    # must be the expected 8 for this run.
+    assert sft["runlog_worker_count_matches_expected"], (
+        f"norm-stats loads {sft['runlog_worker_loads']} != expected workers "
+        f"{sft['runlog_expected_workers']}"
+    )
+    assert sft["runlog_worker_loads"] == _EXPECTED_SFT_WORKERS
+    assert sft["runlog_expected_workers"] == _EXPECTED_SFT_WORKERS
 
 
 @pytest.mark.skipif(

@@ -72,16 +72,28 @@ class OpenPiPytorchActionModel(nn.Module):
         env_obs: dict[str, Any],
         mode: Literal["train", "eval"] = "eval",
         compute_values: bool = False,
+        *,
+        noise: torch.Tensor | None = None,
+        rng: torch.Generator | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
-        """Sample env actions for a batch of observations (eval / action generation)."""
+        """Sample env actions for a batch of observations (eval / action generation).
+
+        When ``noise`` (shape ``[B, action_horizon, model_action_dim]``) and/or a
+        ``rng`` generator are provided, they are passed verbatim to the
+        flow-matching sampler so the same observation yields the same actions —
+        used for deterministic / paired evaluation. The default (both ``None``)
+        preserves the stochastic production sampling unchanged.
+        """
         if self.processor is None:
             raise RuntimeError(
                 "predict_action_batch requires a BehaviorEvalProcessor; "
                 "the current model was built for SFT training only."
             )
         observation = self.processor.build_observation(env_obs, self.device)
-        model_actions = self.model.sample_actions(observation, num_steps=self.num_steps)
+        model_actions = self.model.sample_actions(
+            observation, num_steps=self.num_steps, noise=noise, rng=rng
+        )
         actions = self.processor.postprocess_actions(model_actions).to(self.device)
 
         batch = actions.shape[0]

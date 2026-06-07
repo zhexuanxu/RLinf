@@ -111,15 +111,6 @@ def forward_parity() -> dict:
     import safetensors.torch
 
     from rlinf.models.embodiment.openpi_pytorch.pi0_model import model as vmodel
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
-        load_norm_stats,
-    )
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.processing import (
-        BehaviorEvalProcessor,
-    )
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
-        PaligemmaTokenizer,
-    )
     from rlinf.models.embodiment.openpi_pytorch.utils.export_sft_checkpoint import (
         _strip_wrapper_prefix,
     )
@@ -169,14 +160,8 @@ def forward_parity() -> dict:
     with torch.no_grad():
         loss_diff = float((_loss(pre) - _loss(post)).abs().max())
         a_pre, a_post = _act(pre), _act(post)
-    proc = BehaviorEvalProcessor(
-        load_norm_stats(t._NORM_STATS_DIR),
-        PaligemmaTokenizer(max_len=200),
-        action_chunk=32,
-        action_env_dim=23,
-        model_action_dim=32,
-    )
-    return {
+    proc = t._make_processor()
+    result = {
         "num_steps": t._NUM_STEPS,
         "tolerance": t._FORWARD_TOL,
         "loss_max_abs_diff": loss_diff,
@@ -187,6 +172,41 @@ def forward_parity() -> dict:
             .max()
         ),
     }
+
+    # Wrapper-boundary parity (OpenPiPytorchActionModel + predict_action_batch).
+    pre_w, post_w = t._wrap(pre, proc), t._wrap(post, proc)
+
+    def _sft(wrapper):
+        return float(
+            wrapper.compute_loss(
+                {
+                    "observation": vmodel.Observation.from_dict(copy.deepcopy(raw)),
+                    "actions": actions.clone(),
+                    "noise": loss_noise.clone(),
+                    "time": loss_time.clone(),
+                }
+            )
+        )
+
+    env_obs = t._fixed_env_obs(torch)
+    eval_noise = torch.randn(
+        1, 32, 32, generator=torch.Generator().manual_seed(123)
+    ).to("cuda")
+    pa, pr = pre_w.predict_action_batch(env_obs, mode="eval", noise=eval_noise.clone())
+    qa, qr = post_w.predict_action_batch(env_obs, mode="eval", noise=eval_noise.clone())
+    result["wrapper"] = {
+        "sft_loss_max_abs_diff": abs(_sft(pre_w) - _sft(post_w)),
+        "eval_denormalized_action_max_abs_diff": float((pa - qa).abs().max()),
+        "eval_normalized_model_action_max_abs_diff": float(
+            (
+                pr["forward_inputs"]["model_action"].float()
+                - qr["forward_inputs"]["model_action"].float()
+            )
+            .abs()
+            .max()
+        ),
+    }
+    return result
 
 
 def build_evidence() -> dict:

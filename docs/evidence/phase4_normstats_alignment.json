@@ -98,10 +98,12 @@
       "assets_dir": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed",
       "bytes": 6346,
       "resolved_file": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json",
+      "runlog_expected_workers": 8,
       "runlog_loaded_dirs": [
         "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos"
       ],
       "runlog_matches_resolved": true,
+      "runlog_worker_count_matches_expected": true,
       "runlog_worker_loads": 8,
       "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
     }

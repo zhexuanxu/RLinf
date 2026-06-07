@@ -57,6 +57,19 @@ checkpoint, on a fixed observation ("turn on radio", seed-0 images/state) + inje
 Exactly 0 — expected, since the weights are bitwise-identical (gate 1) and the inputs/noise/time are fixed.
 This confirms the full load → forward → denormalize path is preserved by the conversion.
 
+The same parity holds at the `OpenPiPytorchActionModel` **wrapper** boundary (the interface eval actually
+uses) — pre-conversion wrapper vs converted wrapper, same processor:
+
+| Wrapper quantity | max |Δ| |
+|---|---|
+| SFT loss (`compute_loss` / `sft_forward`, injected noise/time) | **0.0** |
+| eval actions via `predict_action_batch` (denormalized) | **0.0** |
+| eval `forward_inputs.model_action` (normalized) | **0.0** |
+
+The eval action parity uses a new optional `noise`/`rng` passthrough on `predict_action_batch` (a no-op when
+absent, so production sampling is unchanged — verified by `test_predict_action_batch_contract`); the same hook
+is reused for the AC-3 paired/deterministic eval.
+
 ## Artifacts
 
 - Evidence JSON: `docs/evidence/phase4_converter_parity.json`.

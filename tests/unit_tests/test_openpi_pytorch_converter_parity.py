@@ -191,20 +191,7 @@ def _build_pi0(state_dict, torch):
     return model.to("cuda").to(torch.bfloat16).eval()
 
 
-@pytest.mark.skipif(
-    not _have(_FULL_WEIGHTS, _CONVERTED_WEIGHTS, _NORM_STATS_DIR),
-    reason="SFT full_weights / converted checkpoint / norm-stats not present",
-)
-def test_converter_forward_parity():
-    """The model built from the consolidated full-weights checkpoint and the model
-    built from the converted checkpoint produce the same flow-matching loss and the
-    same sampled action chunk (normalized AND denormalized) on a fixed input."""
-    torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
-    import safetensors.torch
-
-    from rlinf.models.embodiment.openpi_pytorch.pi0_model import model as vmodel
+def _make_processor():
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
         load_norm_stats,
     )
@@ -214,6 +201,59 @@ def test_converter_forward_parity():
     from rlinf.models.embodiment.openpi_pytorch.pi0_model.tokenizer import (
         PaligemmaTokenizer,
     )
+
+    return BehaviorEvalProcessor(
+        load_norm_stats(_NORM_STATS_DIR),
+        PaligemmaTokenizer(max_len=200),
+        action_chunk=32,
+        action_env_dim=23,
+        model_action_dim=32,
+    )
+
+
+def _wrap(pi0_model, processor):
+    from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
+        OpenPiPytorchActionModel,
+    )
+
+    return OpenPiPytorchActionModel(
+        pi0_model,
+        processor,
+        num_steps=_NUM_STEPS,
+        action_chunk=32,
+        action_env_dim=23,
+    )
+
+
+def _fixed_env_obs(torch):
+    g = torch.Generator().manual_seed(0)
+    return {
+        "main_images": torch.randint(
+            0, 256, (1, 720, 720, 3), dtype=torch.uint8, generator=g
+        ),
+        "wrist_images": torch.randint(
+            0, 256, (1, 2, 480, 480, 3), dtype=torch.uint8, generator=g
+        ),
+        "states": torch.rand(1, 256, generator=g).double(),
+        "task_descriptions": ["turn on radio"],
+        "extra_view_images": None,
+    }
+
+
+@pytest.fixture(scope="module")
+def converted_models():
+    """Build the pre-conversion and converted Pi0 models + shared processor once.
+
+    The pre-conversion model is the consolidated full-weights checkpoint reduced
+    to a bare bf16 Pi0 (the SFT-trained model); the converted model is loaded from
+    ``sft_to_new_pytorch.py``'s output."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    if not _have(_FULL_WEIGHTS, _CONVERTED_WEIGHTS, _NORM_STATS_DIR):
+        pytest.skip("SFT full_weights / converted checkpoint / norm-stats not present")
+    import safetensors.torch
+
     from rlinf.models.embodiment.openpi_pytorch.utils.export_sft_checkpoint import (
         _as_state_dict,
         _strip_wrapper_prefix,
@@ -227,8 +267,23 @@ def test_converter_forward_parity():
         )
     )
     post_state = safetensors.torch.load_file(str(_CONVERTED_WEIGHTS), device="cpu")
-    pre_model = _build_pi0(pre_state, torch)
-    post_model = _build_pi0(post_state, torch)
+    return {
+        "torch": torch,
+        "pre": _build_pi0(pre_state, torch),
+        "post": _build_pi0(post_state, torch),
+        "processor": _make_processor(),
+    }
+
+
+def test_converter_bare_forward_parity(converted_models):
+    """Bare Pi0 from the consolidated checkpoint vs from the converted checkpoint:
+    same flow-matching loss + sampled action chunk (normalized AND denormalized)
+    on a fixed input + injected noise/time."""
+    torch = converted_models["torch"]
+    pre_model, post_model = converted_models["pre"], converted_models["post"]
+    processor = converted_models["processor"]
+
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model import model as vmodel
 
     raw = _fixed_observation(torch)
     actions = torch.randn(1, 32, 32, generator=torch.Generator().manual_seed(7)).to(
@@ -240,46 +295,96 @@ def test_converter_forward_parity():
     loss_time = torch.tensor([0.3]).to("cuda")
     sample_noise = torch.randn(1, 32, 32, generator=torch.Generator().manual_seed(123))
 
+    def _loss(m):
+        return m.compute_loss(
+            vmodel.Observation.from_dict(copy.deepcopy(raw)),
+            actions.clone(),
+            train=False,
+            noise=loss_noise.clone(),
+            time=loss_time.clone(),
+        ).float()
+
+    def _act(m):
+        return m.sample_actions(
+            vmodel.Observation.from_dict(copy.deepcopy(raw)),
+            num_steps=_NUM_STEPS,
+            noise=sample_noise.clone().to("cuda"),
+        ).float()
+
     with torch.no_grad():
-        loss_pre = pre_model.compute_loss(
-            vmodel.Observation.from_dict(copy.deepcopy(raw)),
-            actions.clone(),
-            train=False,
-            noise=loss_noise.clone(),
-            time=loss_time.clone(),
-        ).float()
-        loss_post = post_model.compute_loss(
-            vmodel.Observation.from_dict(copy.deepcopy(raw)),
-            actions.clone(),
-            train=False,
-            noise=loss_noise.clone(),
-            time=loss_time.clone(),
-        ).float()
-        act_pre = pre_model.sample_actions(
-            vmodel.Observation.from_dict(copy.deepcopy(raw)),
-            num_steps=_NUM_STEPS,
-            noise=sample_noise.clone().to("cuda"),
-        ).float()
-        act_post = post_model.sample_actions(
-            vmodel.Observation.from_dict(copy.deepcopy(raw)),
-            num_steps=_NUM_STEPS,
-            noise=sample_noise.clone().to("cuda"),
-        ).float()
-
-    loss_diff = float((loss_pre - loss_post).abs().max())
-    act_diff = float((act_pre - act_post).abs().max())
+        loss_diff = float((_loss(pre_model) - _loss(post_model)).abs().max())
+        act_pre, act_post = _act(pre_model), _act(post_model)
     assert loss_diff <= _FORWARD_TOL, f"loss parity {loss_diff} > {_FORWARD_TOL}"
-    assert act_diff <= _FORWARD_TOL, f"normalized action parity {act_diff}"
-
-    # Post-denormalization parity through the same BEHAVIOR processor.
-    processor = BehaviorEvalProcessor(
-        load_norm_stats(_NORM_STATS_DIR),
-        PaligemmaTokenizer(max_len=200),
-        action_chunk=32,
-        action_env_dim=23,
-        model_action_dim=32,
+    assert float((act_pre - act_post).abs().max()) <= _FORWARD_TOL
+    denorm_diff = float(
+        (
+            processor.postprocess_actions(act_pre)
+            - processor.postprocess_actions(act_post)
+        )
+        .abs()
+        .max()
     )
-    denorm_pre = processor.postprocess_actions(act_pre)
-    denorm_post = processor.postprocess_actions(act_post)
-    denorm_diff = float((denorm_pre - denorm_post).abs().max())
     assert denorm_diff <= _FORWARD_TOL, f"denormalized action parity {denorm_diff}"
+
+
+def test_converter_wrapper_boundary_parity(converted_models):
+    """Exercise the ``OpenPiPytorchActionModel`` wrapper boundary AC-2 names: the
+    pre-conversion and converted wrappers give the same SFT loss (with injected
+    noise/time) and the same eval actions via ``predict_action_batch`` with the
+    injected-noise hook (both the returned denormalized actions and the
+    ``forward_inputs.model_action`` normalized chunk)."""
+    torch = converted_models["torch"]
+    processor = converted_models["processor"]
+    pre = _wrap(converted_models["pre"], processor)
+    post = _wrap(converted_models["post"], processor)
+
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model import model as vmodel
+
+    raw = _fixed_observation(torch)
+    actions = torch.randn(1, 32, 32, generator=torch.Generator().manual_seed(7)).to(
+        "cuda"
+    )
+    loss_noise = torch.randn(1, 32, 32, generator=torch.Generator().manual_seed(99)).to(
+        "cuda"
+    )
+    loss_time = torch.tensor([0.3]).to("cuda")
+
+    def _sft_loss(wrapper):
+        return float(
+            wrapper.compute_loss(
+                {
+                    "observation": vmodel.Observation.from_dict(copy.deepcopy(raw)),
+                    "actions": actions.clone(),
+                    "noise": loss_noise.clone(),
+                    "time": loss_time.clone(),
+                }
+            )
+        )
+
+    sft_diff = abs(_sft_loss(pre) - _sft_loss(post))
+    assert sft_diff <= _FORWARD_TOL, f"wrapper SFT loss parity {sft_diff}"
+
+    # Eval action parity through predict_action_batch + the injected-noise hook.
+    env_obs = _fixed_env_obs(torch)
+    eval_noise = torch.randn(
+        1, 32, 32, generator=torch.Generator().manual_seed(123)
+    ).to("cuda")
+    pre_actions, pre_res = pre.predict_action_batch(
+        env_obs, mode="eval", noise=eval_noise.clone()
+    )
+    post_actions, post_res = post.predict_action_batch(
+        env_obs, mode="eval", noise=eval_noise.clone()
+    )
+    env_diff = float((pre_actions - post_actions).abs().max())
+    model_action_diff = float(
+        (
+            pre_res["forward_inputs"]["model_action"].float()
+            - post_res["forward_inputs"]["model_action"].float()
+        )
+        .abs()
+        .max()
+    )
+    assert env_diff <= _FORWARD_TOL, f"wrapper denormalized action parity {env_diff}"
+    assert model_action_diff <= _FORWARD_TOL, (
+        f"wrapper normalized model_action parity {model_action_diff}"
+    )
