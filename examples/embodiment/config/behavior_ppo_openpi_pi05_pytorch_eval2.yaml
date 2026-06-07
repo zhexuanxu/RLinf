@@ -102,6 +102,11 @@ rollout:
   backend: "huggingface"
   enable_offload: True
   pipeline_stage_num: 1
+  # Deterministic / paired eval: inject a reproducible per-step flow-matching
+  # noise schedule so this checkpoint and the reference checkpoint are compared
+  # under the SAME noise (a knob-matched protocol). Off -> stochastic eval.
+  eval_deterministic_noise: True
+  eval_noise_seed: 1234
 
   model:
     # NEW-format checkpoint produced by openpi_pytorch.utils.old_to_new from
