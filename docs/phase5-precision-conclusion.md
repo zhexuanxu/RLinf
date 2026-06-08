@@ -48,11 +48,14 @@ held identical, the recipe produces the same gradient magnitude to bf16 precisio
 ## Independent audit
 
 An independent analyze-route audit of the full evidence package (ledgers, verdict, harnesses, pinned artifact,
-decouple gate) returned PASS on all six questions (surface enumeration, runtime provenance, pinned-input
-integrity, buffer-default observation, AC-4 decouple, verdict integrity). Its one substantive finding — the
-`grad_norm` BENIGN note had mis-attributed the value gap to "independent weights" when both repos load the same
-base checkpoint — has been corrected in `_precision_verdict.py` (the gap is bf16-compute/compile/FSDP
-non-determinism; the verdict itself was already correct).
+decouple gate) returned **OVERALL PASS** on all six questions (surface enumeration, runtime provenance,
+pinned-input integrity, buffer-default observation, decouple, verdict integrity). Its one substantive finding —
+the `grad_norm` BENIGN note had mis-attributed the value gap to "independent weights" when both repos load the
+same base checkpoint — has been corrected in `_precision_verdict.py` (the gap is bf16-compute/compile/FSDP
+non-determinism; the verdict itself was already correct). The full per-question verdict, the route deviation
+(`analyze` → fresh-context auditor after `ask-codex` returned empty output, per
+BL-20260603-codex-remote-compaction-fail), and the file:line references are committed in
+**`docs/phase5-precision-independent-audit.md`**.
 
 ## AC-4 — the config footgun decoupled
 
@@ -99,4 +102,5 @@ numeric parity criterion above.
   (`_ref_pinned_run.py` → `_precision_pinned.build_pinned`).
 - Decouple + gate: `examples/sft/config/behavior_pi05_vla.yaml` +
   `test_openpi_pytorch_precision_decouple.py` (3).
+- Independent analyze-route audit: `docs/phase5-precision-independent-audit.md` (task6, OVERALL PASS).
 - Detailed per-surface evidence: `docs/phase5-precision-ledger-evidence.md`.
