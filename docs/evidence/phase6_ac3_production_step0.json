@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "description": "Identical-data production-stack step-0 loss/grad comparison (8-GPU FSDP SFT). Step-0 loss is the pre-optimizer-step global-mean over the effective batch; grad_norm is pre-clip fp32 global all-reduced. lr is the warmup init.",
+  "reference_production": {
+    "loss": 0.24609375,
+    "grad_norm": 2.1718,
+    "lr": 2.4975024714990468e-08,
+    "source": "reference openpi-comet 8-GPU SFT step-0 (goal-stated)"
+  },
+  "rlinf_decentralized": {
+    "loss": 0.3275146484375,
+    "grad_norm": 6.690909385681152,
+    "lr": 2.4975024714990468e-08,
+    "loader_mode": "per_rank_stream",
+    "source": "AC-1 instrumented run, docs/evidence/phase6_sft_step0_capture.json"
+  },
+  "rlinf_reference_fanout": {
+    "loss": 0.25048828125,
+    "grad_norm": 2.3467209339141846,
+    "lr": 2.4975024714990468e-08,
+    "loader_mode": "reference_fanout",
+    "source": "R7 instrumented 8-GPU run, docs/evidence/phase6_ac3_fanout_step0_capture.json"
+  },
+  "loss_abs_delta_fanout_vs_reference": 0.004395,
+  "loss_abs_delta_decentralized_vs_reference": 0.081421,
+  "grad_rel_delta_fanout_vs_reference": 0.0805,
+  "grad_rel_delta_decentralized_vs_reference": 2.0808,
+  "loss_fanout_within_0p01": true,
+  "classification": "DATA_SIDE",
+  "conclusion": "With identical step-0 data (data.loader_mode=reference_fanout) the RLinf production step-0 loss matches the reference within abs 0.0044 (< the 0.01 bf16 band) and grad_norm collapses from 6.69 to 2.35 (~reference 2.17), vs the decentralized default's 0.327/6.69. So the first-step loss+grad gap is DATA-SIDE (the decentralized loader feeds different step-0 data). The remaining grad residual (rel ~8%) is the production noise/time DRAW differing between repos, not a compute defect: the model compute_loss is byte-identical (vendored) and same-batch+noise parity is confirmed by the cross-feed (phase6_ac3_cross_feed.json)."
+}
