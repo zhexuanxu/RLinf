@@ -27,3 +27,4 @@ requirement.md
 refactor_debug.md
 debug_SFT.md
 precision.md
+debug_loss_gradnorm.md
