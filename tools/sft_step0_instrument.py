@@ -51,9 +51,12 @@ import numpy as np
 
 
 def _np(x):
-    if hasattr(x, "detach"):
-        return x.detach().to("cpu").float().numpy()
-    return np.asarray(x)
+    # Preserve the native dtype bytes EXACTLY like the reference fanout helper
+    # (tests/unit_tests/_ref_fanout_dump.py): integer token ids must hash as ints,
+    # not be cast to float, or the frame hash is not cross-repo comparable.
+    import torch
+
+    return x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
 
 
 def frame_hashes(observation: Any, actions: Any) -> list[str]:
@@ -122,6 +125,8 @@ def dump_provenance(
     out_dir: str,
     repo_root: str,
     resolved_config: dict[str, Any] | None = None,
+    gradient_accumulation: int | None = None,
+    reference_repo: str = "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
     extra: dict[str, Any] | None = None,
 ) -> str | None:
     """Write a provenance JSON on rank 0. Returns the path (or None off rank 0)."""
@@ -158,6 +163,21 @@ def dump_provenance(
         except Exception:
             pkg_versions[pkg] = None
 
+    # OpenPI / reference provenance: the reference repo has no installed package
+    # __version__, so record the reference repo git rev + the import path of the
+    # RLinf-vendored openpi_pytorch model package.
+    try:
+        import rlinf.models.embodiment.openpi_pytorch as _openpi_pkg
+
+        openpi_import_path = os.path.dirname(os.path.abspath(_openpi_pkg.__file__))
+    except Exception:
+        openpi_import_path = None
+    reference_provenance = {
+        "reference_repo": reference_repo,
+        "reference_git_rev": _git(["rev-parse", "HEAD"], reference_repo) or None,
+        "openpi_vendored_import_path": openpi_import_path,
+    }
+
     prov = {
         "schema_version": 1,
         "git": {
@@ -171,6 +191,7 @@ def dump_provenance(
         "num_workers": num_workers,
         "global_batch_size": _g("actor.global_batch_size"),
         "micro_batch_size": _g("actor.micro_batch_size"),
+        "gradient_accumulation": gradient_accumulation,
         "seed": _g("actor.seed") or _g("runner.seed"),
         "dataset_path": _g("actor.train_data_paths") or _g("data.train_data_paths"),
         "optimizer": {
@@ -191,7 +212,16 @@ def dump_provenance(
             else None,
             "fingerprint": _sha256_dir_manifest(assets_dir) if assets_dir else None,
         },
+        "optimizer_full": {
+            "adam_beta1": _g("actor.optim.adam_beta1"),
+            "adam_beta2": _g("actor.optim.adam_beta2"),
+            "adam_eps": _g("actor.optim.adam_eps"),
+            "weight_decay": _g("actor.optim.weight_decay"),
+            "lr": _g("actor.optim.lr"),
+            "lr_scheduler": _g("actor.optim.lr_scheduler"),
+        },
         "package_versions": pkg_versions,
+        "reference_provenance": reference_provenance,
         "resolved_config": resolved_config,
     }
     if extra:

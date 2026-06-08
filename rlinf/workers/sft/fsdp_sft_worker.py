@@ -240,12 +240,20 @@ class FSDPSftWorker(FSDPModelManager, Worker):
             repo_root = os.path.dirname(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
+            try:
+                from omegaconf import OmegaConf
+
+                resolved_config = OmegaConf.to_container(self.cfg, resolve=True)
+            except Exception:
+                resolved_config = None
             dump_provenance(
                 self.cfg,
                 rank=self._rank,
                 world_size=self._world_size,
                 out_dir=out_dir,
                 repo_root=repo_root,
+                resolved_config=resolved_config,
+                gradient_accumulation=self.gradient_accumulation,
             )
             capture_step0(
                 observation,

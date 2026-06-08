@@ -36,7 +36,7 @@ import sys
 _REPO = pathlib.Path("/mnt/public/xzxuan/repos/RLinf_pi05")
 sys.path.insert(0, str(_REPO))
 
-from tools.sft_step0_instrument import summarize_step0_frames  # noqa: E402
+from tools.sft_step0_instrument import frame_hashes, summarize_step0_frames  # noqa: E402
 
 _EV = _REPO / "docs/evidence"
 _CAPTURE = _EV / "phase6_sft_step0_capture.json"
@@ -70,6 +70,32 @@ def test_summary_rejects_partial_overlap():
     assert s["fix_exercised"] is False  # 128 != 256
 
 
+def test_frame_hash_byte_identical_to_reference_helper_with_int_tokens():
+    """The instrumentation frame hash must be byte-identical to the reference fanout
+    helper, INCLUDING integer token ids (a float cast would change the bytes)."""
+    torch = pytest.importorskip("torch")
+    np = pytest.importorskip("numpy")
+    sys.path.insert(0, str(_REPO / "tests/unit_tests"))
+    from _ref_fanout_dump import _frame_hashes as ref_frame_hashes
+
+    class _Obs:
+        def __init__(self, state, tokenized_prompt):
+            self.state = state
+            self.tokenized_prompt = tokenized_prompt
+
+    gen = torch.Generator().manual_seed(0)
+    state = torch.rand(4, 8, generator=gen, dtype=torch.float32)
+    actions = torch.rand(4, 5, 3, generator=gen, dtype=torch.float32)
+    tokens = torch.randint(0, 257000, (4, 12), generator=gen, dtype=torch.int64)
+    obs = _Obs(state, tokens)
+    assert frame_hashes(obs, actions) == ref_frame_hashes(obs, actions)
+    # And a float-cast of the int tokens must produce DIFFERENT hashes (proves the
+    # test would catch a reintroduced cast).
+    obs_float = _Obs(state, tokens.to(torch.float32))
+    assert frame_hashes(obs_float, actions) != ref_frame_hashes(obs, actions)
+    _ = np
+
+
 def _load(p):
     if not p.is_file():
         pytest.skip(f"{p.name} not present (instrumented run not yet committed)")
@@ -100,5 +126,27 @@ def test_committed_provenance_has_required_fields():
     assert d["global_batch_size"] and d["micro_batch_size"]
     assert d["base_checkpoint"]["fingerprint"]["rollup_sha256"]
     assert d["norm_stats"]["fingerprint"]["rollup_sha256"]
-    for pkg in ("torch", "numpy"):
-        assert d["package_versions"].get(pkg)
+    assert d["norm_stats"]["norm_stats_sha256"]
+    for pkg in ("torch", "ray", "numpy"):
+        assert d["package_versions"].get(pkg), f"missing package version {pkg}"
+
+
+def test_committed_provenance_has_resolved_config_and_grad_accum():
+    """The plan/contract require a fully-resolved config + explicit gradient
+    accumulation; the gate must REJECT null/missing values."""
+    d = _load(_PROVENANCE)
+    rc = d.get("resolved_config")
+    assert rc is not None and isinstance(rc, dict) and rc, "resolved_config null/empty"
+    # the resolved config must actually be resolved (no ${...} interpolations left)
+    assert "${" not in json.dumps(rc)
+    assert d.get("gradient_accumulation") is not None
+
+
+def test_committed_provenance_has_openpi_reference_provenance():
+    """OpenPI/reference provenance must be recorded (reference repo git rev + vendored
+    import path), per the round contract."""
+    d = _load(_PROVENANCE)
+    rp = d.get("reference_provenance")
+    assert rp, "missing reference_provenance"
+    assert rp.get("reference_git_rev"), "missing reference repo git rev"
+    assert rp.get("openpi_vendored_import_path"), "missing openpi import path"

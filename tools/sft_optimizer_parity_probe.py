@@ -139,3 +139,80 @@ def adamw_trajectory(
         "exp_avg": state["exp_avg"].clone(),
         "exp_avg_sq": state["exp_avg_sq"].clone(),
     }
+
+
+def build_rlinf_optimizer(model):
+    """Construct the optimizer through RLinf's REAL builder
+    (FSDPModelManager.build_optimizer) with the BEHAVIOR pi0.5 config values, so the
+    probe exercises the actual param-group construction AND the warmup_optimizer_state
+    empty-step (which advances the AdamW step counter)."""
+    import logging
+
+    from omegaconf import OmegaConf
+
+    from rlinf.hybrid_engines.fsdp.fsdp_model_manager import FSDPModelManager
+
+    class _Stub:
+        def __init__(self):
+            self._cfg = OmegaConf.create(
+                {
+                    "optim": {
+                        "adam_beta1": ADAMW_BETAS[0],
+                        "adam_beta2": ADAMW_BETAS[1],
+                        "adam_eps": ADAMW_EPS,
+                        "weight_decay": ADAMW_WD,
+                        "lr": REF_PEAK_LR,
+                        "value_lr": 1.55e-4,
+                    }
+                }
+            )
+            self._logger = logging.getLogger("ac_optim_parity")
+            self.store_requires_grad_param_name = []
+
+    return FSDPModelManager.build_optimizer(_Stub(), model=model, enable_critic_warmup=False)
+
+
+def build_reference_optimizer(model, *, fused: bool = False):
+    """Construct the optimizer the way the reference trainer does
+    (scripts/train_pytorch_new.py:384-394): top-level kwargs, no warmup empty-step."""
+    import torch
+
+    return torch.optim.AdamW(
+        model.parameters(),
+        lr=REF_PEAK_LR,
+        betas=ADAMW_BETAS,
+        eps=ADAMW_EPS,
+        weight_decay=ADAMW_WD,
+        fused=fused,
+    )
+
+
+def run_builder(opt, param, grads, lrs):
+    """Drive a constructed optimizer over fixed grads + per-step lr; return the
+    parameter trajectory, final (exp_avg, exp_avg_sq), and the final step counter."""
+    import torch
+
+    traj = []
+    for step in range(len(grads)):
+        for pg in opt.param_groups:
+            pg["lr"] = lrs[step]
+        opt.zero_grad(set_to_none=False)
+        param.grad = grads[step].clone()
+        opt.step()
+        traj.append(param.detach().clone())
+    st = opt.state[param]
+    return {
+        "trajectory": torch.stack(traj),
+        "exp_avg": st["exp_avg"].clone(),
+        "exp_avg_sq": st["exp_avg_sq"].clone(),
+        "final_step": int(st["step"].item() if torch.is_tensor(st["step"]) else st["step"]),
+    }
+
+
+def _fake_single_param_model(n=16):
+    import torch
+
+    m = torch.nn.Linear(n, 1, bias=False).to(torch.float64)
+    with torch.no_grad():
+        m.weight.copy_(torch.linspace(-1.0, 1.0, n, dtype=torch.float64).reshape(1, n))
+    return m, m.weight
