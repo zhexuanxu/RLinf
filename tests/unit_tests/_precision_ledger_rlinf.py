@@ -89,12 +89,11 @@ def main():
 
     ledger = {"repo": "rlinf", "rank": rank, "world_size": world_size, "ok": False}
     try:
-        from rlinf.config import build_config
         from rlinf.hybrid_engines.fsdp.fsdp_model_manager import FSDPModelManager
         from rlinf.models import get_model
 
+        # The SFT entry consumes the composed Hydra cfg directly (no extra builder).
         cfg = _build_cfg(args.config_name)
-        cfg = build_config(cfg) if hasattr(build_config, "__call__") else cfg
         actor_cfg = cfg.actor
 
         # The production manager build, with the openpi_pytorch model provider the
