@@ -10,7 +10,8 @@
     "grad_norm_preclip_fp32_global": 2.325361967086792,
     "learning_rate": 2.4975024714990468e-08,
     "source": "tensorboard under runner.logger.log_path step 0 (train/loss, train/grad_norm, train/learning_rate); R10 rerun with the corrected per_rank_stream + pinned command",
-    "command": "python examples/sft/train_vla_sft.py --config-path examples/sft/config/ --config-name behavior_pi05_vla runner.max_steps=1 actor.sft_step0_instrument=true data.loader_mode=per_rank_stream +data.pinned_inputs_npz=<p9>/pinned_batches.npz +data.pinned_noise_time_npz=<p9>/pinned_noise_time.npz runner.logger.log_path=<scratch>/results"
+    "command": "python examples/sft/train_vla_sft.py --config-path examples/sft/config/ --config-name behavior_pi05_vla runner.max_steps=1 actor.sft_step0_instrument=true data.loader_mode=per_rank_stream +data.pinned_inputs_npz=/mnt/public/xzxuan/tmp/p9/pinned_batches.npz +data.pinned_noise_time_npz=/mnt/public/xzxuan/tmp/p9/pinned_noise_time.npz runner.logger.log_path=/mnt/public/xzxuan/tmp/p10/results",
+    "command_note": "Literal command from the R10 rerun on this machine. The pinned npz are large scratch files (NOT committed; regenerate via the 'reproduce' steps: tests/unit_tests/_ref_step0_2x2_dump.py then tools/build_pinned_step0_npz.py <dumpdir> <out_dir>, pointing the +data.pinned_* overrides at <out_dir> and runner.logger.log_path at any dir under /mnt/public/xzxuan/tmp)."
   },
   "input_identity": {
     "note": "the pinned batch+noise the production run consumed is BIT-IDENTICAL to the committed 2x2 reference batch + seed-4242 noise (so the 2x2 ref-model cell is the exact reference target).",
@@ -50,5 +51,5 @@
     "pass": true
   },
   "conclusion": "On the IDENTICAL reference step-0 batch + controlled noise, the REAL 8-GPU FSDP production stack (rank-sliced pinned loader -> per-rank topology, FSDP all-reduced mean grad, pre-clip fp32 global norm) reproduces the reference step-0 to loss abs 0.000201 (<= 0.01 bf16 band) and grad rel 0.5550% (<= 2%). The production stack carries NO defect on identical data; the AC-1 gap is the decentralized loader's DIFFERENT step-0 data (see phase6_ac3_cross_feed_2x2.json + phase6_ac3_production_step0.json).",
-  "reproduce": "1) tests/unit_tests/_ref_step0_2x2_dump.py -> ref_step0_batch.npz + step0_noise_time.npz (seed 4242); 2) tools/build_pinned_step0_npz.py <dumpdir> <p9> (stack micros -> pinned loader format, asserts the state+actions content hash == the committed 2x2 ref hash); 3) the per_rank command above (pinned forces the per-rank topology); 4) compare to cells.ref_batch.ref_model in the 2x2 artifact (bit-identical batch+noise)."
+  "reproduce": "1) tests/unit_tests/_ref_step0_2x2_dump.py -> ref_step0_batch.npz + step0_noise_time.npz (seed 4242); 2) tools/build_pinned_step0_npz.py <dumpdir> <out_dir> (stack micros -> pinned loader format, asserts the state+actions content hash == the committed 2x2 ref hash); 3) the per_rank command above (pinned forces the per-rank topology); 4) compare to cells.ref_batch.ref_model in the 2x2 artifact (bit-identical batch+noise)."
 }

@@ -85,9 +85,13 @@ and evidence (step-0 logging semantics, global-mean loss reduction, pre-clip fp3
 30k hash coverage and non-perturbation, the 2×2 identical-input controls, the pinned production-stack topology
 and input/noise identity, and the AC-4 lr/AdamW probe).
 
-Audit verdict: **GAP**. The substantive data-side / no-compute-defect / AC-4-aligned conclusions are supported,
-but AC-5 synthesis is blocked until `docs/evidence/phase6_ac3_production_stack_controlled.json` records a
-literally executable production command. The current command contains `<p9>` and `<scratch>` placeholders.
+Audit result: surfaces 1–5, 7, 8 **PASS** (file:line refs in the audit artifact); surface 6 was a **GAP**
+— the `phase6_ac3_production_stack_controlled.json` production command carried `<p9>`/`<scratch>`
+placeholders and was not literally executable — now **RESOLVED** (the placeholders were replaced with the
+literal scratch paths actually run, plus a `command_note` explaining the pinned npz are scratch regenerated
+by the reproduce steps). With that blocker fixed the audit verdict is **PASS**: the substantive
+data-side / no-compute-defect-on-identical-data / lr-AdamW-aligned conclusions are supported by the
+committed evidence, and no audit blocker remains open.
 
 ## Artifacts + gates
 - AC-1: `phase6_sft_step0_capture.json`, `phase6_sft_step0_provenance.json` →

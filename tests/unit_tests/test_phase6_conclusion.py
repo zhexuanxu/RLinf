@@ -66,12 +66,21 @@ def test_conclusion_numbers_match_the_committed_artifacts():
     # AC-2: the full-30k reference_fanout multiset audit
     fan = json.loads((_EV / "phase6_loader_audit_ids_fanout_compare.json").read_text())
     assert n["AC-2"]["numbers"]["verdict"] == fan["verdict"] == "IDENTICAL_MULTISET"
-    assert n["AC-2"]["numbers"]["identical_prefix_steps"] == fan["identical_prefix_steps"] == 30000
+    assert (
+        n["AC-2"]["numbers"]["identical_prefix_steps"]
+        == fan["identical_prefix_steps"]
+        == 30000
+    )
     assert fan["global_rolling_hash_match"] is True
     # AC-3: the real production-stack gate + the 2x2 disjoint frames
-    stack = json.loads((_EV / "phase6_ac3_production_stack_controlled.json").read_text())
+    stack = json.loads(
+        (_EV / "phase6_ac3_production_stack_controlled.json").read_text()
+    )
     assert stack["gate"]["pass"] is True
-    assert n["AC-3"]["numbers"]["production_stack_real_8gpu"]["loss"] == stack["production_run"]["loss"]
+    assert (
+        n["AC-3"]["numbers"]["production_stack_real_8gpu"]["loss"]
+        == stack["production_run"]["loss"]
+    )
     assert (
         n["AC-3"]["numbers"]["production_stack_real_8gpu"]["grad_norm"]
         == stack["production_run"]["grad_norm_preclip_fp32_global"]
@@ -89,7 +98,11 @@ def test_conclusion_rejects_per_rank_stream_strictly_identical_claim():
     d = _load(_CONC)
     assert d["default_per_rank_stream_strictly_identical_to_reference"] is False
     assert d["strict_identity_mode"] == "reference_fanout"
-    assert d["outcome"] in ("loader_misalignment_fixed", "old_run_resolved_by_rerun", "compute_bug_fixed")
+    assert d["outcome"] in (
+        "loader_misalignment_fixed",
+        "old_run_resolved_by_rerun",
+        "compute_bug_fixed",
+    )
     # the prior "benign RNG/shuffle" claim is explicitly superseded by the 30k multiset proof.
     assert "benign" in d["supersedes_prior_claim"].lower()
 
@@ -99,27 +112,42 @@ def test_conclusion_md_contains_concrete_numbers_and_links():
     if not _CONC_MD.is_file():
         pytest.skip("phase6_conclusion.md not present")
     md = _CONC_MD.read_text()
-    for s in ("0.3275", "6.69", "2.4975e-08", "0.24609", "2.172", "IDENTICAL_MULTISET", "30000",
-              "0.2281494", "reference_fanout", "per_rank_stream"):
+    for s in (
+        "0.3275",
+        "6.69",
+        "2.4975e-08",
+        "0.24609",
+        "2.172",
+        "IDENTICAL_MULTISET",
+        "30000",
+        "0.2281494",
+        "reference_fanout",
+        "per_rank_stream",
+    ):
         assert s in md, f"conclusion.md missing {s!r}"
-    for art in ("phase6_sft_step0_capture.json", "phase6_loader_audit_ids_fanout_compare.json",
-                "phase6_ac3_cross_feed_2x2.json", "phase6_ac3_production_stack_controlled.json",
-                "test_openpi_pytorch_sft_optimizer_parity.py"):
+    for art in (
+        "phase6_sft_step0_capture.json",
+        "phase6_loader_audit_ids_fanout_compare.json",
+        "phase6_ac3_cross_feed_2x2.json",
+        "phase6_ac3_production_stack_controlled.json",
+        "test_openpi_pytorch_sft_optimizer_parity.py",
+    ):
         assert art in md, f"conclusion.md missing link {art}"
 
 
-def test_conclusion_audit_artifact_present_and_verdict_recorded():
-    """task5 independent audit artifact is committed and records its verdict.
-
-    A GAP verdict is allowed only as an explicit pre-AC-5 blocker state with a
-    concrete fix. It must not masquerade as a completed final synthesis.
-    """
+def test_conclusion_audit_present_and_no_open_blockers():
+    """task5 independent audit artifact is committed and records its verdict; AC-5 is COMPLETE only
+    when no audit blocker remains open. A GAP must be resolved (every blocker ``resolved: true``,
+    each with a concrete fix) before the final synthesis -- an open blocker fails the gate."""
     d = _load(_CONC)
     audit_rel = d["audit"]["artifact"]
     assert (_EV / audit_rel).is_file(), f"missing audit artifact {audit_rel}"
     verdict = d["audit"]["verdict"].upper()
     assert verdict in ("PASS", "GAP"), d["audit"]["verdict"]
-    if verdict == "GAP":
-        blockers = d["audit"].get("blockers") or []
-        assert blockers, "GAP audit must record concrete blockers"
-        assert "fix" in blockers[0] and blockers[0]["fix"]
+    blockers = d["audit"].get("blockers") or []
+    open_blockers = [b for b in blockers if not b.get("resolved")]
+    assert not open_blockers, (
+        f"AC-5 blocked by unresolved audit findings: {open_blockers}"
+    )
+    for b in blockers:
+        assert b.get("fix"), f"audit blocker missing a concrete fix: {b}"
