@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Per-surface effective-equivalence verdict gate (AC-2).
+"""Per-surface effective-equivalence verdict gate.
 
 Validates the committed verdict artifact: every precision surface is PASS or a
 documented BENIGN mechanism difference (with a justification note) on rank 0 AND a

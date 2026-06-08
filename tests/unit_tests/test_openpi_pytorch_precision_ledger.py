@@ -38,7 +38,7 @@ _EV = pathlib.Path("/mnt/public/xzxuan/repos/RLinf_pi05/docs/evidence")
 _REPOS = ("rlinf", "ref")
 _RANKS = (0, 1)
 
-# Every AC-1 surface must be present in BOTH repos' ledgers on BOTH ranks.
+# Every enumerated surface must be present in BOTH repos' ledgers on BOTH ranks.
 _REQUIRED_SURFACES = (
     "master_param_dtype",
     "param_dtype_during_forward",

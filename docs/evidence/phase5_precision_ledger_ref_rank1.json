@@ -167,12 +167,23 @@
     },
     "grad_norm": {
       "value": {
-        "value": 135.4266357421875,
+        "value": 35.46147918701172,
         "dtype": "float32"
       },
       "provenance": "model.clip_grad_norm_ (FSDP1 real path)",
       "stage": "pre_step",
       "surface": "grad_norm",
+      "repo": "reference",
+      "rank": 1
+    },
+    "loaded_weight_fingerprint": {
+      "value": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
+      },
+      "provenance": "FSDP FULL_STATE_DICT gathered BEFORE optim.step(): key-independent set-hash of fp32 param values (cross-repo identical-loaded-weights proof)",
+      "stage": "pre_step",
+      "surface": "loaded_weight_fingerprint",
       "repo": "reference",
       "rank": 1
     },
@@ -255,41 +266,41 @@
       "format": "ref_pinned_npz",
       "synthetic": false,
       "source": {
-        "generator": "tests/unit_tests/_precision_pinned_artifact_rlinf.py",
-        "command": "python tests/unit_tests/_precision_pinned_artifact_rlinf.py --world-size=2 --micro=1",
-        "source_batches_npz": "/mnt/public/xzxuan/tmp/phase5_precision_pinned_artifact/ref_pinned_batches.npz",
-        "source_noise_time_npz": "/mnt/public/xzxuan/tmp/phase5_precision_pinned_artifact/ref_pinned_noise_time.npz",
-        "ref_git_rev": "cd99b39",
-        "rlinf_git_rev": "bfea3ab0"
+        "generator": "tests/unit_tests/_ref_pinned_run.py",
+        "command": "openpi-comet/.venv/bin/python tests/unit_tests/_ref_pinned_run.py <out> 1 2",
+        "source_batches_npz": "/mnt/public/xzxuan/tmp/rlcr_p5r3/ref_pinned/ref_pinned_batches.npz",
+        "source_noise_time_npz": "/mnt/public/xzxuan/tmp/rlcr_p5r3/ref_pinned/ref_pinned_noise_time.npz",
+        "ref_git_rev": "cd99b39059076c707c5a9e8920c1f078f42ba58c",
+        "rlinf_git_rev": "b6f2922593b7cc4d2f1125fa621a36fde9e580e0"
       },
       "file_sha256": {
-        "batches_npz": "25f2fa30f35e208164c7177fc6096bc9468893c10289ff66a6a44497243700d5",
-        "noise_time_npz": "ee8da778b5a124180672d01c6d080e5bcd1d228f4f7d059f12a3f5488c6228e6"
+        "batches_npz": "d7f8a70aaf32a5126511a82d6001ddabe8ebed34cc0b8f36255d6b448b1a45fc",
+        "noise_time_npz": "d521815504eaf415ce483f06b3ab4603a88950b68565e75aa1ee763fc0572c55"
       },
       "world_size": 2,
       "micro_batch": 1,
       "rank": 1
     },
     "field_sha256": {
-      "image__base_0_rgb": "3d8eba7afeb8ab02e40ec1e72efd0631463c3c52197e933316bb8a633af6ea7c",
-      "image__left_wrist_0_rgb": "e7983ec30392c09fc239005dc60925dd4d887360c36f79da3b5f76bec6db2a2a",
-      "image__right_wrist_0_rgb": "2d0ed7ac3562a35d8f3ba0f8bc20f38cbe123734251151383e2440d8c5d49edd",
+      "image__base_0_rgb": "dd45217a1a698f4f4c8109bcd8c6e19ec7244d102fe5211ac3952a3b36b5be42",
+      "image__left_wrist_0_rgb": "bfb12f726d013d42ac03df9388c81fad2cc10cbf6e5276f02a4500a51a1f7446",
+      "image__right_wrist_0_rgb": "b37d4cdfd603ea22d8e747edc527f09e8b578a75f32727516827e22c94a59ad0",
       "image_mask__base_0_rgb": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
       "image_mask__left_wrist_0_rgb": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
       "image_mask__right_wrist_0_rgb": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
-      "state": "136cf9291e62cc062e656718c26cf4014ac11e49ab652f78118441973e9b9f6f",
-      "actions": "5c873cf52f6fbe9406ea6b3f76f60262082a3e41ab8cac11cbafc1422b23d7d8",
+      "state": "728c01d5e751db98f732d452928c37f49949ead43d52ef3c435cca888f310ff1",
+      "actions": "73dcaf0ba8581f30c782da260b721a8c8a6b39f5b6e13fb6fb418c979b5b1110",
       "noise": "a2afa0e8988e4754f7dd9d3675107970ae153bbbbae511f733de2e5da7b43d88",
-      "time": "22842f7601f6d5aaac78b2e9888ee2c3deb3dc2dab85d973f93bc84357c09f35",
-      "tokenized_prompt": "987145ad918d22919c61449da636ad6245a85b20a2a5a7fb7bea4289d70f3c34",
-      "tokenized_prompt_mask": "a83ae93e46da83bd6b969c85d509b8c5b1be3d4692c4b8b63c5e2255a708af21"
+      "time": "e2c3e9c9e14aa7ee58be08ea79a4a57da6431de7495e618ac4287ec756209132",
+      "tokenized_prompt": "c3b0655252defc614aedf52da4fb3bea5c8724eeb5a8bc7a0c4f79351b6076cd",
+      "tokenized_prompt_mask": "49816fbfc326922ecb39e031bc79997b18d65d9759f2354a165351a2c6ebe364"
     },
     "shapes": {
       "image": [
         1,
+        3,
         224,
-        224,
-        3
+        224
       ],
       "state": [
         1,
@@ -313,6 +324,6 @@
         200
       ]
     },
-    "provenance": "_precision_pinned.load_pinned (committed ref_pinned_npz artifact; derived from pinned SFT input/noise-time path)"
+    "provenance": "_precision_pinned.load_pinned (committed ref_pinned_npz artifact; derived from _ref_pinned_run.py pinned SFT input/noise-time path)"
   }
 }

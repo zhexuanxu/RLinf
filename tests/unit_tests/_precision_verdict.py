@@ -38,9 +38,12 @@ _BENIGN = {
     "optimizer": "AdamW betas/eps/weight_decay identical (0.9,0.95 / 1e-8 / 1e-10); RLinf "
     "non-fused vs reference fused=True (both fp32 state; fused only changes the update "
     "kernel). lr differs only by warmup-schedule state (both peak 2.5e-5).",
-    "grad_norm": "Same fp32 accumulation dtype; the VALUE differs (134 vs 135) only "
-    "because the two models have independent weights — numeric parity on identical "
-    "weights is the controlled-step criterion, not this one.",
+    "grad_norm": "Same fp32 accumulation dtype (identical on both repos). Both load the "
+    "SAME base checkpoint (pi05_base_pytorch_new) on the SAME pinned batch, so the small "
+    "VALUE gap (~35.63 vs ~35.46, ~0.5%) is bf16-compute non-determinism across different "
+    "execution paths (RLinf eager vs reference torch.compile; differing FSDP wrap "
+    "granularity and all-reduce order), within bf16 grad-norm tolerance — NOT a precision "
+    "mismatch (the dtype, the surface judged here, is identically fp32).",
     "buffer_default_probe": "Both observe the same FSDP default (omitted buffer_dtype -> "
     "buffer stays fp32).",
     # reference-only context surface
@@ -69,7 +72,7 @@ def verdict_for_rank(rank):
                     "surface": surface,
                     "rank": rank,
                     "verdict": "CONTEXT",
-                    "rlinf": _val(rf.get(surface)),
+                    "rlinf": None,  # reference-only surface; RLinf has no counterpart
                     "reference": _val(rf.get(surface)),
                     "note": _BENIGN.get(surface, ""),
                 }

@@ -38,7 +38,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _precision_pinned import load_pinned  # noqa: E402
+from _precision_pinned import load_pinned, sha_tensor  # noqa: E402
 
 _REF_CONFIG = "pi05_b1k-task0000_sft_pytorch_mixed"
 _DIST_METHOD = "fsdp1"
@@ -60,6 +60,25 @@ def _S(value, provenance, stage=None):
     if stage is not None:
         rec["stage"] = stage
     return rec
+
+
+def _weight_fingerprint(state_dict):
+    """Key-independent runtime fingerprint of the loaded weights.
+
+    Hashes every floating-point tensor's fp32 value bytes and folds the SET of
+    per-tensor hashes into one digest. Two models that hold the SAME weights hash
+    identically regardless of key names or tied-weight duplication, so this proves
+    cross-repo identical-loaded-weights from runtime tensors (not config text).
+    """
+    import hashlib
+
+    per = {
+        sha_tensor(v.detach().to(torch.float32))
+        for v in state_dict.values()
+        if torch.is_tensor(v) and v.is_floating_point()
+    }
+    digest = hashlib.sha256("".join(sorted(per)).encode()).hexdigest()
+    return {"set_hash": digest, "n_distinct_float_tensors": len(per)}
 
 
 def _first_leaf_linear(module):
@@ -242,6 +261,27 @@ def main():
                 "dtype": _dt(grad_norm) if torch.is_tensor(grad_norm) else "float",
             },
             "model.clip_grad_norm_ (FSDP1 real path)",
+            "pre_step",
+        )
+
+        # --- runtime fingerprint of the LOADED weights, gathered as an unsharded fp32
+        #     FULL_STATE_DICT BEFORE optim.step() mutates them. Both repos load the SAME
+        #     base checkpoint (pi05_base_pytorch_new); this set-hash proves that from
+        #     runtime tensors, so the grad-norm above is a controlled-step numeric parity
+        #     on IDENTICAL weights, not a comparison of independent inits. ---
+        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
+        ):
+            _pre_sd = model.state_dict()
+        surf["loaded_weight_fingerprint"] = _S(
+            _weight_fingerprint(_pre_sd),
+            "FSDP FULL_STATE_DICT gathered BEFORE optim.step(): key-independent set-hash "
+            "of fp32 param values (cross-repo identical-loaded-weights proof)",
             "pre_step",
         )
         optim.step()

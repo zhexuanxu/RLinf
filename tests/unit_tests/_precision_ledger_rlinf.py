@@ -59,6 +59,25 @@ def _S(value, provenance, stage=None):
     return rec
 
 
+def _weight_fingerprint(state_dict):
+    """Key-independent runtime fingerprint of the loaded weights.
+
+    Hashes every floating-point tensor's fp32 value bytes and folds the SET of
+    per-tensor hashes into one digest. Two models that hold the SAME weights hash
+    identically regardless of key names or tied-weight duplication, so this proves
+    cross-repo identical-loaded-weights from runtime tensors (not config text).
+    """
+    import hashlib
+
+    per = {
+        sha_tensor(v.detach().to(torch.float32))
+        for v in state_dict.values()
+        if torch.is_tensor(v) and v.is_floating_point()
+    }
+    digest = hashlib.sha256("".join(sorted(per)).encode()).hexdigest()
+    return {"set_hash": digest, "n_distinct_float_tensors": len(per)}
+
+
 def _first_leaf_linear(module):
     for m in module.modules():
         if isinstance(m, torch.nn.Linear) and m.weight is not None:
@@ -268,6 +287,27 @@ def main():
             sq = sq + p.grad.detach().to(torch.float32).pow(2).sum()
         gn_tensor = sq.sqrt()
 
+        # --- runtime fingerprint of the LOADED weights, gathered as an unsharded fp32
+        #     FULL_STATE_DICT BEFORE the optimizer step mutates them. Both repos load the
+        #     SAME base checkpoint (pi05_base_pytorch_new); this set-hash proves that from
+        #     runtime tensors, so the grad-norm below is a controlled-step numeric parity
+        #     on IDENTICAL weights, not a comparison of independent inits. ---
+        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        with FSDP.state_dict_type(
+            fsdp_model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
+        ):
+            _pre_sd = fsdp_model.state_dict()
+        surf["loaded_weight_fingerprint"] = _S(
+            _weight_fingerprint(_pre_sd),
+            "FSDP FULL_STATE_DICT gathered BEFORE optimizer_step: key-independent "
+            "set-hash of fp32 param values (cross-repo identical-loaded-weights proof)",
+            "pre_step",
+        )
+
         # --- grad-norm via the REAL training step path (returns the production value) ---
         grad_norm, _lrs = mgr.optimizer_step()
         gn = grad_norm.item() if torch.is_tensor(grad_norm) else float(grad_norm)
@@ -307,9 +347,7 @@ def main():
         )
 
         # --- saved-checkpoint dtype + load-after-save dtype (FSDP full state dict) ---
-        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-
+        # FullStateDictConfig, StateDictType, FSDP already imported by the pre-step block.
         with FSDP.state_dict_type(
             fsdp_model,
             StateDictType.FULL_STATE_DICT,

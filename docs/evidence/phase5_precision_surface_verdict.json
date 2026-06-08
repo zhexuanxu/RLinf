@@ -4,7 +4,7 @@
     "counts": {
       "BENIGN": 8,
       "CONTEXT": 2,
-      "PASS": 44
+      "PASS": 46
     },
     "ranks": [
       0,
@@ -113,15 +113,15 @@
       "rank": 0,
       "verdict": "BENIGN",
       "rlinf": {
-        "value": 134.26095581054688,
+        "value": 35.630428314208984,
         "dtype": "float32",
-        "fp32_observed_value": 128.2771759033203
+        "fp32_observed_value": 11.226377487182617
       },
       "reference": {
-        "value": 135.4266357421875,
+        "value": 35.46147918701172,
         "dtype": "float32"
       },
-      "note": "Same fp32 accumulation dtype; the VALUE differs (134 vs 135) only because the two models have independent weights \u2014 numeric parity on identical weights is the controlled-step criterion, not this one."
+      "note": "Same fp32 accumulation dtype (identical on both repos). Both load the SAME base checkpoint (pi05_base_pytorch_new) on the SAME pinned batch, so the small VALUE gap (~35.63 vs ~35.46, ~0.5%) is bf16-compute non-determinism across different execution paths (RLinf eager vs reference torch.compile; differing FSDP wrap granularity and all-reduce order), within bf16 grad-norm tolerance \u2014 NOT a precision mismatch (the dtype, the surface judged here, is identically fp32)."
     },
     {
       "surface": "grad_scaler",
@@ -160,6 +160,20 @@
           "float32"
         ],
         "count": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "loaded_weight_fingerprint",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
+      },
+      "reference": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
       },
       "note": ""
     },
@@ -277,7 +291,7 @@
       "surface": "pytorch_training_precision",
       "rank": 0,
       "verdict": "CONTEXT",
-      "rlinf": "mp_bfloat16",
+      "rlinf": null,
       "reference": "mp_bfloat16",
       "note": "Reference-only load selector (mp_bfloat16 -> fp32 load)."
     },
@@ -408,15 +422,15 @@
       "rank": 1,
       "verdict": "BENIGN",
       "rlinf": {
-        "value": 134.26095581054688,
+        "value": 35.630428314208984,
         "dtype": "float32",
-        "fp32_observed_value": 39.63541030883789
+        "fp32_observed_value": 33.815616607666016
       },
       "reference": {
-        "value": 135.4266357421875,
+        "value": 35.46147918701172,
         "dtype": "float32"
       },
-      "note": "Same fp32 accumulation dtype; the VALUE differs (134 vs 135) only because the two models have independent weights \u2014 numeric parity on identical weights is the controlled-step criterion, not this one."
+      "note": "Same fp32 accumulation dtype (identical on both repos). Both load the SAME base checkpoint (pi05_base_pytorch_new) on the SAME pinned batch, so the small VALUE gap (~35.63 vs ~35.46, ~0.5%) is bf16-compute non-determinism across different execution paths (RLinf eager vs reference torch.compile; differing FSDP wrap granularity and all-reduce order), within bf16 grad-norm tolerance \u2014 NOT a precision mismatch (the dtype, the surface judged here, is identically fp32)."
     },
     {
       "surface": "grad_scaler",
@@ -455,6 +469,20 @@
           "float32"
         ],
         "count": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "loaded_weight_fingerprint",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
+      },
+      "reference": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
       },
       "note": ""
     },
@@ -572,7 +600,7 @@
       "surface": "pytorch_training_precision",
       "rank": 1,
       "verdict": "CONTEXT",
-      "rlinf": "mp_bfloat16",
+      "rlinf": null,
       "reference": "mp_bfloat16",
       "note": "Reference-only load selector (mp_bfloat16 -> fp32 load)."
     },
