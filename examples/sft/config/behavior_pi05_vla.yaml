@@ -55,6 +55,13 @@ actor:
   global_batch_size: 256
   seed: 42
 
+  # Non-invasive step-0 instrumentation (default OFF). When true, the first global
+  # step's per-rank frame ids are observed (read-only) to prove the rank-disjoint
+  # effective batch (loader fix exercised at runtime) and pin the real step-0
+  # loss/grad-norm/lr. Outputs go under sft_step0_out_dir (point at the scratch mount).
+  sft_step0_instrument: false
+  sft_step0_out_dir: "/mnt/public/xzxuan/tmp/sft_step0"
+
   # actor.model comes from `defaults: model/pi0_5_pytorch@actor.model` (the
   # path-free shape template). The experiment config supplies the filesystem
   # paths so the model template stays reusable.

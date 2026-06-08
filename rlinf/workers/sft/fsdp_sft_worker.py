@@ -144,6 +144,14 @@ class FSDPSftWorker(FSDPModelManager, Worker):
             self.model.train()
 
             metrics = {}
+            # Non-invasive step-0 instrumentation (default OFF). When enabled, observe
+            # the FIRST micro-batch's per-rank frame ids to prove the rank-disjoint
+            # effective batch (the loader fix exercised at runtime) and pin the real
+            # step-0 loss/grad-norm/lr. Read-only: it only hashes already-fetched tensors.
+            _step0_instrument = self.global_step == 0 and bool(
+                getattr(self.cfg.actor, "sft_step0_instrument", False)
+            )
+            _step0_batch = None
 
             for idx in range(self.gradient_accumulation):
                 # set the gradient accumulation backward_ctx
@@ -167,6 +175,9 @@ class FSDPSftWorker(FSDPModelManager, Worker):
                     self.data_iter = iter(self.data_loader)
                     batch = next(self.data_iter)
                     self._data_iter_offset = 1
+
+                if _step0_instrument and idx == 0:
+                    _step0_batch = batch
 
                 loss, step_metrics = self.get_train_model_output(batch)
                 append_to_dict(metrics, step_metrics)
@@ -206,7 +217,49 @@ class FSDPSftWorker(FSDPModelManager, Worker):
                 train_metrics, op=torch.distributed.ReduceOp.AVG
             )
 
+            if _step0_instrument and _step0_batch is not None:
+                self._record_step0_instrumentation(_step0_batch, train_metrics)
+
             return train_metrics
+
+    def _record_step0_instrumentation(self, batch, train_metrics):
+        """Observe the production step-0: per-rank frame-id disjointness (loader fix
+        exercised at runtime) + the real step-0 loss/grad-norm/lr + run provenance.
+        Gated OFF by default; read-only w.r.t. the loader."""
+        try:
+            import os
+
+            from tools.sft_step0_instrument import capture_step0, dump_provenance
+
+            observation, actions = batch[0], batch[1]
+            out_dir = getattr(
+                self.cfg.actor,
+                "sft_step0_out_dir",
+                "/mnt/public/xzxuan/tmp/sft_step0",
+            )
+            repo_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            dump_provenance(
+                self.cfg,
+                rank=self._rank,
+                world_size=self._world_size,
+                out_dir=out_dir,
+                repo_root=repo_root,
+            )
+            capture_step0(
+                observation,
+                actions,
+                rank=self._rank,
+                world_size=self._world_size,
+                out_dir=out_dir,
+                loss=train_metrics.get("loss"),
+                grad_norm=train_metrics.get("grad_norm"),
+                lr=train_metrics.get("learning_rate"),
+                global_batch_size=self.global_batch_size,
+            )
+        except Exception as exc:  # never let instrumentation break training
+            logging.warning("step-0 instrumentation skipped: %s", exc)
 
     @abstractmethod
     def build_dataloader(self):
