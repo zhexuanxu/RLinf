@@ -309,9 +309,7 @@ def main():
             st or None, "optim.state[*] after step 1", "after_step"
         )
 
-        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-
+        # FullStateDictConfig, StateDictType, FSDP already imported by the pre-step block.
         with FSDP.state_dict_type(
             model,
             StateDictType.FULL_STATE_DICT,
