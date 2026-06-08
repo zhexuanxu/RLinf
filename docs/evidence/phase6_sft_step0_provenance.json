@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "git": {
+    "rev": "a65d563b8587fd803a5b23782b484578753915cb",
+    "dirty": false,
+    "diff_stat": ""
+  },
+  "launch_command": "train_vla_sft.py behavior_pi05_vla max_steps=3 sft_step0_instrument=true",
+  "world_size": 8,
+  "num_workers": 8,
+  "global_batch_size": 256,
+  "micro_batch_size": 32,
+  "seed": 42,
+  "dataset_path": "/mnt/public/xzxuan/data/2025-challenge-demos",
+  "optimizer": {
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "lr": 2.5e-05
+  },
+  "base_checkpoint": {
+    "path": "/mnt/public/xzxuan/models/pi05_base_pytorch_new",
+    "fingerprint": {
+      "n_files": 2,
+      "rollup_sha256": "e61c6207110862335993e244643bdab528f8d5778849b74c33fa73f81c7e6dce",
+      "files": [
+        {
+          "file": "config.json",
+          "size": 201,
+          "sha256": "cde63230a97e37770a7de7c30e70b5dbb1fecbe09092c7be25610a241c62590a"
+        },
+        {
+          "file": "model.safetensors",
+          "size": 13413809816,
+          "sha256": "f6391204c480d6c54d31d63601e7963ef23301157df052a4b8183e7b019ce2f1"
+        }
+      ]
+    }
+  },
+  "norm_stats": {
+    "assets_dir": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed",
+    "asset_id": "behavior-1k/2025-challenge-demos",
+    "norm_stats_json": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json",
+    "norm_stats_sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726",
+    "fingerprint": {
+      "n_files": 1,
+      "rollup_sha256": "0418596de4e3d272d0704c69f2c547371c4655468f6a1ef7651c2256a52062b3",
+      "files": [
+        {
+          "file": "behavior-1k/2025-challenge-demos/norm_stats.json",
+          "size": 6346,
+          "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
+        }
+      ]
+    }
+  },
+  "package_versions": {
+    "torch": "2.5.1+cu124",
+    "ray": "2.55.1",
+    "numpy": "1.26.4"
+  },
+  "resolved_config": null
+}
