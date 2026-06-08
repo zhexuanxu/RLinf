@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "n_steps": 4,
+  "world_size": 8,
+  "prod_settings_rolling": "833c5a6f64476b65b2ca62f700b78ecd1de6a774beeaeaf39c957aef78ba5ff2",
+  "shortcut_rolling": "833c5a6f64476b65b2ca62f700b78ecd1de6a774beeaeaf39c957aef78ba5ff2",
+  "identical": true,
+  "note": "shuffle/sampler/worker_init are no-ops: the streaming dataset ignores idx"
+}

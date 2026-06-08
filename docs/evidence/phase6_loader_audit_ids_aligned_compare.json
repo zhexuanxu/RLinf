@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "audited_steps": 30000,
+  "epoch_len": 1679,
+  "global_rolling_hash_match": false,
+  "identical_prefix_steps": 1679,
+  "identical_full": false,
+  "identical_first_epoch": true,
+  "first_divergence_cause": "epoch_boundary",
+  "frame_identity_comparable": true,
+  "cross_dump_distinct_overlap": 429928,
+  "rank_assignment_relation": "rank-divergent",
+  "verdict": "IDENTICAL_FIRST_EPOCH",
+  "first_mismatch": {
+    "step": 1679,
+    "rlinf_only_sample": [
+      "1030:1467",
+      "1030:1468",
+      "1030:1469",
+      "1030:1470",
+      "1030:1471",
+      "1030:1472"
+    ],
+    "ref_only_sample": [
+      "1220:250",
+      "1220:251",
+      "1220:252",
+      "1220:253",
+      "1220:254",
+      "1220:255"
+    ]
+  },
+  "rlinf": {
+    "schema_version": 2,
+    "audited_steps": 30000,
+    "num_workers": 1,
+    "global_rolling_hash": "e79d4fd46fe7a62fd6b4cbea8663f312615ab6e1de096786e7527bff383d00e4",
+    "min_distinct": 256,
+    "max_distinct": 256
+  },
+  "ref": {
+    "schema_version": 2,
+    "audited_steps": 30000,
+    "num_workers": 8,
+    "global_rolling_hash": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",
+    "min_distinct": 256,
+    "max_distinct": 256
+  }
+}

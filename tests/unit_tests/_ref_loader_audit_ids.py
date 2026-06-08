@@ -18,8 +18,14 @@ Builds the reference BEHAVIOR dataset (the raw ``BehaviorLeRobotDataset`` undern
 ``create_behavior_dataset``) with ``id_only=True`` so each sample is the value-independent
 ``{episode_index, frame_index=round(timestamp*fps)}`` id taken BEFORE any transform/decode.
 A DataLoader with the reference's local batch (= global / world) + ``num_workers`` mirrors
-the per-rank micro-batch; rank-0 fanout pulls ``world_size`` successive micro-batches per
-global step (256 ids). Emits the same per-rank-per-step id structure as the RLinf id audit.
+the production rank-0 fanout (only rank 0 builds the loader; its ``num_workers`` workers are
+the global lanes), and rank-0 fanout pulls ``world_size`` successive micro-batches per global
+step (256 ids). Emits schema-v2 per-step per-rank + global hashes like the RLinf id audit.
+
+The torch ``shuffle`` flag and the sampler are no-ops on streamed content: the streaming
+dataset ignores ``idx`` and advances an internal chunk cursor, so the produced frame ids
+are identical for ``shuffle=True`` (production) and ``shuffle=False`` (here) — proven by the
+committed equivalence test ``test_openpi_pytorch_sft_loader_audit_ids.py``.
 
 Run in the reference venv::
 
@@ -39,10 +45,16 @@ _DATA_ROOT = "/mnt/public/xzxuan/data/2025-challenge-demos"
 _ASSETS_DIR = "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets"
 _CONFIG = "pi05_b1k-turning_on_radio_cs32_bs32_lr2.5e-5_step30k"  # GLOBAL batch 256
 _NUM_WORKERS = 8
+SCHEMA_VERSION = 2
 
 
 def _collate_ids(items):
     return [(int(it["episode_index"]), int(it["frame_index"])) for it in items]
+
+
+def _canonical_set_hash(ids) -> str:
+    payload = json.dumps(sorted(set(ids)), separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def main(out_dir, n_steps, world_size):
@@ -50,7 +62,13 @@ def main(out_dir, n_steps, world_size):
 
     sys.path.insert(0, _REF_SRC)
     os.makedirs(out_dir, exist_ok=True)
-    result = {"ok": False, "repo": "reference", "world_size": world_size, "n_steps": n_steps}
+    result = {
+        "ok": False,
+        "repo": "reference",
+        "schema_version": SCHEMA_VERSION,
+        "world_size": world_size,
+        "n_steps": n_steps,
+    }
     try:
         import torch
 
@@ -89,8 +107,9 @@ def main(out_dir, n_steps, world_size):
         )
         it = iter(loader)
 
-        per_step_set_hash, per_step_unique, per_step_global_set = [], [], []
-        rolling = hashlib.sha256()
+        per_step_unique, per_step_global_set, per_step_global_hash = [], [], []
+        global_rolling = hashlib.sha256()
+        rank_rolling = [hashlib.sha256() for _ in range(world_size)]
         for step in range(n_steps):
             # rank-0 fanout: world_size successive micro-batches per global step
             step_rank_ids = []
@@ -101,12 +120,14 @@ def main(out_dir, n_steps, world_size):
                     it = iter(loader)  # epoch boundary: re-iterate (cyclic stream)
                     batch = next(it)
                 step_rank_ids.append([f"{ep}:{fr}" for (ep, fr) in batch])
+            for r in range(world_size):
+                rank_rolling[r].update(f"{step}|{_canonical_set_hash(step_rank_ids[r])}".encode())
             union = sorted({f for rh in step_rank_ids for f in rh})
-            sh = hashlib.sha256("".join(union).encode()).hexdigest()
-            per_step_set_hash.append(sh)
+            gh = _canonical_set_hash(union)
             per_step_unique.append(len(union))
             per_step_global_set.append(union)
-            rolling.update(f"{step}|{sh}".encode())
+            per_step_global_hash.append(gh)
+            global_rolling.update(f"{step}|{gh}".encode())
 
         result.update(
             ok=True,
@@ -115,9 +136,10 @@ def main(out_dir, n_steps, world_size):
             per_rank_local_batch=per_rank,
             num_workers=_NUM_WORKERS,
             audited_steps=n_steps,
-            per_step_global_set_hash=per_step_set_hash,
             per_step_unique=per_step_unique,
-            rolling_hash=rolling.hexdigest(),
+            global_rolling_hash=global_rolling.hexdigest(),
+            per_rank_rolling_hash=[h.hexdigest() for h in rank_rolling],
+            canonical_serialization='json.dumps(sorted(set(ids)),separators=(",",":"))',
         )
         with open(os.path.join(out_dir, "ref_loader_audit.json"), "w", newline="\n") as f:
             json.dump(result, f)
@@ -125,7 +147,14 @@ def main(out_dir, n_steps, world_size):
         with open(
             os.path.join(out_dir, "ref_loader_audit_detail.json"), "w", newline="\n"
         ) as f:
-            json.dump({"per_step_global_set": per_step_global_set}, f)
+            json.dump(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "per_step_global_set": per_step_global_set,
+                    "per_step_global_hash": per_step_global_hash,
+                },
+                f,
+            )
             f.write("\n")
     except Exception as e:  # pragma: no cover - environment dependent
         import traceback
