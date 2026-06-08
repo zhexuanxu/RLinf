@@ -42,6 +42,7 @@ from tools.sft_optimizer_parity_probe import (  # noqa: E402
     REF_PEAK_LR,
     build_reference_optimizer,
     build_rlinf_optimizer,
+    fused_adamw_supported,
     reference_lr,
     rlinf_lr_sequence,
     run_builder,
@@ -92,12 +93,17 @@ def _rlinf_traj(lrs):
     return run_builder(build_rlinf_optimizer(m), p, _fixed_grads(len(lrs)), lrs)
 
 
+_FUSED_OK = fused_adamw_supported()
+
+
 def _ref_traj(lrs, **adamw_overrides):
     m, p = _fake_single_param_model()
     if adamw_overrides:
+        # negative controls construct AdamW directly (non-fused) with a wrong hparam
         opt = torch.optim.AdamW(m.parameters(), lr=REF_PEAK_LR, **adamw_overrides)
     else:
-        opt = build_reference_optimizer(m)
+        # production reference path: fused=True when the environment supports it
+        opt = build_reference_optimizer(m, fused=_FUSED_OK)
     return run_builder(opt, p, _fixed_grads(len(lrs)), lrs)
 
 
@@ -112,11 +118,24 @@ def test_rlinf_builder_step_counter_is_zero_after_build():
     assert step == 0, f"warmup left step={step}; first update would be off-by-one"
 
 
+def test_reference_builder_uses_production_fused_kwarg():
+    """The reference builder must exercise the production fused=True AdamW kwarg (the
+    real trainer passes fused=True). Read the setting from param_groups (not defaults),
+    per the optimizer-hparams lesson. If the environment cannot run fused AdamW, record
+    the fallback explicitly rather than silently passing a non-production kwarg."""
+    if not _FUSED_OK:
+        pytest.skip("torch.optim.AdamW(fused=True) unsupported in this environment")
+    m, _ = _fake_single_param_model()
+    opt = build_reference_optimizer(m, fused=True)
+    assert opt.param_groups[0].get("fused") is True
+
+
 def test_rlinf_and_reference_optimizer_updates_identical():
-    """RLinf's REAL optimizer builder and the reference builder produce a bit-identical
-    parameter trajectory + AdamW state under the same fixed grads + matched lr."""
+    """RLinf's REAL optimizer builder and the PRODUCTION reference builder (fused=True
+    when supported) produce a bit-identical parameter trajectory + AdamW state under the
+    same fixed grads + matched lr — fused vs non-fused are numerically identical here."""
     for lrs in ([reference_lr(s) for s in range(8)], _MODERATE_LRS):
-        a, b = _rlinf_traj(lrs), _ref_traj(lrs)
+        a, b = _rlinf_traj(lrs), _ref_traj(lrs)  # _ref_traj uses fused=_FUSED_OK
         assert a["final_step"] == b["final_step"]
         assert torch.equal(a["trajectory"], b["trajectory"]), "optimizer update mismatch"
         assert torch.equal(a["exp_avg"], b["exp_avg"])

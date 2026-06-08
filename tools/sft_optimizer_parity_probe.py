@@ -125,9 +125,10 @@ def build_rlinf_optimizer(model):
     return FSDPModelManager.build_optimizer(_Stub(), model=model, enable_critic_warmup=False)
 
 
-def build_reference_optimizer(model, *, fused: bool = False):
+def build_reference_optimizer(model, *, fused: bool = True):
     """Construct the optimizer the way the reference trainer does
-    (scripts/train_pytorch_new.py:384-394): top-level kwargs, no warmup empty-step."""
+    (scripts/train_pytorch_new.py:384-394): top-level kwargs INCLUDING the production
+    ``fused=True``, no warmup empty-step."""
     import torch
 
     return torch.optim.AdamW(
@@ -138,6 +139,21 @@ def build_reference_optimizer(model, *, fused: bool = False):
         weight_decay=ADAMW_WD,
         fused=fused,
     )
+
+
+def fused_adamw_supported() -> bool:
+    """Whether ``torch.optim.AdamW(fused=True)`` can be instantiated AND stepped in this
+    environment (CPU fused AdamW is supported on recent torch; gate on a real step)."""
+    import torch
+
+    try:
+        p = torch.nn.Parameter(torch.zeros(1, dtype=torch.float64))
+        opt = torch.optim.AdamW([p], lr=1e-3, fused=True)
+        p.grad = torch.zeros_like(p)
+        opt.step()
+        return True
+    except Exception:
+        return False
 
 
 def run_builder(opt, param, grads, lrs):
