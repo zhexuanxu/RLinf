@@ -94,6 +94,18 @@ def _frame_ids(micro_stores):
     return ids
 
 
+def _per_surface_hashes(micro_stores):
+    """Per-surface sha256 over the full 256-frame batch (each image/mask/state/actions/
+    tokenized surface), so every materialized surface carries an integrity hash."""
+    out = {}
+    for k in sorted(micro_stores[0].keys()):
+        h = hashlib.sha256()
+        for st in micro_stores:
+            h.update(np.ascontiguousarray(st[k]).tobytes())
+        out[k] = h.hexdigest()
+    return out
+
+
 def _materialize_rlinf_step0(tmp):
     """The RLinf DEFAULT (per_rank_stream) step-0 global batch: 8 rank loaders, batch 0 each."""
     from hydra import compose, initialize_config_dir
@@ -246,6 +258,12 @@ def main():
         return abs(cells["ref_batch"][side]["loss"] - cells["rlinf_batch"][side]["loss"])
 
     rl_frame_ids = _frame_ids(rlinf_micros)
+    ref_ps = ref["ref_batch_per_surface_hashes"]
+    rlinf_ps = _per_surface_hashes(rlinf_micros)
+    # content surfaces (everything but the all-True image masks) MUST differ between the two
+    # distinct batches; the image masks are identical (same task -> all-valid masks).
+    content_surfaces = sorted(k for k in ref_ps if not k.startswith("image_mask__"))
+    mask_surfaces = sorted(k for k in ref_ps if k.startswith("image_mask__"))
     out = {
         "schema_version": 1,
         "description": ("Step-0 2x2 cross-feed on each repo's ACTUAL materialized step-0 batch "
@@ -260,6 +278,11 @@ def main():
         ),
         "ref_batch_frame_ids": ref["ref_batch_frame_ids"],
         "rlinf_batch_frame_ids": rl_frame_ids,
+        "per_surface_hashes": {"ref_batch": ref_ps, "rlinf_batch": rlinf_ps},
+        "content_surfaces": content_surfaces,
+        "mask_surfaces": mask_surfaces,
+        "content_surfaces_all_differ": all(ref_ps[k] != rlinf_ps.get(k) for k in content_surfaces),
+        "mask_surfaces_all_identical": all(ref_ps[k] == rlinf_ps.get(k) for k in mask_surfaces),
         "batches_distinct": ref["ref_batch_content_hash"] != _content_hash(
             [st["state"] for st in rlinf_micros] + [st["actions"] for st in rlinf_micros]),
         "cells": cells,

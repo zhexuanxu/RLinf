@@ -1,0 +1,53 @@
+{
+  "ac": "AC-3",
+  "what": "REAL 8-GPU FSDP BEHAVIOR pi0.5 SFT step-0 on the IDENTICAL reference_fanout 256-frame batch + CONTROLLED flow noise/time, compared DIRECTLY to the reference's production-faithful step-0 on the same bit-identical batch + same noise. Closes Round-8 Gap 1 (gate on the real production stack, not the single-GPU 2x2 replay).",
+  "production_run": {
+    "stack": "8-GPU FSDP (fp32 master + bf16 compute), data.loader_mode=reference_fanout, pinned batch+noise",
+    "world_size": 8,
+    "micro_batch": 32,
+    "global_batch": 256,
+    "loss": 0.2281494140625,
+    "grad_norm_preclip_fp32_global": 2.325361967086792,
+    "learning_rate": 2.4975024714990468e-08,
+    "source": "tensorboard results/tensorboard/events.out.tfevents.1780945417...670454.0 step 0 (train/loss, train/grad_norm, train/learning_rate)",
+    "command": "python examples/embodiment/train_vla_sft.py behavior_pi05_vla max_steps=1 actor.sft_step0_instrument=true data.loader_mode=reference_fanout +data.pinned_inputs_npz=<p9>/pinned_batches.npz +data.pinned_noise_time_npz=<p9>/pinned_noise_time.npz"
+  },
+  "input_identity": {
+    "note": "the pinned batch+noise the production run consumed is BIT-IDENTICAL to the committed 2x2 reference batch + seed-4242 noise (so the 2x2 ref-model cell is the exact reference target).",
+    "batch_state_actions_content_hash": "cd3821d4bd662122b61d6a5ea411d05930e3cabb06481f79d874222bff3dfe00",
+    "matches_2x2_ref_batch_content_hash": true,
+    "all_surfaces_match_2x2_ref_batch": true,
+    "per_surface_match": [
+      "state",
+      "actions",
+      "image__base_0_rgb",
+      "image__left_wrist_0_rgb",
+      "image__right_wrist_0_rgb",
+      "image_mask__base_0_rgb",
+      "image_mask__left_wrist_0_rgb",
+      "image_mask__right_wrist_0_rgb",
+      "tokenized_prompt",
+      "tokenized_prompt_mask"
+    ],
+    "noise_seed": 4242,
+    "noise_bit_identical_to_2x2": true,
+    "time_bit_identical_to_2x2": true
+  },
+  "reference_target": {
+    "stack": "reference openpi.models_pytorch_new.Pi0, production-faithful single-GPU replay (fp32 master + bf16 compute, micro-batch 32x8 accumulate = the 8-GPU all-reduced mean grad)",
+    "loss": 0.2279488742351532,
+    "grad_norm_preclip_fp32_global": 2.3383395671844482,
+    "source": "docs/evidence/phase6_ac3_cross_feed_2x2.json cells.ref_batch.ref_model"
+  },
+  "gate": {
+    "loss_abs_delta": 0.00020053982734680176,
+    "loss_abs_tol": 0.01,
+    "loss_pass": true,
+    "grad_rel_delta": 0.005549921097765258,
+    "grad_rel_tol": 0.02,
+    "grad_pass": true,
+    "pass": true
+  },
+  "conclusion": "On the IDENTICAL reference_fanout step-0 batch + controlled noise, the REAL 8-GPU FSDP production stack reproduces the reference step-0 to loss abs 0.000201 (<= 0.01 bf16 band) and pre-clip fp32 global grad rel 0.5550% (<= 2%). The full production stack (FSDP/mixed-precision, global-mean loss reduction, all-reduced mean grad, pre-clip fp32 norm) carries NO defect on identical data; the AC-1 gap is the decentralized loader's DIFFERENT step-0 data (see phase6_ac3_cross_feed_2x2.json + phase6_ac3_production_step0.json).",
+  "reproduce": "1) tests/unit_tests/_ref_step0_2x2_dump.py -> ref_step0_batch.npz + step0_noise_time.npz (seed 4242); 2) tools/build_pinned_step0_npz.py <dumpdir> <p9> (stack micros -> pinned loader format, asserts the state+actions content hash == the committed 2x2 ref hash); 3) the 8-GPU command above; 4) compare to cells.ref_batch.ref_model in the 2x2 artifact."
+}

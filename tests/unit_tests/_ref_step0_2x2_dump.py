@@ -90,6 +90,18 @@ def _frame_ids_from_store(micro_stores):
     return ids
 
 
+def _per_surface_hashes(micro_stores):
+    """Per-surface sha256 over the full 256-frame batch (each image/mask/state/actions/
+    tokenized surface), so every materialized surface carries an integrity hash."""
+    out = {}
+    for k in sorted(micro_stores[0].keys()):
+        h = hashlib.sha256()
+        for st in micro_stores:
+            h.update(np.ascontiguousarray(st[k]).tobytes())
+        out[k] = h.hexdigest()
+    return out
+
+
 def _build_ref_model(device):
     import openpi.models_pytorch_new.pi0 as pi0_new
     import openpi.models_pytorch_new.pi0_config as pi0_config_new
@@ -215,6 +227,7 @@ def main(out_dir, rlinf_batch_npz):
             total_frames=total,
             noise_seed=_SEED,
             ref_batch_frame_ids=_frame_ids_from_store(ref_micros),
+            ref_batch_per_surface_hashes=_per_surface_hashes(ref_micros),
             ref_batch_content_hash=_content_hash(
                 [st["state"] for st in ref_micros] + [st["actions"] for st in ref_micros]
             ),
