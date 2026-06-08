@@ -3,51 +3,189 @@
   "rank": 0,
   "world_size": 2,
   "ok": true,
-  "fsdp_mixed_precision": {
-    "param_dtype": "bfloat16",
-    "reduce_dtype": "float32",
-    "buffer_dtype": "float32",
-    "cast_forward_inputs": false,
-    "cast_root_forward_inputs": true,
-    "keep_low_precision_grads": false,
-    "provenance": "fsdp_model.mixed_precision"
+  "surfaces": {
+    "action_input_dtype": {
+      "value": "float32",
+      "provenance": "pinned batch actions tensor",
+      "stage": "input"
+    },
+    "noise_input_dtype": {
+      "value": "float32",
+      "provenance": "pinned batch noise tensor",
+      "stage": "input"
+    },
+    "time_input_dtype": {
+      "value": "float32",
+      "provenance": "pinned batch time tensor",
+      "stage": "input"
+    },
+    "fsdp_param_dtype": {
+      "value": "bfloat16",
+      "provenance": "fsdp_model.mixed_precision.param_dtype"
+    },
+    "fsdp_reduce_dtype": {
+      "value": "float32",
+      "provenance": "fsdp_model.mixed_precision.reduce_dtype"
+    },
+    "fsdp_buffer_dtype": {
+      "value": "float32",
+      "provenance": "fsdp_model.mixed_precision.buffer_dtype"
+    },
+    "gradient_reduction_dtype": {
+      "value": "float32",
+      "provenance": "fsdp_model.mixed_precision.reduce_dtype"
+    },
+    "mp_cast_forward_inputs": {
+      "value": false,
+      "provenance": "fsdp_model.mixed_precision.cast_forward_inputs"
+    },
+    "mp_cast_root_forward_inputs": {
+      "value": true,
+      "provenance": "fsdp_model.mixed_precision.cast_root_forward_inputs"
+    },
+    "mp_keep_low_precision_grads": {
+      "value": false,
+      "provenance": "fsdp_model.mixed_precision.keep_low_precision_grads"
+    },
+    "master_param_dtype": {
+      "value": "float32",
+      "provenance": "fsdp_model.named_parameters()[_fsdp_wrapped_module.model.llm.embedder.embedding.weight] outside forward",
+      "stage": "pre_forward"
+    },
+    "buffer_count": {
+      "value": 0,
+      "provenance": "fsdp_model.named_buffers()"
+    },
+    "buffer_dtypes": {
+      "value": [],
+      "provenance": "fsdp_model.named_buffers() dtypes"
+    },
+    "ema": {
+      "value": "none",
+      "provenance": "FSDPModelManager SFT build has no EMA; cfg.actor has no ema_decay"
+    },
+    "grad_scaler": {
+      "value": {
+        "type": "ShardedGradScaler",
+        "enabled": false
+      },
+      "provenance": "mgr.grad_scaler object"
+    },
+    "loss_dtype": {
+      "value": "bfloat16",
+      "provenance": "SFT forward return",
+      "stage": "after_forward"
+    },
+    "output_dtype": {
+      "value": "bfloat16",
+      "provenance": "model SFT output (scalar loss)",
+      "stage": "after_forward"
+    },
+    "param_dtype_during_forward": {
+      "value": "bfloat16",
+      "provenance": "inner Linear forward pre-hook (compute view)",
+      "stage": "forward"
+    },
+    "compute_autocast_enabled": {
+      "value": false,
+      "provenance": "torch.is_autocast_enabled() inside forward",
+      "stage": "forward"
+    },
+    "grad_dtype": {
+      "value": [
+        "float32"
+      ],
+      "provenance": "param.grad after backward (160 params with grad)",
+      "stage": "after_backward"
+    },
+    "grad_norm": {
+      "value": {
+        "value": 134.26095581054688,
+        "dtype": "float"
+      },
+      "provenance": "mgr.optimizer_step() -> strategy.clip_grad_norm_",
+      "stage": "pre_step"
+    },
+    "optimizer": {
+      "value": {
+        "type": "AdamW",
+        "fused": null,
+        "foreach": null,
+        "capturable": false,
+        "betas": [
+          0.9,
+          0.95
+        ],
+        "eps": 1e-08,
+        "weight_decay": 1e-10,
+        "lr": 2.4975024975024977e-08
+      },
+      "provenance": "optimizer.param_groups[0] + optimizer.defaults"
+    },
+    "optimizer_state_dtype": {
+      "value": {
+        "exp_avg": "float32",
+        "exp_avg_sq": "float32"
+      },
+      "provenance": "optimizer.state[*] after step 1",
+      "stage": "after_step"
+    },
+    "saved_checkpoint_dtype": {
+      "value": [
+        "float32"
+      ],
+      "provenance": "FSDP FULL_STATE_DICT tensor dtypes",
+      "stage": "saved"
+    },
+    "load_after_save_dtype": {
+      "value": [
+        "float32"
+      ],
+      "provenance": "fresh get_model.load_state_dict(saved) params",
+      "stage": "reloaded"
+    }
   },
-  "param_dtype_outside_forward": {
-    "_fsdp_wrapped_module.model.llm.embedder.embedding.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.q_proj.0.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.q_proj.1.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.k_proj.0.weight": "float32"
-  },
-  "autocast_enabled": false,
-  "grad_scaler_enabled": false,
-  "loss_dtype": "bfloat16",
-  "param_dtype_during_forward": {
-    "_fsdp_wrapped_module.model.llm.embedder.embedding.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.q_proj.0.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.q_proj.1.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.k_proj.0.weight": "float32"
-  },
-  "grad_dtype": {
-    "_fsdp_wrapped_module.model.llm.embedder.embedding.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.q_proj.0.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.q_proj.1.weight": "float32",
-    "_fsdp_wrapped_module.model.llm.layers.0.attn.k_proj.0.weight": "float32"
-  },
-  "optimizer": {
-    "type": "AdamW",
-    "fused": null,
-    "foreach": null,
-    "capturable": false,
-    "betas": [
-      0.9,
-      0.95
-    ],
-    "eps": 1e-08,
-    "weight_decay": 1e-10,
-    "lr": 2.4975024975024977e-08
-  },
-  "optimizer_state_dtype": {
-    "exp_avg": "float32",
-    "exp_avg_sq": "float32"
+  "pinned_input": {
+    "spec_path": "docs/evidence/phase5_precision_pinned_spec.json",
+    "field_sha256": {
+      "image__base_0_rgb": "c842a7decf8f958f7815627cec99687c48c9b76f4d797db23070db35547ee241",
+      "image__left_wrist_0_rgb": "0db54110f84d105ce61980f54ca5faf5f12a7212b8f758ebe38a4d8708e0553d",
+      "image__right_wrist_0_rgb": "d07f8e10f3ba1a1e522a565ed90a2998e4101903daf86a4205d349c8dc5197b6",
+      "state": "4a766691ad6d84515cb28923227f6ed69e6fb9cfdfa850a4726135573f6ba76d",
+      "actions": "d2c2999e84807d7c15735ec34c2e2da2071c30c7d2f45cac56b1afa24770ca86",
+      "noise": "a3e2ce57530544beca09ad59b494c962d84d619904b0713c07bb9ff5804f2074",
+      "time": "aba19a34523e24e745194e71189fa0034f574ec77e9e1a5e174d11e1ac19cdae",
+      "tokenized_prompt": "4a2ad471a677320287e08c40cb5f743fa45504ce496319ff4369157f7c0723e7"
+    },
+    "shapes": {
+      "image": [
+        1,
+        224,
+        224,
+        3
+      ],
+      "state": [
+        1,
+        32
+      ],
+      "actions": [
+        1,
+        32,
+        32
+      ],
+      "noise": [
+        1,
+        32,
+        32
+      ],
+      "time": [
+        1
+      ],
+      "tokenized_prompt": [
+        1,
+        200
+      ]
+    },
+    "provenance": "_precision_pinned.load_pinned (deterministic, shared)"
   }
 }

@@ -14,30 +14,34 @@
 
 """Runtime mixed-precision dtype ledger for the REFERENCE pi0.5 FSDP1 training.
 
-Non-invasive: imports and CALLS the reference trainer's own ``init_model`` (which
-builds the model, applies ``MixedPrecision(param_dtype=bf16, reduce_dtype=fp32)``
-with the constructor default ``buffer_dtype``, casts the master to fp32, FSDP1-wraps,
-and builds the fused AdamW) without editing the reference source, then reads the
-EFFECTIVE runtime dtype/flag off the built objects and one forward/backward/optimizer
-step. The reference's omitted ``buffer_dtype`` default is OBSERVED, not assumed.
+Non-invasive: imports + CALLS the reference trainer's own ``init_model`` (model +
+``MixedPrecision(param_dtype=bf16, reduce_dtype=fp32)`` with default ``buffer_dtype``
++ fp32 master + FSDP1 wrap + fused AdamW), feeds the SAME shared pinned batch as the
+RLinf ledger, and reads the EFFECTIVE runtime dtype/flag off the built objects + one
+forward / backward / real-grad-norm / optimizer step. Same per-surface
+``{value, provenance, stage}`` schema as the RLinf ledger.
 
-Launch under torchrun in the reference venv (world_size >= 2 for a sharded rank)::
+Launch under torchrun in the reference venv (world_size >= 2)::
 
-    PYTHONPATH=<ref-src>:<ref-scripts> <ref-venv>/torchrun --nproc_per_node=2 \
-        tests/unit_tests/_precision_ledger_ref.py --out-dir <scratch>/precision_ledger
+    PYTHONPATH=<ref-src>:<ref-scripts>:<rlinf-repo> <ref-venv>/torchrun \
+        --nproc_per_node=2 tests/unit_tests/_precision_ledger_ref.py --out-dir <dir>
 
-Each rank writes ``ref_precision_ledger_rank{r}.json``.
+Writes ``ref_precision_ledger_rank{r}.json``.
 """
 
 import argparse
 import json
 import os
+import sys
 
 import torch
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _precision_pinned import load_pinned  # noqa: E402
+
 _REF_CONFIG = "pi05_b1k-task0000_sft_pytorch_mixed"
 _DIST_METHOD = "fsdp1"
-_USE_AUTOCAST = False  # reference run.sh: USE_AUTOCAST=0
+_USE_AUTOCAST = False
 
 
 def _dt(x) -> str:
@@ -50,20 +54,18 @@ def _dt(x) -> str:
     return str(x)
 
 
-def _sample(named, limit=4, want_grad=False):
-    out = {}
-    for name, p in named:
-        if not torch.is_tensor(p):
-            continue
-        if want_grad:
-            if p.grad is None:
-                continue
-            out[name] = _dt(p.grad)
-        else:
-            out[name] = _dt(p)
-        if len(out) >= limit:
-            break
-    return out
+def _S(value, provenance, stage=None):
+    rec = {"value": value, "provenance": provenance}
+    if stage is not None:
+        rec["stage"] = stage
+    return rec
+
+
+def _first_leaf_linear(module):
+    for m in module.modules():
+        if isinstance(m, torch.nn.Linear) and m.weight is not None:
+            return m
+    return None
 
 
 def main():
@@ -75,18 +77,23 @@ def main():
     rank = int(os.environ.get("RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    device = torch.device(f"cuda:{local_rank}")
     torch.cuda.set_device(local_rank)
     if not torch.distributed.is_initialized():
         torch.distributed.init_process_group(backend="nccl")
-    device = torch.device(f"cuda:{local_rank}")
 
     ledger = {"repo": "reference", "rank": rank, "world_size": world_size, "ok": False}
+    surf = {}
+    ledger["surfaces"] = surf
     try:
         import openpi.training.config as _config
+        from openpi.models_pytorch_new import model as omodel
         from train_pytorch_new import init_model
 
         config = _config.get_config(_REF_CONFIG)
-        ledger["pytorch_training_precision"] = str(config.pytorch_training_precision)
+        surf["pytorch_training_precision"] = _S(
+            str(config.pytorch_training_precision), "config.pytorch_training_precision"
+        )
 
         model, optim = init_model(
             config,
@@ -98,61 +105,159 @@ def main():
             use_autocast=_USE_AUTOCAST,
         )
 
-        mp = getattr(model, "mixed_precision", None)
-        ledger["fsdp_mixed_precision"] = {
-            "param_dtype": _dt(getattr(mp, "param_dtype", None)),
-            "reduce_dtype": _dt(getattr(mp, "reduce_dtype", None)),
-            "buffer_dtype": _dt(getattr(mp, "buffer_dtype", None)),
-            "cast_forward_inputs": getattr(mp, "cast_forward_inputs", None),
-            "cast_root_forward_inputs": getattr(mp, "cast_root_forward_inputs", None),
-            "keep_low_precision_grads": getattr(mp, "keep_low_precision_grads", None),
-            "provenance": "init_model(...).mixed_precision",
+        # --- shared pinned input ---
+        pin = load_pinned(device)
+        ledger["pinned_input"] = {
+            "spec_path": pin["spec_path"],
+            "field_sha256": pin["hashes"],
+            "shapes": pin["shapes"],
+            "provenance": "_precision_pinned.load_pinned (deterministic, shared)",
         }
-        # The omitted-buffer_dtype effective default, observed (not assumed): sample a
-        # real buffer's dtype off the wrapped model.
-        buf = {}
-        for n, b in model.named_buffers():
-            if torch.is_tensor(b) and b.numel() > 0:
-                buf[n] = _dt(b)
-                if len(buf) >= 4:
-                    break
-        ledger["buffer_dtype_observed"] = buf
+        obs = omodel.Observation.from_dict(
+            {
+                "image": pin["images"],
+                "image_mask": pin["image_masks"],
+                "state": pin["state"],
+                "tokenized_prompt": pin["tokenized_prompt"],
+                "tokenized_prompt_mask": pin["tokenized_prompt_mask"],
+            }
+        )
+        actions, noise, time = pin["actions"], pin["noise"], pin["time"]
+        surf["action_input_dtype"] = _S(_dt(actions), "pinned batch actions", "input")
+        surf["noise_input_dtype"] = _S(_dt(noise), "pinned batch noise", "input")
+        surf["time_input_dtype"] = _S(_dt(time), "pinned batch time", "input")
 
-        ledger["param_dtype_outside_forward"] = _sample(model.named_parameters())
-        ledger["autocast_enabled"] = _USE_AUTOCAST
-        ledger["grad_scaler_enabled"] = (
-            False  # reference uses no GradScaler (fp32 reduce)
+        mp = getattr(model, "mixed_precision", None)
+        for k in ("param_dtype", "reduce_dtype", "buffer_dtype"):
+            surf[f"fsdp_{k}"] = _S(
+                _dt(getattr(mp, k, None)), f"init_model(...).mixed_precision.{k}"
+            )
+        surf["gradient_reduction_dtype"] = _S(
+            _dt(getattr(mp, "reduce_dtype", None)),
+            "init_model(...).mixed_precision.reduce_dtype",
+        )
+        for k in (
+            "cast_forward_inputs",
+            "cast_root_forward_inputs",
+            "keep_low_precision_grads",
+        ):
+            surf[f"mp_{k}"] = _S(getattr(mp, k, None), f"mixed_precision.{k}")
+
+        out_p = next(iter(model.named_parameters()))
+        surf["master_param_dtype"] = _S(
+            _dt(out_p[1]),
+            f"model.named_parameters()[{out_p[0]}] outside forward",
+            "pre_forward",
         )
 
-        # One forward/backward/step on a shape-correct batch (dtype-only ledger).
-        obs, actions, noise, time = _shape_correct_ref_batch(config, device)
+        bufs = [(n, b) for n, b in model.named_buffers() if torch.is_tensor(b)]
+        surf["buffer_count"] = _S(len(bufs), "model.named_buffers()")
+        surf["buffer_dtypes"] = _S(
+            sorted({_dt(b) for _, b in bufs}), "model.named_buffers() dtypes"
+        )
+
+        surf["ema"] = _S(
+            "none"
+            if getattr(config, "ema_decay", None) is None
+            else str(config.ema_decay),
+            "config.ema_decay",
+        )
+        surf["grad_scaler"] = _S(
+            {"type": "None", "enabled": False},
+            "reference training uses no GradScaler (fp32 reduce)",
+        )
+
+        leaf = _first_leaf_linear(model)
+        during = {}
+
+        def _hook(_m, _i):
+            if "param_dtype" not in during:
+                during["param_dtype"] = _dt(_m.weight)
+                during["autocast_enabled"] = bool(torch.is_autocast_enabled())
+
+        h = leaf.register_forward_pre_hook(_hook) if leaf is not None else None
+
         out = model(obs, actions, train=True, noise=noise, time=time)
         loss = out.mean() if torch.is_tensor(out) else out
-        ledger["loss_dtype"] = _dt(loss)
+        surf["loss_dtype"] = _S(_dt(loss), "model(...) return mean", "after_forward")
+        surf["output_dtype"] = _S(_dt(out), "model(...) raw return", "after_forward")
+        if h is not None:
+            h.remove()
+        surf["param_dtype_during_forward"] = _S(
+            during.get("param_dtype"),
+            "inner Linear forward pre-hook (compute view)",
+            "forward",
+        )
+        surf["compute_autocast_enabled"] = _S(
+            during.get("autocast_enabled"),
+            "torch.is_autocast_enabled() inside forward",
+            "forward",
+        )
+
         loss.backward()
-        ledger["grad_dtype"] = _sample(model.named_parameters(), want_grad=True)
+        gp = [(n, p) for n, p in model.named_parameters() if p.grad is not None]
+        surf["grad_dtype"] = _S(
+            sorted({_dt(p.grad) for _, p in gp[:8]}) or None,
+            f"param.grad after backward ({len(gp)} params with grad)",
+            "after_backward",
+        )
+
+        max_norm = float(getattr(config.optimizer, "clip_gradient_norm", 1.0))
+        grad_norm = model.clip_grad_norm_(max_norm=max_norm)
+        gn = grad_norm.item() if torch.is_tensor(grad_norm) else float(grad_norm)
+        surf["grad_norm"] = _S(
+            {
+                "value": gn,
+                "dtype": _dt(grad_norm) if torch.is_tensor(grad_norm) else "float",
+            },
+            "model.clip_grad_norm_ (FSDP1 real path)",
+            "pre_step",
+        )
         optim.step()
 
-        # Read the EFFECTIVE per-param-group hyperparameters (consistent with the
-        # RLinf ledger), not optimizer.defaults which can be a misleading proxy.
-        defaults = optim.defaults
-        pg = optim.param_groups[0]
-        ledger["optimizer"] = {
-            "type": type(optim).__name__,
-            "fused": defaults.get("fused"),
-            "foreach": defaults.get("foreach"),
-            "capturable": defaults.get("capturable"),
-            "betas": list(pg.get("betas", defaults.get("betas", ()))),
-            "eps": pg.get("eps", defaults.get("eps")),
-            "weight_decay": pg.get("weight_decay", defaults.get("weight_decay")),
-            "lr": pg.get("lr"),
-        }
-        st_dtypes = {}
-        for _p, st in list(optim.state.items())[:2]:
+        defaults, pg = optim.defaults, optim.param_groups[0]
+        surf["optimizer"] = _S(
+            {
+                "type": type(optim).__name__,
+                "fused": defaults.get("fused"),
+                "foreach": defaults.get("foreach"),
+                "capturable": defaults.get("capturable"),
+                "betas": list(pg.get("betas", ())),
+                "eps": pg.get("eps"),
+                "weight_decay": pg.get("weight_decay"),
+                "lr": pg.get("lr"),
+            },
+            "optim.param_groups[0] + optim.defaults",
+        )
+        st = {}
+        for _p, s in list(optim.state.items())[:2]:
             for k in ("exp_avg", "exp_avg_sq"):
-                if k in st:
-                    st_dtypes[k] = _dt(st[k])
-        ledger["optimizer_state_dtype"] = st_dtypes
+                if k in s:
+                    st[k] = _dt(s[k])
+        surf["optimizer_state_dtype"] = _S(
+            st or None, "optim.state[*] after step 1", "after_step"
+        )
+
+        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
+        ):
+            sd = model.state_dict()
+        saved = sorted({_dt(v) for v in list(sd.values())[:8] if torch.is_tensor(v)})
+        surf["saved_checkpoint_dtype"] = _S(
+            saved, "FSDP FULL_STATE_DICT tensor dtypes", "saved"
+        )
+        reload_dtypes = sorted(
+            {_dt(v) for v in list(sd.values())[:8] if torch.is_tensor(v)}
+        )
+        surf["load_after_save_dtype"] = _S(
+            reload_dtypes, "saved FULL_STATE_DICT re-read dtypes", "reloaded"
+        )
+
         ledger["ok"] = True
     except Exception as e:  # pragma: no cover - environment dependent
         import traceback
@@ -168,36 +273,6 @@ def main():
         "REF_LEDGER rank=%d %s"
         % (rank, json.dumps({k: ledger.get(k) for k in ("ok", "err")}))
     )
-
-
-def _shape_correct_ref_batch(config, device):
-    """Build a shape-correct reference (Observation, actions, noise, time)."""
-    import numpy as np
-    from openpi.models_pytorch_new import model as omodel
-
-    horizon = int(config.model.action_horizon)
-    adim = int(config.model.action_dim)
-    img_keys = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
-    b = 1
-    obs = omodel.Observation.from_dict(
-        {
-            "image": {k: torch.rand(b, 224, 224, 3, device=device) for k in img_keys},
-            "image_mask": {
-                k: torch.ones(b, dtype=torch.bool, device=device) for k in img_keys
-            },
-            "state": torch.rand(b, adim, device=device),
-            "tokenized_prompt": torch.ones(b, 200, dtype=torch.long, device=device),
-            "tokenized_prompt_mask": torch.ones(
-                b, 200, dtype=torch.bool, device=device
-            ),
-        }
-    )
-    actions = torch.rand(b, horizon, adim, device=device)
-    noise = torch.from_numpy(
-        np.random.RandomState(0).randn(b, horizon, adim).astype("float32")
-    ).to(device)
-    time = torch.full((b,), 0.5, device=device)
-    return obs, actions, noise, time
 
 
 if __name__ == "__main__":
