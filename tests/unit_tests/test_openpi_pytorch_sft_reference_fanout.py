@@ -50,7 +50,7 @@ def test_builds_train_loader_ownership():
     assert not any(builds_train_loader(REFERENCE_FANOUT, r) for r in range(1, 8))
 
 
-def _run_init_train_dataloader(rank, loader_mode, val_data_paths=None):
+def _run_init_train_dataloader(rank, loader_mode, val_data_paths=None, pinned=None):
     """Drive FSDPSftWorker._init_train_dataloader on a fake self with a counting builder
     (no FSDP/CUDA), to prove who actually constructs + iterates the TRAIN loader."""
     import types
@@ -71,6 +71,8 @@ def _run_init_train_dataloader(rank, loader_mode, val_data_paths=None):
     data = {"train_data_paths": "x", "loader_mode": loader_mode}
     if val_data_paths is not None:
         data["val_data_paths"] = val_data_paths
+    if pinned is not None:
+        data["pinned_inputs_npz"] = pinned
     fake = types.SimpleNamespace(
         _rank=rank,
         cfg=OmegaConf.create({"data": data}),
@@ -97,6 +99,20 @@ def test_per_rank_stream_every_rank_builds_train_loader():
         w, c = _run_init_train_dataloader(r, "per_rank_stream")
         assert c["build"] == 1 and c["iter"] == 1
         assert w.data_loader is not None and w._reference_fanout is False
+
+
+def test_pinned_inputs_force_per_rank_topology_over_reference_fanout():
+    """The pinned reproducibility loader is rank-sliced (inherently per-rank); when it is
+    active the worker MUST force the per-rank topology (every rank builds + iterates its own
+    rank-sliced loader, NO rank-0 fanout) even if loader_mode=reference_fanout was requested --
+    otherwise rank 0 would scatter world_size micro-batches from its single rank-sliced slice."""
+    for loader_mode in ("per_rank_stream", "reference_fanout"):
+        for r in (0, 1, 7):
+            w, c = _run_init_train_dataloader(r, loader_mode, pinned="/tmp/pinned.npz")
+            assert c["build"] == 1 and c["iter"] == 1, (loader_mode, r)
+            assert w.data_loader is not None and w.data_iter is not None
+            # pinned forces per-rank: the fanout/scatter path is never taken.
+            assert w._reference_fanout is False, (loader_mode, r)
 
 
 def test_resolve_loader_mode_default_configured_and_validated():

@@ -51,13 +51,15 @@ fanout arm).
 ### The REAL production stack matches the reference within 2% on identical data + controlled noise
 `docs/evidence/phase6_ac3_production_stack_controlled.json`: the live-noise fanout-arm grad residual
 above (2.35 vs 2.17, ~8%) is only the production noise/time DRAW differing between repos. Pinning the
-IDENTICAL reference_fanout step-0 batch + a CONTROLLED seed-4242 noise into the REAL 8-GPU FSDP SFT
-worker (`build_pinned_behavior_sft_dataloader`) gives a production-stack step-0 **loss 0.22815 /
-pre-clip fp32 global grad 2.32536** that reproduces the reference's same-batch+same-noise step-0
-(2×2 ref cell **0.22795 / 2.33834**) to **loss abs 0.0002 (≤ 0.01)** and **grad rel 0.55% (≤ 2%)** —
-gated directly on the real FSDP/mixed-precision/loss-reduction/all-reduced-grad/pre-clip-fp32-norm
-stack (not the single-GPU 2×2 replay). The pinned inputs are proven bit-for-bit the 2×2 reference
-batch (every surface) + seed-4242 noise, so the 2×2 cell is the exact reference target.
+IDENTICAL reference step-0 batch (the 2×2 reference batch, materialized via the reference rank-0 fanout)
++ a CONTROLLED seed-4242 noise into the REAL 8-GPU FSDP SFT worker via the rank-sliced pinned loader
+(`build_pinned_behavior_sft_dataloader`, `data.loader_mode=per_rank_stream` — each rank consumes its own
+`arr[rank::world_size]` slice; the worker forces this per-rank topology when pinned is active, so there
+is NO rank-0 fanout) gives a production-stack step-0 that reproduces the reference's same-batch+same-noise
+step-0 (the 2×2 ref cell **0.22795 / 2.33834**) to **loss abs ≤ 0.01** and **grad rel ≤ 2%** — gated
+directly on the real FSDP/mixed-precision/loss-reduction/all-reduced-grad/pre-clip-fp32-norm stack (not
+the single-GPU 2×2 replay). The pinned inputs are proven bit-for-bit the 2×2 reference batch (every
+surface) + seed-4242 noise, so the 2×2 cell is the exact reference target.
 
 ## Conclusion — DATA-SIDE
 The first-step loss/grad gap is **data-side**: the decentralized `per_rank_stream` loader feeds RLinf a
@@ -89,6 +91,6 @@ optimizer/lr identity (AC-4, which found+fixed the warmup step-counter off-by-on
 - Reproduce: `tools/sft_cross_feed_2x2.py` (1 GPU, both models + both materialized step-0 batches, now
   emitting per-surface hashes); value-independent ids via `tools/sft_loader_audit_rlinf.py` +
   `tests/unit_tests/_ref_loader_audit_ids.py`; production stack via `tools/build_pinned_step0_npz.py`
-  (2×2 dump → pinned npz) then 8-GPU `train_vla_sft.py behavior_pi05_vla max_steps=1
-  actor.sft_step0_instrument=true data.loader_mode=reference_fanout +data.pinned_inputs_npz=...
-  +data.pinned_noise_time_npz=...`.
+  (2×2 dump → pinned npz) then 8-GPU `train_vla_sft.py --config-name behavior_pi05_vla max_steps=1
+  actor.sft_step0_instrument=true data.loader_mode=per_rank_stream +data.pinned_inputs_npz=...
+  +data.pinned_noise_time_npz=...` (the rank-sliced pinned loader forces the per-rank topology).

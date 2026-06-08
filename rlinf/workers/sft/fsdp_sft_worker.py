@@ -77,6 +77,12 @@ class FSDPSftWorker(FSDPModelManager, Worker):
         to the other ranks (`run_training`), so ranks > 0 build NOTHING for the train path
         (they receive via the fanout). ``per_rank_stream`` (default) keeps every rank building
         its own shard. Eval is handled separately (always decentralized).
+
+        The reproducibility-only pinned loader (``data.pinned_inputs_npz``) is rank-sliced
+        (``arr[rank::world_size]``); it is INHERENTLY the per-rank topology and is incompatible
+        with rank-0 fanout/scatter (rank 0 would try to scatter ``world_size`` micro-batches
+        from its single rank-sliced slice). When pinned is active the per-rank topology is
+        forced regardless of ``loader_mode``.
         """
         from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
             PER_RANK_STREAM,
@@ -88,8 +94,19 @@ class FSDPSftWorker(FSDPModelManager, Worker):
         train_disabled = (
             eval_only is not None or self.cfg.data.get("train_data_paths") is None
         )
-        self._reference_fanout = (not train_disabled) and (
+        pinned_active = (not train_disabled) and bool(
+            self.cfg.data.get("pinned_inputs_npz", None)
+        )
+        requested_fanout = (
             str(self.cfg.data.get("loader_mode", PER_RANK_STREAM)) == REFERENCE_FANOUT
+        )
+        if pinned_active and requested_fanout:
+            logging.warning(
+                "Pinned reproducibility loader is rank-sliced (per-rank); ignoring "
+                "loader_mode=reference_fanout and forcing the per-rank topology."
+            )
+        self._reference_fanout = (
+            (not train_disabled) and requested_fanout and (not pinned_active)
         )
 
         if train_disabled:

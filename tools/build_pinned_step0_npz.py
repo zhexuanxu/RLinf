@@ -19,7 +19,7 @@ This is the reproducible bridge from the committed reference dumper
 SFT loader (``rlinf/data/datasets/behavior/behavior_pinned_loader.py``). It lets
 the REAL 8-GPU FSDP SFT stack consume the EXACT reference rank-0-fanout step-0
 batch (256 frames) + the shared seed-4242 flow noise/time, so the production
-step-0 loss/grad can be gated directly against the reference (AC-3, Gap 1 ->
+step-0 loss/grad can be gated directly against the reference (->
 ``docs/evidence/phase6_ac3_production_stack_controlled.json``).
 
 The dumper writes, for the single step-0 global batch:
