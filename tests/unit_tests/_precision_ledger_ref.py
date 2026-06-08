@@ -30,6 +30,7 @@ Writes ``ref_precision_ledger_rank{r}.json``.
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -110,6 +111,8 @@ def main():
     surf = {}
     ledger["surfaces"] = surf
     try:
+        if not hasattr(datetime, "UTC"):
+            datetime.UTC = datetime.timezone.utc
         import openpi.training.config as _config
         from openpi.models_pytorch_new import model as omodel
         from train_pytorch_new import init_model
@@ -133,9 +136,13 @@ def main():
         pin = load_pinned(device)
         ledger["pinned_input"] = {
             "spec_path": pin["spec_path"],
+            "artifact": pin["artifact"],
             "field_sha256": pin["hashes"],
             "shapes": pin["shapes"],
-            "provenance": "_precision_pinned.load_pinned (deterministic, shared)",
+            "provenance": (
+                "_precision_pinned.load_pinned (committed ref_pinned_npz artifact; "
+                "derived from _ref_pinned_run.py pinned SFT input/noise-time path)"
+            ),
         }
         obs = omodel.Observation.from_dict(
             {

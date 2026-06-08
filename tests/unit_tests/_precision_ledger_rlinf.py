@@ -35,6 +35,8 @@ import sys
 
 import torch
 
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _REPO)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _precision_pinned import build_pinned, load_pinned, sha_tensor  # noqa: E402
 
@@ -136,9 +138,13 @@ def main():
         pin = load_pinned(device)
         ledger["pinned_input"] = {
             "spec_path": pin["spec_path"],
+            "artifact": pin["artifact"],
             "field_sha256": pin["hashes"],
             "shapes": pin["shapes"],
-            "provenance": "_precision_pinned.load_pinned (deterministic, shared)",
+            "provenance": (
+                "_precision_pinned.load_pinned (committed ref_pinned_npz artifact; "
+                "derived from _ref_pinned_run.py pinned SFT input/noise-time path)"
+            ),
         }
         obs = Observation(
             images=pin["images"],

@@ -30,6 +30,7 @@ per-step losses match 50/50, the production first-50 residual is the per-step IN
 """
 
 import dataclasses
+import datetime
 import hashlib
 import json
 import sys
@@ -80,6 +81,8 @@ def _git_rev(repo):
 
 
 def main(out_dir, n_steps, world_size):
+    if not hasattr(datetime, "UTC"):
+        datetime.UTC = datetime.timezone.utc
     sys.path.insert(0, _REF_SRC)
     result = {"ok": False}
     try:

@@ -30,7 +30,9 @@ from __future__ import annotations
 import json
 import pathlib
 
+import numpy as np
 import pytest
+import torch
 
 _EV = pathlib.Path("/mnt/public/xzxuan/repos/RLinf_pi05/docs/evidence")
 _REPOS = ("rlinf", "ref")
@@ -100,6 +102,94 @@ def test_same_pinned_input_across_repos():
     rl = _load("rlinf", 0)["pinned_input"]["field_sha256"]
     rf = _load("ref", 0)["pinned_input"]["field_sha256"]
     assert rl == rf and len(rl) >= 5
+
+
+def test_pinned_input_uses_committed_ref_pinned_artifact():
+    """The precision ledger must use the committed pinned SFT artifact, not the
+    old shape-only synthetic spec."""
+    for repo in _REPOS:
+        for rank in _RANKS:
+            pinned = _load(repo, rank)["pinned_input"]
+            assert pinned.get("spec_path") == (
+                "docs/evidence/phase5_precision_pinned_artifact.json"
+            )
+            assert "phase5_precision_pinned_spec.json" not in json.dumps(pinned)
+            artifact = pinned.get("artifact")
+            assert artifact, f"{repo} rank{rank} missing pinned artifact metadata"
+            assert artifact["format"] == "ref_pinned_npz"
+            assert artifact["synthetic"] is False
+            generator = artifact["source"]["generator"]
+            assert (
+                "_ref_pinned_run.py" in generator
+                or "_precision_pinned_artifact_rlinf.py" in generator
+            )
+            assert artifact["rank"] == rank
+            for key in ("batches_npz", "noise_time_npz"):
+                p = pathlib.Path("/mnt/public/xzxuan/repos/RLinf_pi05") / artifact[key]
+                assert p.is_file(), f"{repo} rank{rank} missing {key}: {p}"
+
+
+def test_precision_pinned_loader_rejects_shape_only_manifest(tmp_path):
+    """A manifest not tied to the pinned SFT artifact path is rejected before
+    tensors are loaded."""
+    from _precision_pinned import load_pinned
+
+    manifest = tmp_path / "phase5_precision_pinned_artifact.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "format": "shape_only_spec",
+                "synthetic": True,
+                "batches_npz": "missing.npz",
+                "noise_time_npz": "missing_noise.npz",
+                "world_size": 2,
+                "micro_batch": 1,
+                "source": {"generator": "phase5_precision_pinned_spec.json"},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="ref_pinned_npz"):
+        load_pinned(torch.device("cpu"), manifest)
+
+
+def test_precision_pinned_builder_extracts_ref_pinned_npz(tmp_path, monkeypatch):
+    """The artifact builder consumes the same two-NPZ schema as the pinned SFT
+    loader and emits a compact rank-addressable artifact."""
+    from _precision_pinned import build_pinned, load_pinned
+
+    image_keys = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+    batches = {}
+    for key in image_keys:
+        batches[f"image__{key}"] = np.full((2, 2, 4, 4, 3), 0.25, np.float32)
+        batches[f"image_mask__{key}"] = np.ones((2, 2), dtype=bool)
+    batches["state"] = np.arange(2 * 2 * 8, dtype=np.float32).reshape(2, 2, 8)
+    batches["actions"] = np.arange(2 * 2 * 4 * 4, dtype=np.float32).reshape(2, 2, 4, 4)
+    batches["tokenized_prompt"] = np.ones((2, 2, 5), dtype=np.int64)
+    batches["tokenized_prompt_mask"] = np.ones((2, 2, 5), dtype=bool)
+    batches_npz = tmp_path / "ref_pinned_batches.npz"
+    np.savez(batches_npz, **batches)
+
+    noise = np.arange(1 * 4 * 4 * 4, dtype=np.float32).reshape(1, 4, 4, 4)
+    time = np.arange(4, dtype=np.float32).reshape(1, 4)
+    noise_time_npz = tmp_path / "ref_pinned_noise_time.npz"
+    np.savez(noise_time_npz, noise=noise, time=time)
+
+    manifest = tmp_path / "phase5_precision_pinned_artifact.json"
+    build_pinned(
+        batches_npz,
+        noise_time_npz,
+        manifest_path=manifest,
+        source_command="python tests/unit_tests/_ref_pinned_run.py OUT 1 2",
+        world_size=2,
+        micro=1,
+    )
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "1")
+    pin = load_pinned(torch.device("cpu"), manifest)
+    assert pin["artifact"]["synthetic"] is False
+    assert pin["actions"].shape == (1, 4, 4)
+    assert torch.allclose(pin["noise"], torch.from_numpy(noise[:, 1:2][0]))
 
 
 def test_grad_sample_nonempty_on_sharded_rank():

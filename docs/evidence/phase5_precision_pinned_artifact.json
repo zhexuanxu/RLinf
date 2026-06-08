@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "format": "ref_pinned_npz",
+  "synthetic": false,
+  "batches_npz": "phase5_precision_pinned_batches.npz",
+  "noise_time_npz": "phase5_precision_pinned_noise_time.npz",
+  "world_size": 2,
+  "micro_batch": 1,
+  "source": {
+    "generator": "tests/unit_tests/_precision_pinned_artifact_rlinf.py",
+    "command": "python tests/unit_tests/_precision_pinned_artifact_rlinf.py --world-size=2 --micro=1",
+    "source_batches_npz": "/mnt/public/xzxuan/tmp/phase5_precision_pinned_artifact/ref_pinned_batches.npz",
+    "source_noise_time_npz": "/mnt/public/xzxuan/tmp/phase5_precision_pinned_artifact/ref_pinned_noise_time.npz",
+    "ref_git_rev": "cd99b39",
+    "rlinf_git_rev": "bfea3ab0"
+  },
+  "file_sha256": {
+    "batches_npz": "25f2fa30f35e208164c7177fc6096bc9468893c10289ff66a6a44497243700d5",
+    "noise_time_npz": "ee8da778b5a124180672d01c6d080e5bcd1d228f4f7d059f12a3f5488c6228e6"
+  }
+}
