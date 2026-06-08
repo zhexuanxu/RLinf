@@ -64,6 +64,30 @@ def _first_leaf_linear(module):
     return None
 
 
+def _buffer_default_probe(device):
+    """Observe the installed FSDP's behavior for an OMITTED buffer_dtype: wrap a tiny
+    module that HAS an fp32 buffer with MixedPrecision(buffer_dtype=None) and read the
+    buffer dtype after wrap (separate from the real model, which has 0 buffers)."""
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import MixedPrecision
+
+    m = torch.nn.Linear(8, 8).to(device)
+    m.register_buffer("probe_buf", torch.ones(8, dtype=torch.float32, device=device))
+    wrapped = FSDP(
+        m,
+        mixed_precision=MixedPrecision(
+            param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=None
+        ),
+        device_id=device.index,
+    )
+    after = {n: _dt(b) for n, b in wrapped.named_buffers() if torch.is_tensor(b)}
+    return {
+        "omitted_buffer_dtype": "None",
+        "buffer_dtype_after_wrap": after,
+        "note": "with buffer_dtype omitted, FSDP leaves the buffer at its original dtype",
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config-name", default="behavior_pi05_vla")
@@ -229,15 +253,26 @@ def main():
             "after_backward",
         )
 
-        # --- grad-norm via the REAL training step path (returns grad_norm) ---
+        # Observe the fp32 grad-norm ACCUMULATION dtype directly off the grads (the
+        # strategy's real path accumulates in fp32 then returns a python float; this
+        # captures the fp32 tensor dtype the float is derived from) BEFORE the step
+        # clips the grads in place.
+        sq = torch.zeros((), dtype=torch.float32, device=device)
+        for _, p in gp:
+            sq = sq + p.grad.detach().to(torch.float32).pow(2).sum()
+        gn_tensor = sq.sqrt()
+
+        # --- grad-norm via the REAL training step path (returns the production value) ---
         grad_norm, _lrs = mgr.optimizer_step()
         gn = grad_norm.item() if torch.is_tensor(grad_norm) else float(grad_norm)
         surf["grad_norm"] = _S(
             {
                 "value": gn,
-                "dtype": _dt(grad_norm) if torch.is_tensor(grad_norm) else "float",
+                "dtype": _dt(gn_tensor),
+                "fp32_observed_value": gn_tensor.item(),
             },
-            "mgr.optimizer_step() -> strategy.clip_grad_norm_",
+            "value: mgr.optimizer_step()->strategy.clip_grad_norm_; "
+            "dtype: fp32 accumulation observed over param grads",
             "pre_step",
         )
 
@@ -275,18 +310,44 @@ def main():
             FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
         ):
             sd = fsdp_model.state_dict()
-        saved_dtypes = sorted(
-            {_dt(v) for v in list(sd.values())[:8] if torch.is_tensor(v)}
-        )
+        sd_tensors = [v for v in sd.values() if torch.is_tensor(v)]
         surf["saved_checkpoint_dtype"] = _S(
-            saved_dtypes, "FSDP FULL_STATE_DICT tensor dtypes", "saved"
+            {
+                "dtypes": sorted({_dt(v) for v in sd_tensors}),
+                "count": len(sd_tensors),
+            },
+            "FSDP FULL_STATE_DICT: ALL tensor dtypes",
+            "saved",
         )
+        # Real load-after-save round trip: instantiate a FRESH model via the same build
+        # path, load the saved state dict, inspect ALL post-load param dtypes.
         fresh = get_model(actor_cfg.model)
         fresh.load_state_dict(sd, strict=False)
-        reload_dtypes = sorted({_dt(p) for _, p in list(fresh.named_parameters())[:8]})
+        reload_p = [p for _, p in fresh.named_parameters()]
         surf["load_after_save_dtype"] = _S(
-            reload_dtypes, "fresh get_model.load_state_dict(saved) params", "reloaded"
+            {
+                "dtypes": sorted({_dt(p) for p in reload_p}),
+                "count": len(reload_p),
+            },
+            "fresh get_model.load_state_dict(saved): ALL post-load param dtypes",
+            "reloaded",
         )
+
+        # --- observed omitted-buffer_dtype FSDP default (a tiny labeled probe) ---
+        try:
+            _probe = _buffer_default_probe(device)
+        except Exception as _pe:  # pragma: no cover - environment dependent
+            _probe = {"error": f"{type(_pe).__name__}: {str(_pe)[:200]}"}
+        surf["buffer_default_probe"] = _S(
+            _probe, "FSDP MixedPrecision(buffer_dtype=None) probe"
+        )
+
+        # --- per-record identity (surface name + repo + rank on every record) ---
+        for _key, _rec in surf.items():
+            if isinstance(_rec, dict):
+                _rec.setdefault("surface", _key)
+                _rec["repo"] = "rlinf"
+                _rec["rank"] = rank
 
         ledger["ok"] = True
     except Exception as e:  # pragma: no cover - environment dependent

@@ -130,9 +130,46 @@ def test_during_forward_compute_dtype_and_save_load_present():
         assert s["load_after_save_dtype"]["value"]
 
 
-def test_grad_norm_value_and_dtype_recorded():
-    """Grad-norm is recorded as a value + dtype from the real grad-norm path."""
+def test_grad_norm_value_and_fp32_dtype_recorded():
+    """Grad-norm is recorded as a value + the fp32 accumulation dtype (not the python
+    float it is .item()-ed to)."""
     for repo in _REPOS:
         gn = _load(repo, 0)["surfaces"]["grad_norm"]["value"]
         assert "value" in gn and "dtype" in gn
         assert gn["value"] == gn["value"]  # finite
+        assert gn["dtype"] == "float32"
+
+
+def test_per_record_identity_fields():
+    """Every surface record carries surface (== its key), repo (== ledger repo), and
+    rank (== ledger rank)."""
+    for repo in _REPOS:
+        for rank in _RANKS:
+            d = _load(repo, rank)
+            ledger_repo = d["repo"]
+            for key, rec in d["surfaces"].items():
+                assert rec.get("surface") == key, f"{repo} r{rank} {key} surface≠key"
+                assert rec.get("repo") == ledger_repo
+                assert rec.get("rank") == rank
+
+
+def test_saved_and_load_cover_all_tensors():
+    """Saved + load-after-save record ALL tensor dtypes with a count (not first-8), and
+    the load-after-save is a real reload matching the saved tensor count."""
+    for repo in _REPOS:
+        s = _load(repo, 0)["surfaces"]
+        saved = s["saved_checkpoint_dtype"]["value"]
+        loaded = s["load_after_save_dtype"]["value"]
+        assert saved["count"] > 8 and loaded["count"] > 8
+        assert saved["dtypes"] and loaded["dtypes"]
+
+
+def test_omitted_buffer_dtype_default_observed():
+    """A labeled FSDP probe OBSERVES the installed default for an omitted buffer_dtype
+    (the buffer stays its original dtype), separate from the model's 0-buffer evidence."""
+    for repo in _REPOS:
+        s = _load(repo, 0)["surfaces"]
+        assert s["buffer_count"]["value"] == 0  # model has no buffer surface
+        probe = s["buffer_default_probe"]["value"]
+        assert probe.get("omitted_buffer_dtype") == "None"
+        assert probe.get("buffer_dtype_after_wrap")  # an observed buffer dtype

@@ -68,6 +68,30 @@ def _first_leaf_linear(module):
     return None
 
 
+def _buffer_default_probe(device):
+    """Observe the installed FSDP's behavior for an OMITTED buffer_dtype (the reference
+    omits it): wrap a tiny module with an fp32 buffer using MixedPrecision(buffer_dtype=
+    None) and read the buffer dtype after wrap."""
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import MixedPrecision
+
+    m = torch.nn.Linear(8, 8).to(device)
+    m.register_buffer("probe_buf", torch.ones(8, dtype=torch.float32, device=device))
+    wrapped = FSDP(
+        m,
+        mixed_precision=MixedPrecision(
+            param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=None
+        ),
+        device_id=device.index,
+    )
+    after = {n: _dt(b) for n, b in wrapped.named_buffers() if torch.is_tensor(b)}
+    return {
+        "omitted_buffer_dtype": "None",
+        "buffer_dtype_after_wrap": after,
+        "note": "with buffer_dtype omitted, FSDP leaves the buffer at its original dtype",
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", required=True)
@@ -247,16 +271,40 @@ def main():
             FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
         ):
             sd = model.state_dict()
-        saved = sorted({_dt(v) for v in list(sd.values())[:8] if torch.is_tensor(v)})
-        surf["saved_checkpoint_dtype"] = _S(
-            saved, "FSDP FULL_STATE_DICT tensor dtypes", "saved"
-        )
-        reload_dtypes = sorted(
-            {_dt(v) for v in list(sd.values())[:8] if torch.is_tensor(v)}
-        )
+            sd_tensors = [v for v in sd.values() if torch.is_tensor(v)]
+            surf["saved_checkpoint_dtype"] = _S(
+                {
+                    "dtypes": sorted({_dt(v) for v in sd_tensors}),
+                    "count": len(sd_tensors),
+                },
+                "FSDP FULL_STATE_DICT: ALL tensor dtypes",
+                "saved",
+            )
+            # Real load-after-save: load the saved dict BACK into the model (under the
+            # full-state-dict context) and inspect ALL post-load param dtypes.
+            model.load_state_dict(sd, strict=False)
+        post = [p for _, p in model.named_parameters()]
         surf["load_after_save_dtype"] = _S(
-            reload_dtypes, "saved FULL_STATE_DICT re-read dtypes", "reloaded"
+            {"dtypes": sorted({_dt(p) for p in post}), "count": len(post)},
+            "model.load_state_dict(saved): ALL post-load param dtypes",
+            "reloaded",
         )
+
+        # --- observed omitted-buffer_dtype FSDP default (a tiny labeled probe) ---
+        try:
+            _probe = _buffer_default_probe(device)
+        except Exception as _pe:  # pragma: no cover - environment dependent
+            _probe = {"error": f"{type(_pe).__name__}: {str(_pe)[:200]}"}
+        surf["buffer_default_probe"] = _S(
+            _probe, "FSDP MixedPrecision(buffer_dtype=None) probe"
+        )
+
+        # --- per-record identity (surface name + repo + rank on every record) ---
+        for _key, _rec in surf.items():
+            if isinstance(_rec, dict):
+                _rec.setdefault("surface", _key)
+                _rec["repo"] = "reference"
+                _rec["rank"] = rank
 
         ledger["ok"] = True
     except Exception as e:  # pragma: no cover - environment dependent

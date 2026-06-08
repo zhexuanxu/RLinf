@@ -6,109 +6,175 @@
   "surfaces": {
     "pytorch_training_precision": {
       "value": "mp_bfloat16",
-      "provenance": "config.pytorch_training_precision"
+      "provenance": "config.pytorch_training_precision",
+      "surface": "pytorch_training_precision",
+      "repo": "reference",
+      "rank": 0
     },
     "action_input_dtype": {
       "value": "float32",
       "provenance": "pinned batch actions",
-      "stage": "input"
+      "stage": "input",
+      "surface": "action_input_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "noise_input_dtype": {
       "value": "float32",
       "provenance": "pinned batch noise",
-      "stage": "input"
+      "stage": "input",
+      "surface": "noise_input_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "time_input_dtype": {
       "value": "float32",
       "provenance": "pinned batch time",
-      "stage": "input"
+      "stage": "input",
+      "surface": "time_input_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "fsdp_param_dtype": {
       "value": "bfloat16",
-      "provenance": "init_model(...).mixed_precision.param_dtype"
+      "provenance": "init_model(...).mixed_precision.param_dtype",
+      "surface": "fsdp_param_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "fsdp_reduce_dtype": {
       "value": "float32",
-      "provenance": "init_model(...).mixed_precision.reduce_dtype"
+      "provenance": "init_model(...).mixed_precision.reduce_dtype",
+      "surface": "fsdp_reduce_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "fsdp_buffer_dtype": {
       "value": "None",
-      "provenance": "init_model(...).mixed_precision.buffer_dtype"
+      "provenance": "init_model(...).mixed_precision.buffer_dtype",
+      "surface": "fsdp_buffer_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "gradient_reduction_dtype": {
       "value": "float32",
-      "provenance": "init_model(...).mixed_precision.reduce_dtype"
+      "provenance": "init_model(...).mixed_precision.reduce_dtype",
+      "surface": "gradient_reduction_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "mp_cast_forward_inputs": {
       "value": false,
-      "provenance": "mixed_precision.cast_forward_inputs"
+      "provenance": "mixed_precision.cast_forward_inputs",
+      "surface": "mp_cast_forward_inputs",
+      "repo": "reference",
+      "rank": 0
     },
     "mp_cast_root_forward_inputs": {
       "value": true,
-      "provenance": "mixed_precision.cast_root_forward_inputs"
+      "provenance": "mixed_precision.cast_root_forward_inputs",
+      "surface": "mp_cast_root_forward_inputs",
+      "repo": "reference",
+      "rank": 0
     },
     "mp_keep_low_precision_grads": {
       "value": false,
-      "provenance": "mixed_precision.keep_low_precision_grads"
+      "provenance": "mixed_precision.keep_low_precision_grads",
+      "surface": "mp_keep_low_precision_grads",
+      "repo": "reference",
+      "rank": 0
     },
     "master_param_dtype": {
       "value": "float32",
       "provenance": "model.named_parameters()[_orig_mod._fsdp_wrapped_module.llm.embedder.embedding.weight] outside forward",
-      "stage": "pre_forward"
+      "stage": "pre_forward",
+      "surface": "master_param_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "buffer_count": {
       "value": 0,
-      "provenance": "model.named_buffers()"
+      "provenance": "model.named_buffers()",
+      "surface": "buffer_count",
+      "repo": "reference",
+      "rank": 0
     },
     "buffer_dtypes": {
       "value": [],
-      "provenance": "model.named_buffers() dtypes"
+      "provenance": "model.named_buffers() dtypes",
+      "surface": "buffer_dtypes",
+      "repo": "reference",
+      "rank": 0
     },
     "ema": {
       "value": "none",
-      "provenance": "config.ema_decay"
+      "provenance": "config.ema_decay",
+      "surface": "ema",
+      "repo": "reference",
+      "rank": 0
     },
     "grad_scaler": {
       "value": {
         "type": "None",
         "enabled": false
       },
-      "provenance": "reference training uses no GradScaler (fp32 reduce)"
+      "provenance": "reference training uses no GradScaler (fp32 reduce)",
+      "surface": "grad_scaler",
+      "repo": "reference",
+      "rank": 0
     },
     "loss_dtype": {
       "value": "bfloat16",
       "provenance": "model(...) return mean",
-      "stage": "after_forward"
+      "stage": "after_forward",
+      "surface": "loss_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "output_dtype": {
       "value": "bfloat16",
       "provenance": "model(...) raw return",
-      "stage": "after_forward"
+      "stage": "after_forward",
+      "surface": "output_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "param_dtype_during_forward": {
       "value": "bfloat16",
       "provenance": "inner Linear forward pre-hook (compute view)",
-      "stage": "forward"
+      "stage": "forward",
+      "surface": "param_dtype_during_forward",
+      "repo": "reference",
+      "rank": 0
     },
     "compute_autocast_enabled": {
       "value": false,
       "provenance": "torch.is_autocast_enabled() inside forward",
-      "stage": "forward"
+      "stage": "forward",
+      "surface": "compute_autocast_enabled",
+      "repo": "reference",
+      "rank": 0
     },
     "grad_dtype": {
       "value": [
         "float32"
       ],
       "provenance": "param.grad after backward (160 params with grad)",
-      "stage": "after_backward"
+      "stage": "after_backward",
+      "surface": "grad_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "grad_norm": {
       "value": {
-        "value": 135.42662048339844,
+        "value": 135.4266357421875,
         "dtype": "float32"
       },
       "provenance": "model.clip_grad_norm_ (FSDP1 real path)",
-      "stage": "pre_step"
+      "stage": "pre_step",
+      "surface": "grad_norm",
+      "repo": "reference",
+      "rank": 0
     },
     "optimizer": {
       "value": {
@@ -124,7 +190,10 @@
         "weight_decay": 1e-10,
         "lr": 2.5e-05
       },
-      "provenance": "optim.param_groups[0] + optim.defaults"
+      "provenance": "optim.param_groups[0] + optim.defaults",
+      "surface": "optimizer",
+      "repo": "reference",
+      "rank": 0
     },
     "optimizer_state_dtype": {
       "value": {
@@ -132,21 +201,49 @@
         "exp_avg_sq": "float32"
       },
       "provenance": "optim.state[*] after step 1",
-      "stage": "after_step"
+      "stage": "after_step",
+      "surface": "optimizer_state_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "saved_checkpoint_dtype": {
-      "value": [
-        "float32"
-      ],
-      "provenance": "FSDP FULL_STATE_DICT tensor dtypes",
-      "stage": "saved"
+      "value": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "provenance": "FSDP FULL_STATE_DICT: ALL tensor dtypes",
+      "stage": "saved",
+      "surface": "saved_checkpoint_dtype",
+      "repo": "reference",
+      "rank": 0
     },
     "load_after_save_dtype": {
-      "value": [
-        "float32"
-      ],
-      "provenance": "saved FULL_STATE_DICT re-read dtypes",
-      "stage": "reloaded"
+      "value": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "provenance": "model.load_state_dict(saved): ALL post-load param dtypes",
+      "stage": "reloaded",
+      "surface": "load_after_save_dtype",
+      "repo": "reference",
+      "rank": 0
+    },
+    "buffer_default_probe": {
+      "value": {
+        "omitted_buffer_dtype": "None",
+        "buffer_dtype_after_wrap": {
+          "_fsdp_wrapped_module.probe_buf": "float32"
+        },
+        "note": "with buffer_dtype omitted, FSDP leaves the buffer at its original dtype"
+      },
+      "provenance": "FSDP MixedPrecision(buffer_dtype=None) probe",
+      "surface": "buffer_default_probe",
+      "repo": "reference",
+      "rank": 0
     }
   },
   "pinned_input": {
