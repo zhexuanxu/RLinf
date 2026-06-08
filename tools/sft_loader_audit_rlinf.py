@@ -18,8 +18,8 @@ Reconstructs the PRODUCTION per-rank streaming partition single-process by build
 ``build_behavior_sft_dataloader`` per rank with EXPLICIT ``dist_rank``/``dist_world_size``
 (the committed spawn-worker fix) and the production ``num_workers``, then iterating all
 ranks in lockstep. For each global step it records every rank's ordered frame ids using
-the SAME identity as the reference fanout dump (sha256 over state+actions+tokenized_prompt,
-native dtype) so the two repos are byte-comparable.
+the value-independent ``(episode_index, frame_index)`` identity (taken BEFORE normalization/
+tokenization, see ``id_only`` below) so the two repos are byte-comparable.
 
 No model / no GPU. Output (per-rank-per-step frame hashes + per-step global-set hash +
 distinct count) goes under a caller-provided scratch dir (point at /mnt/public/xzxuan/tmp).
@@ -34,28 +34,6 @@ import hashlib
 import json
 import os
 import sys
-
-
-def _np(x):
-    import numpy as np
-    import torch
-
-    return x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
-
-
-def _frame_hashes(observation, actions):
-    import numpy as np
-
-    state, act = _np(observation.state), _np(actions)
-    tp = _np(getattr(observation, "tokenized_prompt", np.zeros((state.shape[0], 1))))
-    out = []
-    for i in range(state.shape[0]):
-        h = hashlib.sha256()
-        h.update(np.ascontiguousarray(state[i]).tobytes())
-        h.update(np.ascontiguousarray(act[i]).tobytes())
-        h.update(np.ascontiguousarray(tp[i]).tobytes())
-        out.append(h.hexdigest()[:16])
-    return out
 
 
 def _global_set_hash(step_rank_hashes):
@@ -107,7 +85,7 @@ def main(out_dir, n_steps, world_size):
 
         per_step_rank_hashes, per_step_set_hash, per_step_unique = [], [], []
         for step in range(n_steps):
-            step_rank_hashes = [rank_step_hashes[r][step] for r in range(world_size)]
+            step_rank_hashes = [rank_step_ids[r][step] for r in range(world_size)]
             sh, uniq = _global_set_hash(step_rank_hashes)
             per_step_rank_hashes.append(step_rank_hashes)
             per_step_set_hash.append(sh)
