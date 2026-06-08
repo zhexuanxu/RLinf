@@ -1,0 +1,61 @@
+{
+  "title": "Phase-6 final conclusion: the BEHAVIOR pi0.5 SFT first-step loss/grad gap is DATA-side",
+  "question": "RLinf's 8-GPU BEHAVIOR pi0.5 FSDP SFT logged step-0 loss 0.3275 / grad_norm 6.691 (lr 2.4975e-08) vs the reference openpi-comet-pytorch-mixed step-0 loss 0.24609375 / grad_norm 2.1718 (lr 2.4975e-08). Is the gap data-side or compute-side, and is the optimizer/lr aligned?",
+  "outcome": "loader_misalignment_fixed",
+  "outcome_detail": "Resolution (a) of the plan's AC-5 menu: the two loaders were NOT multiset-consistent under the production 8-GPU topology -- a real loader misalignment -- now made strictly consistent for all 30000 steps via the user-approved data.loader_mode=reference_fanout (AC-2). On IDENTICAL step-0 data the loss/grad match (AC-3): the model compute is byte-identical and the real production stack reproduces the reference within tolerance, so there is NO compute-side defect on identical data. The original 0.3275-vs-0.24609 is the decentralized DEFAULT loader feeding a DIFFERENT step-0 256-frame batch. lr/AdamW are strictly aligned (AC-4), including a warmup off-by-one that was found and fixed.",
+  "default_per_rank_stream_strictly_identical_to_reference": false,
+  "strict_identity_mode": "reference_fanout",
+  "default_mode": "per_rank_stream",
+  "default_mode_role": "decentralized throughput path (world_size*num_workers lanes); NOT strictly identical to the reference per-step data -- that is the cause of the first-step gap, not a compute bug",
+  "supersedes_prior_claim": "the prior 'benign RNG/shuffle' explanation is REJECTED: the full-30k multiset audit shows the decentralized default is genuinely a different per-step multiset (lane-count divergence at step 0), not a benign post-epoch reorder",
+  "ac_evidence": {
+    "AC-1": {
+      "claim": "trustworthy step-0 provenance from a confirmed-fixed, runtime-instrumented 8-GPU run (rank-disjoint 256-frame effective batch)",
+      "artifacts": ["phase6_sft_step0_capture.json", "phase6_sft_step0_provenance.json"],
+      "gates": ["tests/unit_tests/test_openpi_pytorch_sft_step0_provenance.py", "tests/unit_tests/test_openpi_pytorch_sft_sharding.py"],
+      "numbers": {"loss": 0.3275146484375, "grad_norm": 6.690909385681152, "lr": 2.4975024714990468e-08, "global_unique_frames": 256, "rank_disjoint": true, "fix_exercised": true}
+    },
+    "AC-2": {
+      "claim": "loaders strictly consistent in reference_fanout mode (identical global-batch multiset for all 30000 steps)",
+      "artifacts": ["phase6_loader_audit_ids_fanout_compare.json", "phase6_loader_audit_ids_fanout_nonperturb.json", "phase6_loader_lane_root_cause.md"],
+      "gates": ["tests/unit_tests/test_openpi_pytorch_sft_loader_audit_ids.py", "tests/unit_tests/test_openpi_pytorch_sft_sharding.py"],
+      "numbers": {"verdict": "IDENTICAL_MULTISET", "identical_prefix_steps": 30000, "global_rolling_hash_match": true, "rank_assignment_relation": "identical-order", "default_decentralized_lanes": 64, "reference_lanes": 8}
+    },
+    "AC-3": {
+      "claim": "the first-step gap is DATA-side; compute byte-identical; the real production stack reproduces the reference on identical data + controlled noise",
+      "artifacts": ["phase6_ac3_cross_feed_2x2.json", "phase6_ac3_production_stack_controlled.json", "phase6_ac3_production_step0.json", "phase6_ac3_conclusion.md"],
+      "gates": ["tests/unit_tests/test_openpi_pytorch_sft_step0_parity.py"],
+      "numbers": {
+        "x2_ref_batch_ref_model": {"loss": 0.2279488742351532, "grad_norm": 2.3383395671844482},
+        "x2_ref_batch_rlinf_model": {"loss": 0.22790351510047913, "grad_norm": 2.3376598358154297},
+        "x2_rlinf_batch_ref_model": {"loss": 0.33534321188926697, "grad_norm": 6.2720441818237305},
+        "x2_compute_grad_rel_delta_ref_batch": 0.0002907742857212793,
+        "x2_episode_frame_overlap": 0,
+        "production_stack_real_8gpu": {"loss": 0.2281494140625, "grad_norm": 2.325361967086792},
+        "production_stack_gate": {"loss_abs_delta": 0.00020053982734680176, "grad_rel_delta": 0.005549921097765258, "pass": true},
+        "reference_fanout_production_step0": {"loss": 0.25048828125, "grad_norm": 2.3467209339141846},
+        "reference_production_step0": {"loss": 0.24609375, "grad_norm": 2.1718},
+        "decentralized_default_step0": {"loss": 0.3275146484375, "grad_norm": 6.690909385681152}
+      }
+    },
+    "AC-4": {
+      "claim": "optimizer/lr strictly aligned: openpi_cosine == reference inline schedule; step-0 lr = reference warmup init; a warmup off-by-one was found+fixed; AdamW fused bit-identical",
+      "artifacts": ["tools/sft_optimizer_parity_probe.py"],
+      "gates": ["tests/unit_tests/test_openpi_pytorch_sft_optimizer_parity.py"],
+      "numbers": {"step0_lr": 2.4975024714990468e-08, "schedule_match_tol": 1e-12, "peak_lr_at_step_1000": 2.5e-5, "warmup_off_by_one_fixed": true, "adamw_fused_bit_identical": true}
+    }
+  },
+  "audit": {
+    "task5_route": "analyze (independent Codex audit)",
+    "artifact": "phase6_task5_audit.md",
+    "verdict": "GAP",
+    "blockers": [
+      {
+        "surface": 6,
+        "artifact": "phase6_ac3_production_stack_controlled.json",
+        "issue": "The recorded production command contains placeholders (<p9>, <scratch>) and is not literally executable as committed.",
+        "fix": "Commit the resolved absolute command actually run, or add a separate resolved_command field while keeping the template command."
+      }
+    ]
+  }
+}
