@@ -12,28 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""STRICT gate for the value-independent (episode:frame) loader multiset audit (AC-2),
-schema v2.
+"""Strict gate for the value-independent (episode:frame) loader multiset audit, schema v2.
 
-The full-30k audit established TWO distinct divergence causes (see
+The full-30k audit characterized how RLinf's BEHAVIOR SFT loader relates to the reference
+``openpi-comet`` loader under each loading strategy (see
 ``docs/evidence/phase6_loader_lane_root_cause.md``):
 
-* LANE COUNT — at production num_workers the loaders shard into a different number of lanes
-  (reference rank-0 fanout = num_workers=8; RLinf decentralized = world_size*num_workers=64),
-  so the global multiset diverges from STEP 0 (``DIVERGENT_MULTISET``, cause ``lane_count``).
-* EPOCH BOUNDARY — at matched lane count (RLinf num_workers=1 → 8 lanes) the global multiset is
-  IDENTICAL for the ENTIRE FIRST EPOCH (epoch_len steps, incl. step 0), then diverges exactly at
-  the epoch boundary because the reference fanout re-creates its single DataLoader iterator on
-  exhaustion (13435 batches, not a multiple of world_size), while RLinf's per-rank loaders stream
-  a full lane uniformly. Both keep sampling the SAME 429,928-frame pool, 256/step — a benign
-  reorder (``IDENTICAL_FIRST_EPOCH``, cause ``epoch_boundary``).
+* ``per_rank_stream`` (decentralized, production default) at production num_workers shards the
+  chunk stream into world_size*num_workers=64 lanes vs the reference's 8 (lane count), so the
+  global multiset diverges from step 0 (``DIVERGENT_MULTISET``, cause ``lane_count``). At a
+  matched lane count (num_workers=1 -> 8 lanes) it is IDENTICAL for the entire first epoch
+  (epoch_len steps, incl. step 0) then reorders the same 429,928-frame pool at the epoch
+  boundary (the reference's centralized fanout re-creates its single DataLoader iterator on
+  exhaustion at a non-step-aligned 13435-batch boundary; the per-rank loaders stream a full
+  lane uniformly) -> ``IDENTICAL_FIRST_EPOCH``, cause ``epoch_boundary``.
+* ``reference_fanout`` (centralized, opt-in) replicates the reference pipeline exactly: a single
+  worker-only-partition loader (no rank fold) pulled world_size micro-batches/step on rank 0 and
+  scattered. Its global per-step multiset is BYTE-IDENTICAL to the reference for ALL 30000 steps
+  (``IDENTICAL_MULTISET``, identical_full, identical-order per-rank) -- the global rolling hash
+  matches the reference exactly, including across the epoch boundary.
 
-So the matched-lane loaders feed identical data for the whole first epoch INCLUDING the
-first-step (step-0) loss/grad comparison; full-30k identity is architecturally impossible while
-each pipeline keeps its native (centralized vs decentralized) epoch handling. The gate enforces
-exactly this: a clean IDENTICAL leading prefix covering the full first epoch for the aligned
-config, and a step-0 lane_count divergence for production — neither is allowed to masquerade as
-``IDENTICAL_MULTISET`` (which requires identity at EVERY step).
+The gate enforces each of these and never lets a partial/divergent result masquerade as
+``IDENTICAL_MULTISET`` (which requires identity at EVERY one of the 30000 steps).
 """
 
 from __future__ import annotations
@@ -57,6 +57,9 @@ _ALIGNED_CMP = _EV / "phase6_loader_audit_ids_aligned_compare.json"
 _PROD_CMP = _EV / "phase6_loader_audit_ids_prod_compare.json"
 _EQUIV = _EV / "phase6_loader_audit_ids_equiv.json"
 _NONPERTURB = _EV / "phase6_loader_audit_ids_nonperturb.json"
+_FANOUT = _EV / "phase6_loader_audit_ids_fanout.json"
+_FANOUT_CMP = _EV / "phase6_loader_audit_ids_fanout_compare.json"
+_FANOUT_NONPERTURB = _EV / "phase6_loader_audit_ids_fanout_nonperturb.json"
 
 _EXPECTED_STEPS = 30000
 _EPOCH_LEN = 1679  # (429928 // 32) // 8 — reference fanout epoch in global steps
@@ -171,9 +174,9 @@ def test_committed_reference_aligned_and_prod_cover_full_30k():
 
 
 def test_committed_aligned_is_IDENTICAL_FIRST_EPOCH_including_step0():
-    """At matched lane count the global multiset is IDENTICAL for the whole first epoch
-    (incl. step 0 — the first-step loss/grad data); it then reorders the SAME pool at the
-    epoch boundary. This is the AC-2 result for the reference-aligned config."""
+    """At matched lane count the decentralized loader's global multiset is IDENTICAL for the
+    whole first epoch (incl. step 0 — the first-step loss/grad data); it then reorders the SAME
+    pool at the epoch boundary."""
     d = _load(_ALIGNED_CMP)
     assert d["verdict"] == "IDENTICAL_FIRST_EPOCH", d["verdict"]
     assert d["identical_first_epoch"] is True
@@ -187,8 +190,8 @@ def test_committed_aligned_is_IDENTICAL_FIRST_EPOCH_including_step0():
 
 
 def test_committed_production_is_DIVERGENT_from_step0_lane_count():
-    """Production RLinf (nw=8 -> 64 lanes) vs the reference (8 lanes) diverges from step 0;
-    this is the lane-count cause and is explicitly NOT an AC-2 identity pass."""
+    """Production decentralized RLinf (nw=8 -> 64 lanes) vs the reference (8 lanes) diverges
+    from step 0; this is the lane-count cause and is explicitly NOT a full-identity pass."""
     d = _load(_PROD_CMP)
     assert d["verdict"] == "DIVERGENT_MULTISET"
     assert d["identical_full"] is False and d["identical_first_epoch"] is False
@@ -199,9 +202,36 @@ def test_committed_production_is_DIVERGENT_from_step0_lane_count():
     assert d["first_mismatch"] and d["first_mismatch"]["step"] == 0
 
 
+def test_committed_reference_fanout_is_IDENTICAL_MULTISET_full_30k():
+    """The opt-in reference_fanout mode (single worker-only-partition loader, world_size
+    pulls/step) reproduces the reference data stream BYTE-IDENTICALLY for ALL 30000 steps:
+    identical_full, identical leading prefix == 30000, the global rolling hash equals the
+    reference's exactly, and per-rank assignment is identical-order (each pull matches)."""
+    fa = _load(_FANOUT)
+    assert fa["ok"] is True and fa["loader_mode"] == "reference_fanout"
+    _assert_schema_v2_full_30k(fa, "rlinf_fanout", 8)
+    d = _load(_FANOUT_CMP)
+    assert d["verdict"] == "IDENTICAL_MULTISET", d["verdict"]
+    assert d["identical_full"] is True
+    assert d["identical_prefix_steps"] == _EXPECTED_STEPS
+    assert d["global_rolling_hash_match"] is True
+    assert d["rank_assignment_relation"] == "identical-order"
+    assert d["frame_identity_comparable"] is True
+    assert d["first_mismatch"] is None
+    assert d["rlinf"]["global_rolling_hash"] == d["ref"]["global_rolling_hash"]
+
+
+def test_committed_reference_fanout_nonperturbation_and_matches_reference():
+    d = _load(_FANOUT_NONPERTURB)
+    assert d["byte_identical"] is True  # two captures reproduce the rolling hash
+    assert d["matches_reference_rolling"] is True  # and it equals the reference's
+    assert d["audited_steps"] == _EXPECTED_STEPS
+
+
 def test_committed_reference_shortcut_equals_production_wrapper():
-    """B3: the id_only raw-DataLoader shortcut emits the same id stream as the production
-    create_behavior_data_loader_torch DataLoader settings (shuffle/sampler/worker_init no-ops)."""
+    """The id_only raw-DataLoader shortcut emits the same id stream as the production
+    create_behavior_data_loader_torch DataLoader settings (shuffle/sampler/worker_init no-ops),
+    across the epoch boundary."""
     d = _load(_EQUIV)
     assert d["ok"] is True
     assert d["identical"] is True

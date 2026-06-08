@@ -1,0 +1,9 @@
+{
+  "audited_steps": 30000,
+  "loader_mode": "reference_fanout",
+  "topology": "single worker-only-partition loader, world_size pulls/step (rank-0 fanout)",
+  "run1_rolling": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",
+  "run2_rolling": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",
+  "byte_identical": true,
+  "matches_reference_rolling": true
+}

@@ -54,27 +54,33 @@ At matched lane count the two streams are identical up to **exactly the epoch bo
   steps; the cursor advances continuously across the wrap (`behavior_sft_dataset.py:1213-1222`).
 
 There is **no `set_epoch` reshuffle** on either side (the reference has no `set_epoch` method, so the
-`hasattr`-guarded call in `train_pytorch_new.py:949` is never taken). Both pipelines keep sampling
-the SAME 429,928-frame pool at 256 distinct/step after the boundary — it is a benign reorder of the
-same data, **not a data-availability difference**. Full-30k identity is therefore architecturally
-impossible while each pipeline keeps its native (centralized fanout vs decentralized per-rank)
-epoch handling.
+`hasattr`-guarded call in `train_pytorch_new.py:949` is never taken). Both decentralized streams keep
+sampling the SAME 429,928-frame pool at 256 distinct/step after the boundary — a benign reorder of
+the same data, **not a data-availability difference**. So full-30k identity is impossible *for the
+decentralized `per_rank_stream` mode* while it keeps its native per-rank epoch handling.
 
-## Conclusion (feeds AC-5)
-1. **At matched lane granularity the two production loaders feed an IDENTICAL global-batch multiset
-   for the entire first epoch — including step 0 and the early steps that the first-step
-   loss/grad-norm comparison uses.** So the first-step loss gap is NOT explained by a step-0 data
-   difference under matched lanes.
-2. **At production settings they diverge from step 0**, entirely because RLinf runs `num_workers=8`
-   (64 lanes) vs the reference's 8 lanes. To make production data-identical for step 0 (and the
-   whole first epoch), run RLinf SFT with the matched lane count (`num_workers=1` under
-   `world_size=8`).
-3. **Beyond the first epoch** the streams reorder the same pool differently (centralized fanout's
-   non-step-aligned epoch boundary vs decentralized per-rank cycling) — benign for training and
-   irrelevant to the step-0 question.
+## The `reference_fanout` mode achieves strict full-30k identity
+The `data.loader_mode: reference_fanout` option replicates the reference's centralized pipeline:
+ONE loader with a worker-only chunk partition (`dist_world_size=1` → `range(worker_id, N, num_workers)`
+seed `seed+worker_id` = the reference's 8 lanes), the same infinite `__iter__` that re-creates its
+inner iterator on exhaustion (`BehaviorSftDataLoader.__iter__`), pulled `world_size` micro-batches per
+step on rank 0 and scattered to the other ranks (rank 0 pulls for ranks 1..world_size-1 first, then
+itself last, exactly like `train_pytorch_new.py:953-961`). Because this matches the reference's lane
+count AND its epoch-boundary handling, the global per-step multiset is **byte-identical to the
+reference for ALL 30000 steps** (`fanout_compare`: `IDENTICAL_MULTISET`, `identical_full`,
+`identical_prefix_steps=30000`, `global_rolling_hash` equals the reference's exactly, per-rank
+`identical-order`), including across the epoch boundary; a re-run reproduces it byte-for-byte. It is
+opt-in (default `per_rank_stream`) because the single loader feeds all ranks (a throughput cost).
 
-AC-3's 2×2 cross-feed (identical materialized batch through both stacks) is the right next step to
-isolate any residual compute difference; it does not depend on the loaders agreeing.
+## Conclusion
+1. The decentralized default diverges at production (lane count, from step 0) and, at a matched lane
+   count, is identical only for the first epoch (then a benign same-pool reorder).
+2. The opt-in `reference_fanout` mode makes the data side **strictly identical to the reference for
+   every one of the 30000 steps** — so once the data is aligned, the reference's training inputs are
+   reproduced exactly. This is the configuration to use when verifying that RLinf reproduces the
+   reference's behavior on identical data.
+3. A 2×2 cross-feed (identical materialized batch through both model stacks) remains the way to
+   isolate any residual COMPUTE difference; it does not depend on the loaders agreeing.
 
 ## Artifacts
 - `phase6_loader_audit_ids_ref.json` — reference rank-0 fanout, nw=8 (8 lanes), 30k.

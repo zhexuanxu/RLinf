@@ -84,6 +84,16 @@ class FSDPSftWorker(FSDPModelManager, Worker):
         self._data_epoch = 0
         self._data_iter_offset = 0
 
+        # reference_fanout: only rank 0 pulls from its single worker-only-partition loader
+        # and scatters world_size*grad_accum micro-batches/step (the other ranks receive),
+        # byte-reproducing the reference openpi-comet rank-0 fanout data stream. Default-off
+        # (per_rank_stream); the decentralized per-rank path below is unchanged when off.
+        self._reference_fanout = (
+            self.data_loader is not None
+            and str(self.cfg.data.get("loader_mode", "per_rank_stream"))
+            == "reference_fanout"
+        )
+
     def init_worker(self):
         self.setup_model_and_optimizer()
 
@@ -139,6 +149,19 @@ class FSDPSftWorker(FSDPModelManager, Worker):
             metrics = all_reduce_dict(metrics, op=torch.distributed.ReduceOp.AVG)
             return metrics
 
+    def _fanout_send(self, batches, dst):
+        """Send one rank's per-step micro-batches to ``dst`` (reference_fanout mode).
+
+        Mirrors the reference ``_send_batches_to_rank`` (``send_object_list([batches])``).
+        """
+        torch.distributed.send_object_list([batches], dst=dst)
+
+    def _fanout_recv(self, src):
+        """Receive this rank's per-step micro-batches from ``src`` (reference_fanout mode)."""
+        obj_list = [None]
+        torch.distributed.recv_object_list(obj_list, src=src)
+        return obj_list[0]
+
     def run_training(self):
         with self.worker_timer():
             self.model.train()
@@ -153,6 +176,23 @@ class FSDPSftWorker(FSDPModelManager, Worker):
             )
             _step0_batch = None
 
+            # reference_fanout: fetch this rank's grad_accum micro-batches once per step
+            # via the rank-0 fanout/scatter (the single loader is infinite, so no reset).
+            _fanout_step_batches = None
+            if self._reference_fanout:
+                from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
+                    reference_fanout_micro_batches,
+                )
+
+                _fanout_step_batches = reference_fanout_micro_batches(
+                    self.data_iter,
+                    self._rank,
+                    self._world_size,
+                    self.gradient_accumulation,
+                    self._fanout_send,
+                    self._fanout_recv,
+                )
+
             for idx in range(self.gradient_accumulation):
                 # set the gradient accumulation backward_ctx
                 backward_ctx = self.before_micro_batch(
@@ -160,21 +200,24 @@ class FSDPSftWorker(FSDPModelManager, Worker):
                     is_last_micro_batch=(idx + 1) == self.gradient_accumulation,
                 )
 
-                try:
-                    batch = next(self.data_iter)
-                    self._data_iter_offset += 1
-                except StopIteration:
-                    self._data_epoch += 1
-                    logging.info(
-                        f"[INFO] data_iter exhausted, reset iterator self._data_epoch {self._data_epoch}"
-                    )
-                    if hasattr(self.data_loader, "sampler") and hasattr(
-                        self.data_loader.sampler, "set_epoch"
-                    ):
-                        self.data_loader.sampler.set_epoch(self._data_epoch)
-                    self.data_iter = iter(self.data_loader)
-                    batch = next(self.data_iter)
-                    self._data_iter_offset = 1
+                if self._reference_fanout:
+                    batch = _fanout_step_batches[idx]
+                else:
+                    try:
+                        batch = next(self.data_iter)
+                        self._data_iter_offset += 1
+                    except StopIteration:
+                        self._data_epoch += 1
+                        logging.info(
+                            f"[INFO] data_iter exhausted, reset iterator self._data_epoch {self._data_epoch}"
+                        )
+                        if hasattr(self.data_loader, "sampler") and hasattr(
+                            self.data_loader.sampler, "set_epoch"
+                        ):
+                            self.data_loader.sampler.set_epoch(self._data_epoch)
+                        self.data_iter = iter(self.data_loader)
+                        batch = next(self.data_iter)
+                        self._data_iter_offset = 1
 
                 if _step0_instrument and idx == 0:
                     _step0_batch = batch

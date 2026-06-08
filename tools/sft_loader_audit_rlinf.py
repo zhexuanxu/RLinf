@@ -25,7 +25,7 @@ Schema v2 (this file) emits, per global step, BOTH a per-rank canonical id-set h
 the global sorted-set hash, plus a rolling hash over each (committed compact). The full
 per-step global sets go to a separate detail file (scratch). This lets a failure
 distinguish a rank-assignment difference (per-rank hashes differ, global set matches) from
-a true sample-set divergence (global set hashes differ), per AC-2.
+a true sample-set divergence (global set hashes differ).
 
 ``num_workers`` controls the effective global lane count: RLinf shards into
 ``world_size * num_workers`` lanes (rank-folded). The reference rank-0 fanout shards into
@@ -59,7 +59,7 @@ def _canonical_set_hash(ids) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def main(out_dir, n_steps, world_size, num_workers_override=None):
+def main(out_dir, n_steps, world_size, num_workers_override=None, loader_mode="per_rank_stream"):
     os.makedirs(out_dir, exist_ok=True)
     result = {
         "ok": False,
@@ -67,6 +67,7 @@ def main(out_dir, n_steps, world_size, num_workers_override=None):
         "schema_version": SCHEMA_VERSION,
         "world_size": world_size,
         "n_steps": n_steps,
+        "loader_mode": loader_mode,
     }
     try:
         from hydra import compose, initialize_config_dir
@@ -89,34 +90,52 @@ def main(out_dir, n_steps, world_size, num_workers_override=None):
             cfg.data.num_workers = int(num_workers_override)
         data_paths = OmegaConf.select(cfg, "data.train_data_paths")
 
-        # Each rank's stream is INDEPENDENT (its own dist_rank partition), so run the
-        # ranks SEQUENTIALLY (one production loader at a time = prod num_workers, not
-        # world_size*num_workers concurrent processes) and combine per-step afterward.
         # id_only=True: each sample is a value-independent (episode_index, frame_index)
         # id taken BEFORE normalization/tokenization, so the frame identity is byte-
         # comparable across repos AND no video decode is needed (the 30k pass is fast).
         # rank_step_ids[r][step] = that rank's per-step frame-id strings.
-        rank_step_ids = []
         num_workers = None
-        for r in range(world_size):
+        if loader_mode == "reference_fanout":
+            # Centralized rank-0 fanout: ONE worker-only-partition loader pulled
+            # world_size micro-batches per step (the r-th pull is "rank" r), reproducing
+            # the reference openpi-comet rank-0 fanout stream. The loader's infinite
+            # __iter__ re-creates its inner iterator on exhaustion, so no manual re-iter.
             loader, _ = build_behavior_sft_dataloader(
-                cfg, world_size=world_size, rank=r, data_paths=data_paths, id_only=True
+                cfg, world_size=world_size, rank=0, data_paths=data_paths,
+                id_only=True, loader_mode="reference_fanout",
             )
-            if num_workers is None:
-                num_workers = loader.torch_loader.num_workers
+            num_workers = loader.torch_loader.num_workers
             it = iter(loader)
-            steps_r = []
+            rank_step_ids = [[] for _ in range(world_size)]
             for _ in range(n_steps):
-                try:
+                for r in range(world_size):
                     batch = next(it)
-                except StopIteration:
-                    # Epoch boundary: re-iterate, exactly as the production SFT worker
-                    # does (run_training resets data_iter on StopIteration).
-                    it = iter(loader)
-                    batch = next(it)
-                steps_r.append([f"{ep}:{fr}" for (ep, fr) in batch])
-            rank_step_ids.append(steps_r)
-            del it, loader  # tear down this rank's workers before the next
+                    rank_step_ids[r].append([f"{ep}:{fr}" for (ep, fr) in batch])
+            del it, loader
+        else:
+            # per_rank_stream: each rank's stream is INDEPENDENT (its own dist_rank
+            # partition), so run the ranks SEQUENTIALLY (one production loader at a time)
+            # and combine per-step afterward.
+            rank_step_ids = []
+            for r in range(world_size):
+                loader, _ = build_behavior_sft_dataloader(
+                    cfg, world_size=world_size, rank=r, data_paths=data_paths, id_only=True
+                )
+                if num_workers is None:
+                    num_workers = loader.torch_loader.num_workers
+                it = iter(loader)
+                steps_r = []
+                for _ in range(n_steps):
+                    try:
+                        batch = next(it)
+                    except StopIteration:
+                        # Epoch boundary: re-iterate, exactly as the production SFT
+                        # worker does (run_training resets data_iter on StopIteration).
+                        it = iter(loader)
+                        batch = next(it)
+                    steps_r.append([f"{ep}:{fr}" for (ep, fr) in batch])
+                rank_step_ids.append(steps_r)
+                del it, loader  # tear down this rank's workers before the next
 
         # Compact committed output (schema v2): per-step per-rank canonical id-set hash
         # AND the global sorted-set hash, each folded into a rolling hash; per-rank rolling
@@ -180,4 +199,5 @@ if __name__ == "__main__":
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 8
     ws = int(sys.argv[3]) if len(sys.argv) > 3 else 8
     nw = int(sys.argv[4]) if len(sys.argv) > 4 else None
-    main(out, n, ws, nw)
+    mode = sys.argv[5] if len(sys.argv) > 5 else "per_rank_stream"
+    main(out, n, ws, nw, mode)

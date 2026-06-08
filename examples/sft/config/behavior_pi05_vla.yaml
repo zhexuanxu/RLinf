@@ -30,6 +30,15 @@ runner:
 
 data:
   train_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
+  # Loading strategy:
+  #   per_rank_stream (default): each rank streams its own rank-folded chunk shard
+  #     (world_size*num_workers lanes) -- the throughput path.
+  #   reference_fanout: a single worker-only-partition loader (num_workers lanes, no
+  #     rank fold) is pulled world_size micro-batches/step on rank 0 and scattered,
+  #     byte-reproducing the reference openpi-comet rank-0 fanout data stream (every
+  #     batch identical across all steps). Use to strictly align the data side with
+  #     the reference; costs throughput (one loader feeds all ranks).
+  loader_mode: per_rank_stream
   # BEHAVIOR task-0000. `use_skill: false` trains on the main-task text;
   # `true` trains on the per-frame REFERENCE skill text selected by the window
   # logic from `task_subtasks` below (mirrors the `pi05_b1k-task0000_sft_local_skill`

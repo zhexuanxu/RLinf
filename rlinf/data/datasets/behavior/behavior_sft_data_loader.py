@@ -373,19 +373,77 @@ class BehaviorSftDataLoader:
         return len(self._torch_loader)
 
 
+PER_RANK_STREAM = "per_rank_stream"
+REFERENCE_FANOUT = "reference_fanout"
+_LOADER_MODES = (PER_RANK_STREAM, REFERENCE_FANOUT)
+
+
+def resolve_loader_mode(cfg, loader_mode=None):
+    """Resolve the BEHAVIOR SFT loading strategy (validated).
+
+    ``per_rank_stream`` (default): every rank builds its own loader and streams a
+    rank-folded chunk shard (``world_size * num_workers`` lanes) -- the throughput
+    path. ``reference_fanout``: a single loader with a worker-only chunk partition
+    (``num_workers`` lanes, NO rank fold) is pulled ``world_size`` micro-batches per
+    step and scattered, byte-reproducing the reference ``openpi-comet`` rank-0 fanout
+    stream (including the epoch boundary). Selected via ``data.loader_mode``.
+    """
+    mode = loader_mode
+    if mode is None:
+        mode = str(OmegaConf.select(cfg.data, "loader_mode", default=PER_RANK_STREAM))
+    if mode not in _LOADER_MODES:
+        raise ValueError(
+            f"data.loader_mode must be one of {_LOADER_MODES}; got {mode!r}."
+        )
+    return mode
+
+
+def reference_fanout_micro_batches(
+    data_iter, rank, world_size, grad_accum, send_fn, recv_fn
+):
+    """Return THIS rank's ``grad_accum`` micro-batches for one step via rank-0 fanout.
+
+    Byte-reproduces the reference ``openpi-comet`` ``train_pytorch_new.py`` loop: rank 0
+    owns the single (worker-only-partition) loader and, PER STEP, pulls ``grad_accum``
+    micro-batches for each rank ``1..world_size-1`` (in order) and sends them, then pulls
+    its OWN ``grad_accum`` micro-batches LAST; every other rank receives its micro-batches
+    from rank 0. The pull order (others first, rank 0 last) is what makes each rank's data
+    identical to the reference, not merely the global multiset.
+
+    ``send_fn(batches, dst)`` / ``recv_fn(src)`` are injected so the pure control flow is
+    unit-testable with a fake loader + a CPU process group (the production worker passes
+    ``torch.distributed`` ``send_object_list`` / ``recv_object_list`` wrappers).
+    """
+    if rank == 0:
+        for dst in range(1, world_size):
+            send_fn([next(data_iter) for _ in range(grad_accum)], dst)
+        return [next(data_iter) for _ in range(grad_accum)]
+    return recv_fn(0)
+
+
 def build_behavior_sft_dataloader(
-    cfg, world_size, rank, data_paths, eval_dataset=False, id_only=False
+    cfg, world_size, rank, data_paths, eval_dataset=False, id_only=False, loader_mode=None
 ):
     """Build the self-contained BEHAVIOR SFT data loader for the SFT worker.
 
-    Owns the config extraction the FSDP SFT worker previously did inline. The
-    streaming dataset partitions chunks per ``(rank, worker)``; ``rank``/
-    ``world_size`` are captured here (in the main process) and threaded into the
-    dataset so that SPAWNED DataLoader workers -- which cannot read
-    ``torch.distributed`` -- still partition by the correct per-rank id (otherwise
-    every rank replicates rank 0's chunks, collapsing the effective batch to one
-    rank's micro-batch). Returns ``(loader, loader.data_config())``.
+    Owns the config extraction the FSDP SFT worker previously did inline. In the
+    default ``per_rank_stream`` mode the streaming dataset partitions chunks per
+    ``(rank, worker)``; ``rank``/``world_size`` are captured here (in the main
+    process) and threaded into the dataset so that SPAWNED DataLoader workers --
+    which cannot read ``torch.distributed`` -- still partition by the correct
+    per-rank id (otherwise every rank replicates rank 0's chunks, collapsing the
+    effective batch to one rank's micro-batch).
+
+    In ``reference_fanout`` mode the dataset is partitioned by WORKER only
+    (``dist_rank=0``, ``dist_world_size=1``) so its ``num_workers`` lanes match the
+    reference's single rank-0 loader; the caller pulls ``world_size`` micro-batches
+    per step and scatters them (see the SFT worker). Returns
+    ``(loader, loader.data_config())``.
     """
+    mode = resolve_loader_mode(cfg, loader_mode)
+    # reference_fanout: a single worker-only-partition loader (no rank fold), pulled
+    # world_size micro-batches/step downstream, reproduces the reference rank-0 fanout.
+    part_rank, part_world = (0, 1) if mode == REFERENCE_FANOUT else (rank, world_size)
 
     data_path = resolve_lerobot_repo_id(data_paths)
     if data_path is None:
@@ -477,8 +535,8 @@ def build_behavior_sft_dataloader(
         enable_gap=enable_gap,
         allow_left=allow_left,
         allow_right=allow_right,
-        dist_rank=rank,
-        dist_world_size=world_size,
+        dist_rank=part_rank,
+        dist_world_size=part_world,
         id_only=id_only,
     )
     return loader, loader.data_config()
