@@ -25,15 +25,11 @@ logics are strictly identical:
   over ``decay-warmup`` steps.
 * ``rlinf_lr_sequence`` drives RLinf's REAL ``get_lr_scheduler("openpi_cosine", ...)``
   on a dummy optimizer and reads back the per-step lr.
-* ``adamw_trajectory`` runs ``torch.optim.AdamW`` from a fixed init on fixed gradients
-  with a given lr schedule, returning the parameter trajectory + final optimizer state,
-  so a RLinf-config run and a reference-config run can be compared element-wise.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Any
 
 # Reference run config (CosineDecaySchedule defaults; src/openpi/training/optimizer.py).
 REF_PEAK_LR = 2.5e-5
@@ -96,49 +92,6 @@ def rlinf_lr_sequence(
         opt.step()
         sched.step()
     return out
-
-
-def adamw_trajectory(
-    *,
-    betas: tuple[float, float] = ADAMW_BETAS,
-    eps: float = ADAMW_EPS,
-    weight_decay: float = ADAMW_WD,
-    n_params: int = 16,
-    n_steps: int = 8,
-    lrs: list[float] | None = None,
-) -> dict[str, Any]:
-    """Run AdamW from a fixed init on fixed gradients with a given per-step lr; return
-    the parameter trajectory + final (exp_avg, exp_avg_sq). Deterministic — no RNG at
-    call time (init/grads are fixed lattices)."""
-    import torch
-
-    gen = torch.Generator().manual_seed(0)
-    init = torch.linspace(-1.0, 1.0, n_params, dtype=torch.float64)
-    grads = [
-        torch.sin(torch.arange(n_params, dtype=torch.float64) + step * 0.5)
-        for step in range(n_steps)
-    ]
-    _ = gen  # determinism is via the fixed lattices above, not RNG
-    param = torch.nn.Parameter(init.clone())
-    opt = torch.optim.AdamW(
-        [param], lr=(lrs[0] if lrs else 1e-4), betas=betas, eps=eps,
-        weight_decay=weight_decay,
-    )
-    traj = []
-    for step in range(n_steps):
-        if lrs is not None:
-            for pg in opt.param_groups:
-                pg["lr"] = lrs[step]
-        opt.zero_grad(set_to_none=False)
-        param.grad = grads[step].clone()
-        opt.step()
-        traj.append(param.detach().clone())
-    state = opt.state[param]
-    return {
-        "trajectory": torch.stack(traj),
-        "exp_avg": state["exp_avg"].clone(),
-        "exp_avg_sq": state["exp_avg_sq"].clone(),
-    }
 
 
 def build_rlinf_optimizer(model):
