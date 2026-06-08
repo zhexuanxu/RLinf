@@ -69,8 +69,7 @@ def _build_cfg(config_name):
         "examples/sft/config",
     )
     with initialize_config_dir(version_base="1.1", config_dir=cfg_dir):
-        cfg = compose(config_name=config_name)
-    return cfg
+        return compose(config_name=config_name)
 
 
 def main():
@@ -139,10 +138,12 @@ def main():
         h = fsdp_model.register_forward_pre_hook(_capture)
 
         # autocast / grad-scaler state (both expected no-op for this recipe).
-        amp_enabled = bool(actor_cfg.fsdp_config.amp_autocast.get("enabled", False))
-        gs_enabled = bool(actor_cfg.fsdp_config.grad_scaler.get("enabled", False))
-        ledger["autocast_enabled"] = amp_enabled
-        ledger["grad_scaler_enabled"] = gs_enabled
+        ledger["autocast_enabled"] = bool(
+            actor_cfg.fsdp_config.amp_autocast.get("enabled", False)
+        )
+        ledger["grad_scaler_enabled"] = bool(
+            actor_cfg.fsdp_config.grad_scaler.get("enabled", False)
+        )
 
         # 4) One forward/backward/optimizer step on a shape-correct batch (dtype-only;
         #    values are irrelevant to the dtype ledger). Built lazily below.
@@ -165,15 +166,20 @@ def main():
         optimizer.step()
 
         # 6) Optimizer (AdamW) construction + state dtype after step 1.
+        # Read the EFFECTIVE per-param-group hyperparameters (betas/lr/eps/weight_decay
+        # live on the param groups when passed via param_groups, NOT optimizer.defaults
+        # -- defaults would show the AdamW constructor default, a misleading proxy).
         defaults = optimizer.defaults
+        pg = optimizer.param_groups[0]
         ledger["optimizer"] = {
             "type": type(optimizer).__name__,
             "fused": defaults.get("fused"),
             "foreach": defaults.get("foreach"),
             "capturable": defaults.get("capturable"),
-            "betas": list(defaults.get("betas", ())),
-            "eps": defaults.get("eps"),
-            "weight_decay": defaults.get("weight_decay"),
+            "betas": list(pg.get("betas", defaults.get("betas", ()))),
+            "eps": pg.get("eps", defaults.get("eps")),
+            "weight_decay": pg.get("weight_decay", defaults.get("weight_decay")),
+            "lr": pg.get("lr"),
         }
         state_dtypes = {}
         for p, st in list(optimizer.state.items())[:2]:

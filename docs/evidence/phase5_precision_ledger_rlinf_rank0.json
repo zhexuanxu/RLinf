@@ -40,10 +40,11 @@
     "capturable": false,
     "betas": [
       0.9,
-      0.999
+      0.95
     ],
     "eps": 1e-08,
-    "weight_decay": 1e-10
+    "weight_decay": 1e-10,
+    "lr": 2.4975024975024977e-08
   },
   "optimizer_state_dtype": {
     "exp_avg": "float32",

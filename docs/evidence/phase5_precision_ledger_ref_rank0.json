@@ -1,0 +1,49 @@
+{
+  "repo": "reference",
+  "rank": 0,
+  "world_size": 2,
+  "ok": true,
+  "pytorch_training_precision": "mp_bfloat16",
+  "fsdp_mixed_precision": {
+    "param_dtype": "bfloat16",
+    "reduce_dtype": "float32",
+    "buffer_dtype": "None",
+    "cast_forward_inputs": false,
+    "cast_root_forward_inputs": true,
+    "keep_low_precision_grads": false,
+    "provenance": "init_model(...).mixed_precision"
+  },
+  "buffer_dtype_observed": {},
+  "param_dtype_outside_forward": {
+    "_orig_mod._fsdp_wrapped_module.llm.embedder.embedding.weight": "float32",
+    "_orig_mod._fsdp_wrapped_module.llm.layers.0.attn.q_proj.0.weight": "float32",
+    "_orig_mod._fsdp_wrapped_module.llm.layers.0.attn.q_proj.1.weight": "float32",
+    "_orig_mod._fsdp_wrapped_module.llm.layers.0.attn.k_proj.0.weight": "float32"
+  },
+  "autocast_enabled": false,
+  "grad_scaler_enabled": false,
+  "loss_dtype": "bfloat16",
+  "grad_dtype": {
+    "_orig_mod._fsdp_wrapped_module.llm.embedder.embedding.weight": "float32",
+    "_orig_mod._fsdp_wrapped_module.llm.layers.0.attn.q_proj.0.weight": "float32",
+    "_orig_mod._fsdp_wrapped_module.llm.layers.0.attn.q_proj.1.weight": "float32",
+    "_orig_mod._fsdp_wrapped_module.llm.layers.0.attn.k_proj.0.weight": "float32"
+  },
+  "optimizer": {
+    "type": "AdamW",
+    "fused": true,
+    "foreach": null,
+    "capturable": false,
+    "betas": [
+      0.9,
+      0.95
+    ],
+    "eps": 1e-08,
+    "weight_decay": 1e-10,
+    "lr": 2.5e-05
+  },
+  "optimizer_state_dtype": {
+    "exp_avg": "float32",
+    "exp_avg_sq": "float32"
+  }
+}
