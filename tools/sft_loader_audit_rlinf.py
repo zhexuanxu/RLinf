@@ -86,18 +86,23 @@ def main(out_dir, n_steps, world_size):
         # Each rank's stream is INDEPENDENT (its own dist_rank partition), so run the
         # ranks SEQUENTIALLY (one production loader at a time = prod num_workers, not
         # world_size*num_workers concurrent processes) and combine per-step afterward.
-        # rank_step_hashes[r][step] = that rank's 32-frame hash list at that step.
-        rank_step_hashes = []
+        # id_only=True: each sample is a value-independent (episode_index, frame_index)
+        # id taken BEFORE normalization/tokenization, so the frame identity is byte-
+        # comparable across repos AND no video decode is needed (the 30k pass is fast).
+        # rank_step_ids[r][step] = that rank's 32 frame-id strings at that step.
+        rank_step_ids = []
         num_workers = None
         for r in range(world_size):
             loader, _ = build_behavior_sft_dataloader(
-                cfg, world_size=world_size, rank=r, data_paths=data_paths
+                cfg, world_size=world_size, rank=r, data_paths=data_paths, id_only=True
             )
             if num_workers is None:
-                num_workers = getattr(loader, "num_workers", None)
+                num_workers = loader.torch_loader.num_workers
             it = iter(loader)
-            steps_r = [_frame_hashes(*next(it)) for _ in range(n_steps)]
-            rank_step_hashes.append(steps_r)
+            steps_r = [
+                [f"{ep}:{fr}" for (ep, fr) in next(it)] for _ in range(n_steps)
+            ]
+            rank_step_ids.append(steps_r)
             del it, loader  # tear down this rank's workers before the next
 
         per_step_rank_hashes, per_step_set_hash, per_step_unique = [], [], []
