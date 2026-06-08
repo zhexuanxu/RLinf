@@ -62,7 +62,7 @@ def compare_audits(rlinf: dict, ref: dict, *, max_diff_ids: int = 12) -> dict:
             }
         )
         if not match and first_mismatch is None:
-            diff = sorted((rl_set ^ rf_set))[:max_diff_ids]
+            diff = sorted(rl_set ^ rf_set)[:max_diff_ids]
             first_mismatch = {
                 "step": s,
                 "rlinf_only_sample": sorted(rl_set - rf_set)[: max_diff_ids // 2],
