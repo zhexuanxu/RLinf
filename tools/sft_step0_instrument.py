@@ -138,8 +138,18 @@ def dump_provenance(
         return cur
 
     model_path = _g("actor.model.model_path")
-    assets_dir = _g("actor.model.norm_stats.assets_dir") or _g(
-        "actor.model.assets_dir"
+    assets_dir = _g("actor.model.openpi.assets_dir")
+    asset_id = _g("actor.model.openpi.asset_id")
+    norm_stats_json = (
+        os.path.join(assets_dir, asset_id, "norm_stats.json")
+        if assets_dir and asset_id
+        else None
+    )
+    num_workers = (
+        _g("actor.num_workers")
+        or _g("actor.model.openpi.num_workers")
+        or _g("data.num_workers")
+        or 8  # build_behavior_sft_dataloader default
     )
     pkg_versions = {}
     for pkg in ("torch", "ray", "numpy"):
@@ -158,17 +168,27 @@ def dump_provenance(
         "launch_command": " ".join(os.environ.get("RLINF_LAUNCH_CMD", "").split())
         or None,
         "world_size": world_size,
-        "num_workers": _g("actor.num_workers") or _g("data.num_workers"),
+        "num_workers": num_workers,
         "global_batch_size": _g("actor.global_batch_size"),
         "micro_batch_size": _g("actor.micro_batch_size"),
         "seed": _g("actor.seed") or _g("runner.seed"),
-        "dataset_path": _g("data.train_data_paths") or _g("actor.train_data_paths"),
+        "dataset_path": _g("actor.train_data_paths") or _g("data.train_data_paths"),
+        "optimizer": {
+            "adam_beta1": _g("actor.optim.adam_beta1"),
+            "adam_beta2": _g("actor.optim.adam_beta2"),
+            "lr": _g("actor.optim.lr"),
+        },
         "base_checkpoint": {
             "path": model_path,
             "fingerprint": _sha256_dir_manifest(model_path) if model_path else None,
         },
         "norm_stats": {
             "assets_dir": assets_dir,
+            "asset_id": asset_id,
+            "norm_stats_json": norm_stats_json,
+            "norm_stats_sha256": _sha256_file(norm_stats_json)
+            if norm_stats_json
+            else None,
             "fingerprint": _sha256_dir_manifest(assets_dir) if assets_dir else None,
         },
         "package_versions": pkg_versions,
