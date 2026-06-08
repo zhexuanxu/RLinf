@@ -27,6 +27,17 @@ from __future__ import annotations
 import json
 
 
+def _dump_summary(dump):
+    uniques = dump.get("per_step_unique")
+    return {
+        "audited_steps": dump.get("audited_steps"),
+        "num_workers": dump.get("num_workers"),
+        "rolling_hash": dump.get("rolling_hash"),
+        "min_distinct": min(uniques) if uniques else None,
+        "max_distinct": max(uniques) if uniques else None,
+    }
+
+
 def compare_id_audits(rlinf, ref, rlinf_detail=None, ref_detail=None, *, max_ids=12):
     rl_h = rlinf["per_step_global_set_hash"]
     rf_h = ref["per_step_global_set_hash"]
@@ -73,20 +84,8 @@ def compare_id_audits(rlinf, ref, rlinf_detail=None, ref_detail=None, *, max_ids
         "cross_dump_distinct_overlap": cross,
         "verdict": verdict,
         "first_mismatch": first_mismatch,
-        "rlinf": {
-            "audited_steps": rlinf.get("audited_steps"),
-            "num_workers": rlinf.get("num_workers"),
-            "rolling_hash": rlinf.get("rolling_hash"),
-            "min_distinct": min(rlinf["per_step_unique"]) if rlinf.get("per_step_unique") else None,
-            "max_distinct": max(rlinf["per_step_unique"]) if rlinf.get("per_step_unique") else None,
-        },
-        "ref": {
-            "audited_steps": ref.get("audited_steps"),
-            "num_workers": ref.get("num_workers"),
-            "rolling_hash": ref.get("rolling_hash"),
-            "min_distinct": min(ref["per_step_unique"]) if ref.get("per_step_unique") else None,
-            "max_distinct": max(ref["per_step_unique"]) if ref.get("per_step_unique") else None,
-        },
+        "rlinf": _dump_summary(rlinf),
+        "ref": _dump_summary(ref),
     }
 
 

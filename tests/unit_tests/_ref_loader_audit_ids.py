@@ -45,11 +45,6 @@ def _collate_ids(items):
     return [(int(it["episode_index"]), int(it["frame_index"])) for it in items]
 
 
-def _global_set_hash(step_rank_ids):
-    union = sorted({f for rh in step_rank_ids for f in rh})
-    return hashlib.sha256("".join(union).encode()).hexdigest(), len(union)
-
-
 def main(out_dir, n_steps, world_size):
     import os
 
@@ -133,7 +128,6 @@ def main(out_dir, n_steps, world_size):
             json.dump({"per_step_global_set": per_step_global_set}, f)
             f.write("\n")
     except Exception as e:  # pragma: no cover - environment dependent
-        import os
         import traceback
 
         result["err"] = f"{type(e).__name__}: {str(e)[:300]}"

@@ -36,11 +36,6 @@ import os
 import sys
 
 
-def _global_set_hash(step_rank_hashes):
-    union = sorted({f for rh in step_rank_hashes for f in rh})
-    return hashlib.sha256("".join(union).encode()).hexdigest(), len(union)
-
-
 def main(out_dir, n_steps, world_size):
     os.makedirs(out_dir, exist_ok=True)
     result = {"ok": False, "repo": "rlinf", "world_size": world_size, "n_steps": n_steps}
