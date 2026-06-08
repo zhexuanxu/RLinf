@@ -111,15 +111,17 @@ def main(out_dir, n_steps, world_size):
         global_rolling = hashlib.sha256()
         rank_rolling = [hashlib.sha256() for _ in range(world_size)]
         for step in range(n_steps):
-            # rank-0 fanout: world_size successive micro-batches per global step
-            step_rank_ids = []
-            for _r in range(world_size):
+            # rank-0 fanout: world_size successive micro-batches per global step. The
+            # reference assigns pull `pull` to training rank (pull+1)%world_size (ranks
+            # 1..world_size-1 first, rank 0 last), so label per-rank streams by REAL rank.
+            step_rank_ids = [None] * world_size
+            for pull in range(world_size):
                 try:
                     batch = next(it)
                 except StopIteration:
                     it = iter(loader)  # epoch boundary: re-iterate (cyclic stream)
                     batch = next(it)
-                step_rank_ids.append([f"{ep}:{fr}" for (ep, fr) in batch])
+                step_rank_ids[(pull + 1) % world_size] = [f"{ep}:{fr}" for (ep, fr) in batch]
             for r in range(world_size):
                 rank_rolling[r].update(f"{step}|{_canonical_set_hash(step_rank_ids[r])}".encode())
             union = sorted({f for rh in step_rank_ids for f in rh})

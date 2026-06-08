@@ -1,7 +1,6 @@
 {
   "audited_steps": 30000,
   "epoch_len": 1679,
-  "total_distinct_frames": 429928,
   "ref_topology": "world_size=8, num_workers=8 (8 lanes)",
   "rlinf_topology": "world_size=8, num_workers=1 (8 lanes, reference-aligned)",
   "ref_run1_rolling": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",

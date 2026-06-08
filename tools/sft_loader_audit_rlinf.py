@@ -108,9 +108,13 @@ def main(out_dir, n_steps, world_size, num_workers_override=None, loader_mode="p
             it = iter(loader)
             rank_step_ids = [[] for _ in range(world_size)]
             for _ in range(n_steps):
-                for r in range(world_size):
+                for pull in range(world_size):
                     batch = next(it)
-                    rank_step_ids[r].append([f"{ep}:{fr}" for (ep, fr) in batch])
+                    # The reference fanout assigns the pulls to training ranks 1..world_size-1
+                    # first (in order) then rank 0 last, i.e. pull `pull` -> rank (pull+1)%W;
+                    # label each per-rank stream by the REAL training rank, not the pull index.
+                    train_rank = (pull + 1) % world_size
+                    rank_step_ids[train_rank].append([f"{ep}:{fr}" for (ep, fr) in batch])
             del it, loader
         else:
             # per_rank_stream: each rank's stream is INDEPENDENT (its own dist_rank

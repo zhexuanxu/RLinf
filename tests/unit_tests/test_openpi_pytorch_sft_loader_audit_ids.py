@@ -206,7 +206,10 @@ def test_committed_reference_fanout_is_IDENTICAL_MULTISET_full_30k():
     """The opt-in reference_fanout mode (single worker-only-partition loader, world_size
     pulls/step) reproduces the reference data stream BYTE-IDENTICALLY for ALL 30000 steps:
     identical_full, identical leading prefix == 30000, the global rolling hash equals the
-    reference's exactly, and per-rank assignment is identical-order (each pull matches)."""
+    reference's exactly. Both audits label per-rank streams by the REAL training-rank
+    assignment (pull p -> rank (p+1)%world_size, ranks 1..W-1 first then rank 0), so
+    rank_assignment_relation == identical-order means each TRAINING RANK receives identical
+    batches, not merely the global multiset."""
     fa = _load(_FANOUT)
     assert fa["ok"] is True and fa["loader_mode"] == "reference_fanout"
     _assert_schema_v2_full_30k(fa, "rlinf_fanout", 8)
@@ -219,6 +222,10 @@ def test_committed_reference_fanout_is_IDENTICAL_MULTISET_full_30k():
     assert d["frame_identity_comparable"] is True
     assert d["first_mismatch"] is None
     assert d["rlinf"]["global_rolling_hash"] == d["ref"]["global_rolling_hash"]
+    # per-rank identity is non-degenerate: the fanout dump's per-rank rolling hashes match
+    # the reference's rank-for-rank, and the 8 ranks are 8 DISTINCT streams (not all-equal).
+    assert fa["per_rank_rolling_hash"] == _load(_REF)["per_rank_rolling_hash"]
+    assert len(set(fa["per_rank_rolling_hash"])) == 8
 
 
 def test_committed_reference_fanout_nonperturbation_and_matches_reference():

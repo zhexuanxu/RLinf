@@ -275,7 +275,12 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             return 0
         model_type = SupportedModel(self.cfg.actor.model.model_type)
         if model_type == SupportedModel.OPENPI_PYTORCH:
-            return max(1, len(self.data_loader) // self.gradient_accumulation)
+            # reference_fanout: rank 0 consumes world_size*grad_accum micro-batches per
+            # step (it pulls one rank's batches for every rank and scatters).
+            per_step = self.gradient_accumulation * (
+                self._world_size if getattr(self, "_reference_fanout", False) else 1
+            )
+            return max(1, len(self.data_loader) // per_step)
         if model_type == SupportedModel.OPENPI:
             # VLM-only datasets return a plain PyTorch DataLoader, not an
             # openpi DataLoaderImpl.  Fall back to len(data_loader) directly.

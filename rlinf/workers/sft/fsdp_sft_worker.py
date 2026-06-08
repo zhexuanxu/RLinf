@@ -54,23 +54,7 @@ class FSDPSftWorker(FSDPModelManager, Worker):
             self.global_batch_size // self.micro_batch_size // self._world_size
         )
 
-        # eval-only mode: eval_only is set, or train_data_paths is not set
-        eval_only = self.cfg.data.get("eval_only", None)
-        if eval_only is not None or self.cfg.data.get("train_data_paths") is None:
-            logging.warning(
-                "Eval-only mode (eval_only=%s): skipping train dataloader",
-                eval_only,
-            )
-            assert self.cfg.data.get("val_data_paths") is not None, (
-                "val_data_paths must be set in eval-only mode"
-            )
-            self.data_loader = None
-            self.data_iter = None
-        else:
-            self.data_loader, self.data_config = self.build_dataloader(
-                self.cfg.data.train_data_paths, eval_dataset=False
-            )
-            self.data_iter = iter(self.data_loader)
+        self._init_train_dataloader()
 
         if self.cfg.data.get("val_data_paths") is not None:
             self.eval_data_loader, self.eval_data_config = self.build_dataloader(
@@ -84,15 +68,50 @@ class FSDPSftWorker(FSDPModelManager, Worker):
         self._data_epoch = 0
         self._data_iter_offset = 0
 
-        # reference_fanout: only rank 0 pulls from its single worker-only-partition loader
-        # and scatters world_size*grad_accum micro-batches/step (the other ranks receive),
-        # byte-reproducing the reference openpi-comet rank-0 fanout data stream. Default-off
-        # (per_rank_stream); the decentralized per-rank path below is unchanged when off.
-        self._reference_fanout = (
-            self.data_loader is not None
-            and str(self.cfg.data.get("loader_mode", "per_rank_stream"))
-            == "reference_fanout"
+    def _init_train_dataloader(self):
+        """Construct this rank's TRAIN dataloader and set ``self._reference_fanout``.
+
+        Resolved BEFORE construction so the topology is correct per rank:
+        ``reference_fanout`` is centralized — ONLY rank 0 builds + iterates the single
+        worker-only-partition loader and scatters ``world_size*grad_accum`` micro-batches/step
+        to the other ranks (`run_training`), so ranks > 0 build NOTHING for the train path
+        (they receive via the fanout). ``per_rank_stream`` (default) keeps every rank building
+        its own shard. Eval is handled separately (always decentralized).
+        """
+        from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
+            PER_RANK_STREAM,
+            REFERENCE_FANOUT,
+            builds_train_loader,
         )
+
+        eval_only = self.cfg.data.get("eval_only", None)
+        train_disabled = (
+            eval_only is not None or self.cfg.data.get("train_data_paths") is None
+        )
+        self._reference_fanout = (not train_disabled) and (
+            str(self.cfg.data.get("loader_mode", PER_RANK_STREAM)) == REFERENCE_FANOUT
+        )
+
+        if train_disabled:
+            logging.warning(
+                "Eval-only mode (eval_only=%s): skipping train dataloader", eval_only
+            )
+            assert self.cfg.data.get("val_data_paths") is not None, (
+                "val_data_paths must be set in eval-only mode"
+            )
+            self.data_loader = self.data_iter = self.data_config = None
+            return
+
+        mode = REFERENCE_FANOUT if self._reference_fanout else PER_RANK_STREAM
+        if not builds_train_loader(mode, self._rank):
+            # reference_fanout on a non-zero rank: rank 0 owns the loader and scatters.
+            self.data_loader = self.data_iter = self.data_config = None
+            return
+
+        self.data_loader, self.data_config = self.build_dataloader(
+            self.cfg.data.train_data_paths, eval_dataset=False
+        )
+        self.data_iter = iter(self.data_loader)
 
     def init_worker(self):
         self.setup_model_and_optimizer()

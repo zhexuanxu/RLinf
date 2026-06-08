@@ -36,9 +36,67 @@ from omegaconf import OmegaConf  # noqa: E402
 from rlinf.data.datasets.behavior.behavior_sft_data_loader import (  # noqa: E402
     PER_RANK_STREAM,
     REFERENCE_FANOUT,
+    builds_train_loader,
     reference_fanout_micro_batches,
     resolve_loader_mode,
 )
+
+
+def test_builds_train_loader_ownership():
+    # per_rank_stream: every rank owns its train loader.
+    assert all(builds_train_loader(PER_RANK_STREAM, r) for r in range(8))
+    # reference_fanout: only rank 0 owns/builds the single loader; others receive via scatter.
+    assert builds_train_loader(REFERENCE_FANOUT, 0) is True
+    assert not any(builds_train_loader(REFERENCE_FANOUT, r) for r in range(1, 8))
+
+
+def _run_init_train_dataloader(rank, loader_mode, val_data_paths=None):
+    """Drive FSDPSftWorker._init_train_dataloader on a fake self with a counting builder
+    (no FSDP/CUDA), to prove who actually constructs + iterates the TRAIN loader."""
+    import types
+
+    from rlinf.workers.sft.fsdp_sft_worker import FSDPSftWorker
+
+    calls = {"build": 0, "iter": 0}
+
+    class _FakeLoader:
+        def __iter__(self_inner):
+            calls["iter"] += 1
+            return iter([])
+
+    def fake_build(data_paths, eval_dataset=False):
+        calls["build"] += 1
+        return _FakeLoader(), "data_config"
+
+    data = {"train_data_paths": "x", "loader_mode": loader_mode}
+    if val_data_paths is not None:
+        data["val_data_paths"] = val_data_paths
+    fake = types.SimpleNamespace(
+        _rank=rank,
+        cfg=OmegaConf.create({"data": data}),
+        build_dataloader=fake_build,
+    )
+    FSDPSftWorker._init_train_dataloader(fake)
+    return fake, calls
+
+
+def test_reference_fanout_only_rank0_builds_and_iterates_train_loader():
+    w0, c0 = _run_init_train_dataloader(0, "reference_fanout")
+    assert c0["build"] == 1 and c0["iter"] == 1
+    assert w0.data_loader is not None and w0.data_iter is not None
+    assert w0._reference_fanout is True
+    for r in (1, 3, 7):
+        w, c = _run_init_train_dataloader(r, "reference_fanout")
+        assert c["build"] == 0 and c["iter"] == 0, f"rank {r} built/iterated the train loader"
+        assert w.data_loader is None and w.data_iter is None and w.data_config is None
+        assert w._reference_fanout is True  # flag set everywhere; only rank 0 owns the loader
+
+
+def test_per_rank_stream_every_rank_builds_train_loader():
+    for r in (0, 1, 7):
+        w, c = _run_init_train_dataloader(r, "per_rank_stream")
+        assert c["build"] == 1 and c["iter"] == 1
+        assert w.data_loader is not None and w._reference_fanout is False
 
 
 def test_resolve_loader_mode_default_configured_and_validated():

@@ -185,7 +185,7 @@ def _resolve_norm_stats(
     """Resolve the BEHAVIOR norm stats via the shared ``(assets_dir, asset_id)`` rule.
 
     Delegates to :func:`resolve_norm_stats_dir` so the SFT loader and the eval
-    model factory resolve the *same* canonical ``norm_stats.json`` (AC-8).
+    model factory resolve the *same* canonical ``norm_stats.json``.
     """
     directory = resolve_norm_stats_dir(assets_dir, asset_id)
     logger.info("Loaded BEHAVIOR norm stats from %s", directory)
@@ -398,6 +398,16 @@ def resolve_loader_mode(cfg, loader_mode=None):
     return mode
 
 
+def builds_train_loader(loader_mode, rank):
+    """Whether ``rank`` should construct + iterate the TRAIN loader.
+
+    ``per_rank_stream``: every rank owns its shard. ``reference_fanout``: only rank 0 owns
+    the single loader and scatters to the others, so ranks ``> 0`` must NOT build/iterate a
+    train loader they never consume (they receive via the fanout).
+    """
+    return loader_mode != REFERENCE_FANOUT or rank == 0
+
+
 def reference_fanout_micro_batches(
     data_iter, rank, world_size, grad_accum, send_fn, recv_fn
 ):
@@ -440,7 +450,9 @@ def build_behavior_sft_dataloader(
     per step and scatters them (see the SFT worker). Returns
     ``(loader, loader.data_config())``.
     """
-    mode = resolve_loader_mode(cfg, loader_mode)
+    # reference_fanout is a TRAIN-only strict-alignment mode; eval always uses the
+    # decentralized per-rank shard so it is not silently made rank-replicated.
+    mode = PER_RANK_STREAM if eval_dataset else resolve_loader_mode(cfg, loader_mode)
     # reference_fanout: a single worker-only-partition loader (no rank fold), pulled
     # world_size micro-batches/step downstream, reproduces the reference rank-0 fanout.
     part_rank, part_world = (0, 1) if mode == REFERENCE_FANOUT else (rank, world_size)
@@ -464,7 +476,7 @@ def build_behavior_sft_dataloader(
         return OmegaConf.select(cfg.data, key, default=default)
 
     # Norm stats are resolved STRICTLY from YAML assets_dir + asset_id — the same
-    # canonical task-0000 distribution the eval model factory resolves (AC-8).
+    # canonical task-0000 distribution the eval model factory resolves.
     # No checkpoint-relative (model_path) or norm_stats_path fallback, and a blank
     # (None or empty/whitespace) value is rejected here the same way the eval
     # factory rejects it, so neither path can silently load non-task-0000 stats.
@@ -506,7 +518,7 @@ def build_behavior_sft_dataloader(
             )
         skill_labels = {i: str(label) for i, label in enumerate(labels)}
         # Fixed reference skill-window recipe (pi05_b1k-task0000_sft_local_skill);
-        # not read from cfg.data so the AC-10 reference recipe cannot drift.
+        # not read from cfg.data so the reference recipe cannot drift.
         enable_gap, allow_left, allow_right = True, 100, 100
 
     loader = create_behavior_sft_data_loader(
