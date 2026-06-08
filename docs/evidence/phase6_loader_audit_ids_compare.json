@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "audited_steps": 30000,
+  "steps_matched": 0,
+  "all_steps_identical": false,
+  "frame_identity_comparable": true,
+  "cross_dump_distinct_overlap": 429928,
+  "verdict": "DIVERGENT_MULTISET",
+  "first_mismatch": {
+    "step": 0,
+    "rlinf_only_sample": [
+      "1660:1000",
+      "1660:1001",
+      "1660:1002",
+      "1660:1003",
+      "1660:1004",
+      "1660:1005"
+    ],
+    "ref_only_sample": [
+      "1080:3000",
+      "1080:3001",
+      "1080:3002",
+      "1080:3003",
+      "1080:3004",
+      "1080:3005"
+    ]
+  },
+  "rlinf": {
+    "audited_steps": 30000,
+    "num_workers": 8,
+    "rolling_hash": "e9d6577b01fb20df91bdfdc2fa662e389f16b6f6cf83ead3e025004c9121c0e0",
+    "min_distinct": 256,
+    "max_distinct": 256
+  },
+  "ref": {
+    "audited_steps": 30000,
+    "num_workers": 8,
+    "rolling_hash": "7fea9f8c7229bd719da0863b2b345b8133bfab2ef3bbae696a9c9f7d573da4bf",
+    "min_distinct": 256,
+    "max_distinct": 256
+  }
+}

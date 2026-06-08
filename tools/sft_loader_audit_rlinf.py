@@ -77,31 +77,51 @@ def main(out_dir, n_steps, world_size):
             if num_workers is None:
                 num_workers = loader.torch_loader.num_workers
             it = iter(loader)
-            steps_r = [
-                [f"{ep}:{fr}" for (ep, fr) in next(it)] for _ in range(n_steps)
-            ]
+            steps_r = []
+            for _ in range(n_steps):
+                try:
+                    batch = next(it)
+                except StopIteration:
+                    # Epoch boundary: re-iterate, exactly as the production SFT worker
+                    # does (run_training resets data_iter on StopIteration).
+                    it = iter(loader)
+                    batch = next(it)
+                steps_r.append([f"{ep}:{fr}" for (ep, fr) in batch])
             rank_step_ids.append(steps_r)
             del it, loader  # tear down this rank's workers before the next
 
-        per_step_rank_hashes, per_step_set_hash, per_step_unique = [], [], []
+        # Compact committed output: per-step global-set hash + distinct count + a rolling
+        # hash over the whole schedule. The FULL per-step global sets (sorted ids) go to a
+        # separate detail file (large for 30k -> NOT committed) so the comparator can
+        # report concrete first-mismatch ids.
+        per_step_set_hash, per_step_unique, per_step_global_set = [], [], []
+        rolling = hashlib.sha256()
         for step in range(n_steps):
-            step_rank_hashes = [rank_step_ids[r][step] for r in range(world_size)]
-            sh, uniq = _global_set_hash(step_rank_hashes)
-            per_step_rank_hashes.append(step_rank_hashes)
+            step_rank_ids = [rank_step_ids[r][step] for r in range(world_size)]
+            union = sorted({f for rh in step_rank_ids for f in rh})
+            sh = hashlib.sha256("".join(union).encode()).hexdigest()
             per_step_set_hash.append(sh)
-            per_step_unique.append(uniq)
+            per_step_unique.append(len(union))
+            per_step_global_set.append(union)
+            rolling.update(f"{step}|{sh}".encode())
 
         result.update(
             ok=True,
             seed=int(cfg.actor.get("seed", 42)),
             per_rank_local_batch=int(cfg.actor.micro_batch_size),
             num_workers=int(num_workers) if num_workers is not None else None,
+            audited_steps=n_steps,
             per_step_global_set_hash=per_step_set_hash,
             per_step_unique=per_step_unique,
-            per_rank_per_step_frame_hashes=per_step_rank_hashes,
+            rolling_hash=rolling.hexdigest(),
         )
         with open(os.path.join(out_dir, "rlinf_loader_audit.json"), "w", newline="\n") as f:
             json.dump(result, f)
+            f.write("\n")
+        with open(
+            os.path.join(out_dir, "rlinf_loader_audit_detail.json"), "w", newline="\n"
+        ) as f:
+            json.dump({"per_step_global_set": per_step_global_set}, f)
             f.write("\n")
     except Exception as e:  # pragma: no cover - environment dependent
         import traceback

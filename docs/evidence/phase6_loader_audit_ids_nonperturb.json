@@ -1,0 +1,8 @@
+{
+  "audited_steps": 6,
+  "rank": 0,
+  "method": "num_workers=0 single-process determinism check (two builds)",
+  "rlinf_run1_rolling": "da98de8507779a8135db131d9866a64325e8a438d58a35c27dcff2d14fa77bd0",
+  "rlinf_run2_rolling": "da98de8507779a8135db131d9866a64325e8a438d58a35c27dcff2d14fa77bd0",
+  "byte_identical": true
+}
