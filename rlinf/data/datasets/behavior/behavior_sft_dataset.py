@@ -792,6 +792,7 @@ class BehaviorSftDataset(LeRobotDataset):
         allow_right: int = 0,
         dist_rank: int | None = None,
         dist_world_size: int | None = None,
+        id_only: bool = False,
     ):
         import packaging.version
 
@@ -837,6 +838,12 @@ class BehaviorSftDataset(LeRobotDataset):
         # back to ``torch.distributed`` only when these are not provided.
         self._dist_rank = dist_rank
         self._dist_world_size = dist_world_size
+        # Audit-only fast path: yield the value-independent frame id
+        # (episode_index, frame_index) using the EXACT streaming cursor, but skip the
+        # video decode / image transform / prompt build. Default off (production builds
+        # the full sample). Only valid for the production SFT path (use_skill off, no
+        # stochastic/gap skips), which is deterministic one-frame-per-step.
+        self.id_only = id_only
 
         self.image_writer = None
         self.episode_buffer = None
@@ -1219,6 +1226,14 @@ class BehaviorSftDataset(LeRobotDataset):
         if "observation.task_info" in item:
             item.pop("observation.task_info")
         ep_idx = item["episode_index"].item()
+
+        if self.id_only:
+            # Value-independent frame identity from the raw metadata, BEFORE any video
+            # decode / normalization / tokenization. Advances the same cursor as the
+            # production path (one frame per step; production SFT takes no skip branch).
+            frame_index = round(item["timestamp"].item() * self.fps)
+            self.current_streaming_frame_idx += 1
+            return {"episode_index": int(ep_idx), "frame_index": int(frame_index)}
 
         if self._should_obs_loaders_reload:
             for loader in self.obs_loaders.values():

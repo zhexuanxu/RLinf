@@ -172,6 +172,12 @@ def _worker_init_fn(worker_id: int) -> None:
     del worker_id
 
 
+def _collate_id_items(items):
+    """Audit-only collate: stack the value-independent (episode_index, frame_index) ids.
+    Module-level so spawned DataLoader workers can pickle it."""
+    return [(it["episode_index"], it["frame_index"]) for it in items]
+
+
 def _resolve_norm_stats(
     assets_dir: str | pathlib.Path,
     asset_id: str | None,
@@ -212,6 +218,7 @@ def create_behavior_sft_data_loader(
     allow_right: int = 0,
     dist_rank: int | None = None,
     dist_world_size: int | None = None,
+    id_only: bool = False,
 ) -> "BehaviorSftDataLoader":
     """Build the BEHAVIOR-1K SFT data loader yielding ``(Observation, actions)``.
 
@@ -274,14 +281,24 @@ def create_behavior_sft_data_loader(
         allow_right=allow_right,
         dist_rank=dist_rank,
         dist_world_size=dist_world_size,
+        id_only=id_only,
     )
 
-    transform = BehaviorSftTransform(
-        norm_stats=norm_stats,
-        action_dim=action_dim,
-        max_token_len=max_token_len,
-    )
-    transformed = _TransformedStreamingDataset(dataset, transform)
+    if id_only:
+        # Audit-only: the dataset yields value-independent {episode_index, frame_index}
+        # ids (no transform/normalization/tokenization). Collate stacks the ids; the rest
+        # of the production topology (partition, num_workers, drop_last, seed) is kept.
+        # The collate must be a module-level function so spawned workers can pickle it.
+        source = dataset
+        collate = _collate_id_items
+    else:
+        transform = BehaviorSftTransform(
+            norm_stats=norm_stats,
+            action_dim=action_dim,
+            max_token_len=max_token_len,
+        )
+        source = _TransformedStreamingDataset(dataset, transform)
+        collate = collate_behavior_sft_items
 
     # The streaming dataset partitions chunks per (rank, worker) on its own, so a
     # DistributedSampler is intentionally omitted: it would only reorder the
@@ -299,14 +316,14 @@ def create_behavior_sft_data_loader(
     )
 
     torch_loader = torch.utils.data.DataLoader(
-        typing.cast(torch.utils.data.Dataset, transformed),
+        typing.cast(torch.utils.data.Dataset, source),
         batch_size=batch_size,
         shuffle=shuffle,
         sampler=None,
         num_workers=num_workers,
         multiprocessing_context=mp_context,
         persistent_workers=num_workers > 0,
-        collate_fn=collate_behavior_sft_items,
+        collate_fn=collate,
         worker_init_fn=_worker_init_fn,
         drop_last=True,
         generator=generator,
@@ -357,7 +374,7 @@ class BehaviorSftDataLoader:
 
 
 def build_behavior_sft_dataloader(
-    cfg, world_size, rank, data_paths, eval_dataset=False
+    cfg, world_size, rank, data_paths, eval_dataset=False, id_only=False
 ):
     """Build the self-contained BEHAVIOR SFT data loader for the SFT worker.
 
@@ -462,5 +479,6 @@ def build_behavior_sft_dataloader(
         allow_right=allow_right,
         dist_rank=rank,
         dist_world_size=world_size,
+        id_only=id_only,
     )
     return loader, loader.data_config()
