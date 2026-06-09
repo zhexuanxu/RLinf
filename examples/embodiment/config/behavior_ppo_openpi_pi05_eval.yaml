@@ -14,23 +14,9 @@ hydra:
     - file://${oc.env:EMBODIED_PATH}/config/
 
 cluster:
-  num_nodes: 2
-  node_groups:
-    - label: 'a100'
-      node_ranks: 0-0
-    - label: "4090"
-      node_ranks: 1-1
-
+  num_nodes: 1
   component_placement:
-    rollout:
-      node_group: "a100"
-      placement: 0-3
-    actor:
-      node_group: "a100"
-      placement: 0-3
-    env:
-      node_group: "4090"
-      placement: 0-3
+    rollout,env,actor: all
 
 runner:
   task_type: embodied

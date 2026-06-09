@@ -1,5 +1,5 @@
 defaults:
-  - model/pi0_5@actor.model
+  - model/pi0_5_pytorch@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - override hydra/job_logging: stdout
 
@@ -30,6 +30,29 @@ runner:
 
 data:
   train_data_paths: "/mnt/public/xzxuan/data/2025-challenge-demos"
+  # Loading strategy:
+  #   per_rank_stream (default): each rank streams its own rank-folded chunk shard
+  #     (world_size*num_workers lanes) -- the throughput path.
+  #   reference_fanout: a single worker-only-partition loader (num_workers lanes, no
+  #     rank fold) is pulled world_size micro-batches/step on rank 0 and scattered,
+  #     byte-reproducing the reference openpi-comet rank-0 fanout data stream (every
+  #     batch identical across all steps). Use to strictly align the data side with
+  #     the reference; costs throughput (one loader feeds all ranks).
+  loader_mode: per_rank_stream
+  # BEHAVIOR task-0000. `use_skill: false` trains on the main-task text;
+  # `true` trains on the per-frame REFERENCE skill text selected by the window
+  # logic from `task_subtasks` below (mirrors the `pi05_b1k-task0000_sft_local_skill`
+  # TrainConfig). The dataset's collapsed orchestrators are NOT a valid label source.
+  tasks: ["turning_on_radio"]
+  use_skill: false
+  # Reference per-task skill labels (same as env/behavior_skill_library.yaml). When
+  # `use_skill: true`, the builder maps task_subtasks[<task>] -> {0: label0, ...}.
+  task_subtasks:
+    turning_on_radio:
+      - "move to radio"
+      - "pick up radio from coffee table"
+      - "press radio"
+      - "place radio on coffee table"
 
 algorithm:
   adv_type: gae
@@ -41,19 +64,25 @@ actor:
   global_batch_size: 256
   seed: 42
 
+  # Non-invasive step-0 instrumentation (default OFF). When true, the first global
+  # step's per-rank frame ids are observed (read-only) to prove the rank-disjoint
+  # effective batch (loader fix exercised at runtime) and pin the real step-0
+  # loss/grad-norm/lr. Outputs go under sft_step0_out_dir (point at the scratch mount).
+  sft_step0_instrument: false
+  sft_step0_out_dir: "/mnt/public/xzxuan/tmp/sft_step0"
+
+  # actor.model comes from `defaults: model/pi0_5_pytorch@actor.model` (the
+  # path-free shape template). The experiment config supplies the filesystem
+  # paths so the model template stays reusable.
   model:
-    precision: null
-    model_path: "/mnt/public/xzxuan/models/pi05_base_pytorch"
-    num_action_chunks: 32
-    action_dim: 23
-    add_value_head: False
+    # New-format fp32 base checkpoint (exactly what the reference trainer loads).
+    model_path: "/mnt/public/xzxuan/models/pi05_base_pytorch_new"
     openpi:
-      config_name: "pi05_behavior_b1k_local"
-      detach_critic_input: True
-      num_images_in_input: 3
-      train_expert_only: False
-      full_pi05: True
-      forward_mode: "vla"
+      # Quantile-normalization stats for the 2025-challenge-demos BEHAVIOR task
+      # 0000, resolved as {assets_dir}/{asset_id}/norm_stats.json (the same
+      # canonical stats the eval path resolves).
+      assets_dir: /mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed
+      asset_id: "behavior-1k/2025-challenge-demos"
 
   optim:
     lr: 2.5e-5
@@ -65,19 +94,34 @@ actor:
     clip_grad: 1.0
     total_training_steps: 30000
     lr_warmup_steps: 1000
-    lr_scheduler: "cosine"
+    # Reference-exact warmup+cosine: warmup starts at peak/(warmup+1) and cosine
+    # decays to min_lr over total_training_steps (matches openpi-comet-pytorch-mixed).
+    lr_scheduler: "openpi_cosine"
     num_cycles: 0.5
     min_lr: 0.0
 
   fsdp_config:
     strategy: "fsdp"
-    sharding_strategy: "no_shard"
+    # FULL_SHARD across ranks, matching the reference trainer (degenerates to a
+    # single shard on 1 GPU). FSDP MixedPrecision casts params to bf16 for compute;
+    # gradient checkpointing is enabled on the dual-expert Gemma + SigLIP.
+    sharding_strategy: "full_shard"
     use_orig_params: True
-    gradient_checkpointing: False
+    gradient_checkpointing: True
     mixed_precision:
-      param_dtype: ${actor.model.precision}
-      reduce_dtype: ${actor.model.precision}
-      buffer_dtype: ${actor.model.precision}
+      # Match the reference recipe (init_model fsdp1 branch:
+      # MixedPrecision(param_dtype=bf16, reduce_dtype=fp32)): bf16 compute, but the
+      # gradient all-reduce and buffers stay fp32 so multi-rank grad accumulation is
+      # not rounded to bf16 (the BEHAVIOR config previously used bf16 for all three,
+      # unlike the reference and the other SFT configs).
+      # param_dtype is the FSDP COMPUTE dtype and is set explicitly (bf16) rather than
+      # interpolated from actor.model.precision: the reference keeps the load-dtype
+      # selector and the compute dtype as separate knobs, and coupling them here is a
+      # footgun — changing the model load/precision field must NOT silently change the
+      # FSDP compute dtype (e.g. an fp32-master load must still compute in bf16).
+      param_dtype: bf16
+      reduce_dtype: fp32
+      buffer_dtype: fp32
 
 reward:
   use_reward_model: False

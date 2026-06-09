@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "format": "ref_pinned_npz",
+  "synthetic": false,
+  "batches_npz": "phase5_precision_pinned_batches.npz",
+  "noise_time_npz": "phase5_precision_pinned_noise_time.npz",
+  "world_size": 2,
+  "micro_batch": 1,
+  "source": {
+    "generator": "tests/unit_tests/_ref_pinned_run.py",
+    "command": "openpi-comet/.venv/bin/python tests/unit_tests/_ref_pinned_run.py <out> 1 2",
+    "source_batches_npz": "/mnt/public/xzxuan/tmp/rlcr_p5r3/ref_pinned/ref_pinned_batches.npz",
+    "source_noise_time_npz": "/mnt/public/xzxuan/tmp/rlcr_p5r3/ref_pinned/ref_pinned_noise_time.npz",
+    "ref_git_rev": "cd99b39059076c707c5a9e8920c1f078f42ba58c",
+    "rlinf_git_rev": "b6f2922593b7cc4d2f1125fa621a36fde9e580e0"
+  },
+  "file_sha256": {
+    "batches_npz": "d7f8a70aaf32a5126511a82d6001ddabe8ebed34cc0b8f36255d6b448b1a45fc",
+    "noise_time_npz": "d521815504eaf415ce483f06b3ab4603a88950b68565e75aa1ee763fc0572c55"
+  }
+}

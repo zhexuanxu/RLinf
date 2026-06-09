@@ -1,0 +1,634 @@
+{
+  "summary": {
+    "all_pass_or_benign": true,
+    "counts": {
+      "BENIGN": 8,
+      "CONTEXT": 2,
+      "PASS": 46
+    },
+    "ranks": [
+      0,
+      1
+    ]
+  },
+  "rows": [
+    {
+      "surface": "action_input_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "buffer_count",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": 0,
+      "reference": 0,
+      "note": ""
+    },
+    {
+      "surface": "buffer_default_probe",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": {
+        "omitted_buffer_dtype": "None",
+        "buffer_dtype_after_wrap": {
+          "_fsdp_wrapped_module.probe_buf": "float32"
+        },
+        "note": "with buffer_dtype omitted, FSDP leaves the buffer at its original dtype"
+      },
+      "reference": {
+        "omitted_buffer_dtype": "None",
+        "buffer_dtype_after_wrap": {
+          "_fsdp_wrapped_module.probe_buf": "float32"
+        },
+        "note": "with buffer_dtype omitted, FSDP leaves the buffer at its original dtype"
+      },
+      "note": "Both observe the same FSDP default (omitted buffer_dtype -> buffer stays fp32)."
+    },
+    {
+      "surface": "buffer_dtypes",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": [],
+      "reference": [],
+      "note": ""
+    },
+    {
+      "surface": "compute_autocast_enabled",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": false,
+      "reference": false,
+      "note": ""
+    },
+    {
+      "surface": "ema",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "none",
+      "reference": "none",
+      "note": ""
+    },
+    {
+      "surface": "fsdp_buffer_dtype",
+      "rank": 0,
+      "verdict": "BENIGN",
+      "rlinf": "float32",
+      "reference": "None",
+      "note": "RLinf sets fp32 explicitly; reference omits (None). MOOT: both models have 0 buffers (buffer_count==0); FSDP leaves an omitted buffer at fp32 (buffer_default_probe). No buffer is cast either way."
+    },
+    {
+      "surface": "fsdp_param_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "fsdp_reduce_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "grad_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": [
+        "float32"
+      ],
+      "reference": [
+        "float32"
+      ],
+      "note": ""
+    },
+    {
+      "surface": "grad_norm",
+      "rank": 0,
+      "verdict": "BENIGN",
+      "rlinf": {
+        "value": 35.630428314208984,
+        "dtype": "float32",
+        "fp32_observed_value": 11.226377487182617
+      },
+      "reference": {
+        "value": 35.46147918701172,
+        "dtype": "float32"
+      },
+      "note": "Same fp32 accumulation dtype (identical on both repos). Both load the SAME base checkpoint (pi05_base_pytorch_new) on the SAME pinned batch, so the small VALUE gap (~35.63 vs ~35.46, ~0.5%) is bf16-compute non-determinism across different execution paths (RLinf eager vs reference torch.compile; differing FSDP wrap granularity and all-reduce order), within bf16 grad-norm tolerance \u2014 NOT a precision mismatch (the dtype, the surface judged here, is identically fp32)."
+    },
+    {
+      "surface": "grad_scaler",
+      "rank": 0,
+      "verdict": "BENIGN",
+      "rlinf": {
+        "type": "ShardedGradScaler",
+        "enabled": false
+      },
+      "reference": {
+        "type": "None",
+        "enabled": false
+      },
+      "note": "RLinf builds a DISABLED ShardedGradScaler; reference uses none. Both apply no scaling (enabled=False)."
+    },
+    {
+      "surface": "gradient_reduction_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "load_after_save_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "reference": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "loaded_weight_fingerprint",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
+      },
+      "reference": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "loss_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "master_param_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "mp_cast_forward_inputs",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": false,
+      "reference": false,
+      "note": ""
+    },
+    {
+      "surface": "mp_cast_root_forward_inputs",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": true,
+      "reference": true,
+      "note": ""
+    },
+    {
+      "surface": "mp_keep_low_precision_grads",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": false,
+      "reference": false,
+      "note": ""
+    },
+    {
+      "surface": "noise_input_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "optimizer",
+      "rank": 0,
+      "verdict": "BENIGN",
+      "rlinf": {
+        "type": "AdamW",
+        "fused": null,
+        "foreach": null,
+        "capturable": false,
+        "betas": [
+          0.9,
+          0.95
+        ],
+        "eps": 1e-08,
+        "weight_decay": 1e-10,
+        "lr": 2.4975024975024977e-08
+      },
+      "reference": {
+        "type": "AdamW",
+        "fused": true,
+        "foreach": null,
+        "capturable": false,
+        "betas": [
+          0.9,
+          0.95
+        ],
+        "eps": 1e-08,
+        "weight_decay": 1e-10,
+        "lr": 2.5e-05
+      },
+      "note": "AdamW betas/eps/weight_decay identical (0.9,0.95 / 1e-8 / 1e-10); RLinf non-fused vs reference fused=True (both fp32 state; fused only changes the update kernel). lr differs only by warmup-schedule state (both peak 2.5e-5)."
+    },
+    {
+      "surface": "optimizer_state_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": {
+        "exp_avg": "float32",
+        "exp_avg_sq": "float32"
+      },
+      "reference": {
+        "exp_avg": "float32",
+        "exp_avg_sq": "float32"
+      },
+      "note": ""
+    },
+    {
+      "surface": "output_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "param_dtype_during_forward",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "pytorch_training_precision",
+      "rank": 0,
+      "verdict": "CONTEXT",
+      "rlinf": null,
+      "reference": "mp_bfloat16",
+      "note": "Reference-only load selector (mp_bfloat16 -> fp32 load)."
+    },
+    {
+      "surface": "saved_checkpoint_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "reference": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "time_input_dtype",
+      "rank": 0,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "action_input_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "buffer_count",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": 0,
+      "reference": 0,
+      "note": ""
+    },
+    {
+      "surface": "buffer_default_probe",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": {
+        "omitted_buffer_dtype": "None",
+        "buffer_dtype_after_wrap": {
+          "_fsdp_wrapped_module.probe_buf": "float32"
+        },
+        "note": "with buffer_dtype omitted, FSDP leaves the buffer at its original dtype"
+      },
+      "reference": {
+        "omitted_buffer_dtype": "None",
+        "buffer_dtype_after_wrap": {
+          "_fsdp_wrapped_module.probe_buf": "float32"
+        },
+        "note": "with buffer_dtype omitted, FSDP leaves the buffer at its original dtype"
+      },
+      "note": "Both observe the same FSDP default (omitted buffer_dtype -> buffer stays fp32)."
+    },
+    {
+      "surface": "buffer_dtypes",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": [],
+      "reference": [],
+      "note": ""
+    },
+    {
+      "surface": "compute_autocast_enabled",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": false,
+      "reference": false,
+      "note": ""
+    },
+    {
+      "surface": "ema",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "none",
+      "reference": "none",
+      "note": ""
+    },
+    {
+      "surface": "fsdp_buffer_dtype",
+      "rank": 1,
+      "verdict": "BENIGN",
+      "rlinf": "float32",
+      "reference": "None",
+      "note": "RLinf sets fp32 explicitly; reference omits (None). MOOT: both models have 0 buffers (buffer_count==0); FSDP leaves an omitted buffer at fp32 (buffer_default_probe). No buffer is cast either way."
+    },
+    {
+      "surface": "fsdp_param_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "fsdp_reduce_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "grad_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": [
+        "float32"
+      ],
+      "reference": [
+        "float32"
+      ],
+      "note": ""
+    },
+    {
+      "surface": "grad_norm",
+      "rank": 1,
+      "verdict": "BENIGN",
+      "rlinf": {
+        "value": 35.630428314208984,
+        "dtype": "float32",
+        "fp32_observed_value": 33.815616607666016
+      },
+      "reference": {
+        "value": 35.46147918701172,
+        "dtype": "float32"
+      },
+      "note": "Same fp32 accumulation dtype (identical on both repos). Both load the SAME base checkpoint (pi05_base_pytorch_new) on the SAME pinned batch, so the small VALUE gap (~35.63 vs ~35.46, ~0.5%) is bf16-compute non-determinism across different execution paths (RLinf eager vs reference torch.compile; differing FSDP wrap granularity and all-reduce order), within bf16 grad-norm tolerance \u2014 NOT a precision mismatch (the dtype, the surface judged here, is identically fp32)."
+    },
+    {
+      "surface": "grad_scaler",
+      "rank": 1,
+      "verdict": "BENIGN",
+      "rlinf": {
+        "type": "ShardedGradScaler",
+        "enabled": false
+      },
+      "reference": {
+        "type": "None",
+        "enabled": false
+      },
+      "note": "RLinf builds a DISABLED ShardedGradScaler; reference uses none. Both apply no scaling (enabled=False)."
+    },
+    {
+      "surface": "gradient_reduction_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "load_after_save_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "reference": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "loaded_weight_fingerprint",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
+      },
+      "reference": {
+        "set_hash": "013e7bf36823e82302a98766ff94d2901f80385602b4fd8d1fba70a76e85b1c8",
+        "n_distinct_float_tensors": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "loss_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "master_param_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "mp_cast_forward_inputs",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": false,
+      "reference": false,
+      "note": ""
+    },
+    {
+      "surface": "mp_cast_root_forward_inputs",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": true,
+      "reference": true,
+      "note": ""
+    },
+    {
+      "surface": "mp_keep_low_precision_grads",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": false,
+      "reference": false,
+      "note": ""
+    },
+    {
+      "surface": "noise_input_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    },
+    {
+      "surface": "optimizer",
+      "rank": 1,
+      "verdict": "BENIGN",
+      "rlinf": {
+        "type": "AdamW",
+        "fused": null,
+        "foreach": null,
+        "capturable": false,
+        "betas": [
+          0.9,
+          0.95
+        ],
+        "eps": 1e-08,
+        "weight_decay": 1e-10,
+        "lr": 2.4975024975024977e-08
+      },
+      "reference": {
+        "type": "AdamW",
+        "fused": true,
+        "foreach": null,
+        "capturable": false,
+        "betas": [
+          0.9,
+          0.95
+        ],
+        "eps": 1e-08,
+        "weight_decay": 1e-10,
+        "lr": 2.5e-05
+      },
+      "note": "AdamW betas/eps/weight_decay identical (0.9,0.95 / 1e-8 / 1e-10); RLinf non-fused vs reference fused=True (both fp32 state; fused only changes the update kernel). lr differs only by warmup-schedule state (both peak 2.5e-5)."
+    },
+    {
+      "surface": "optimizer_state_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": {
+        "exp_avg": "float32",
+        "exp_avg_sq": "float32"
+      },
+      "reference": {
+        "exp_avg": "float32",
+        "exp_avg_sq": "float32"
+      },
+      "note": ""
+    },
+    {
+      "surface": "output_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "param_dtype_during_forward",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "bfloat16",
+      "reference": "bfloat16",
+      "note": ""
+    },
+    {
+      "surface": "pytorch_training_precision",
+      "rank": 1,
+      "verdict": "CONTEXT",
+      "rlinf": null,
+      "reference": "mp_bfloat16",
+      "note": "Reference-only load selector (mp_bfloat16 -> fp32 load)."
+    },
+    {
+      "surface": "saved_checkpoint_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "reference": {
+        "dtypes": [
+          "float32"
+        ],
+        "count": 667
+      },
+      "note": ""
+    },
+    {
+      "surface": "time_input_dtype",
+      "rank": 1,
+      "verdict": "PASS",
+      "rlinf": "float32",
+      "reference": "float32",
+      "note": ""
+    }
+  ]
+}

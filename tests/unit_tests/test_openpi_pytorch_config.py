@@ -1,0 +1,378 @@
+# Copyright (c) 2025, RLinf contributors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""YAML-driven config for the openpi_pytorch model (M3: AC-4/5/8/9/10-config).
+
+These tests assert the post-refactor configuration contract:
+- model templates carry model-shape fields only (no filesystem paths);
+- the experiment configs carry the paths + the SFT data fields;
+- the package builds Pi0Config from YAML (a checkpoint config.json is ignored)
+  and defines no in-code ``TrainConfig`` registry keyed by config name;
+- eval and SFT resolve the SAME canonical norm-stats file via assets_dir+asset_id.
+"""
+
+from __future__ import annotations
+
+import json
+import pathlib
+
+import numpy as np
+import pytest
+from omegaconf import OmegaConf
+
+_REPO = pathlib.Path(__file__).resolve().parents[2]
+_SFT_MODEL = _REPO / "examples/sft/config/model/pi0_5_pytorch.yaml"
+_EMB_MODEL = _REPO / "examples/embodiment/config/model/pi0_5_pytorch.yaml"
+_SFT_EXP = _REPO / "examples/sft/config/behavior_pi05_vla.yaml"
+_EMB_EXP = (
+    _REPO / "examples/embodiment/config/behavior_ppo_openpi_pi05_pytorch_eval.yaml"
+)
+_PACKAGE = _REPO / "rlinf/models/embodiment/openpi_pytorch"
+
+_SHAPE_FIELDS = ("model_action_dim", "paligemma_variant", "action_expert_variant")
+
+
+def _load(path):
+    return OmegaConf.load(path)
+
+
+# --------------------------------------------------------------------------- #
+# AC-9: model templates are path-free; paths live in the experiment configs.
+# --------------------------------------------------------------------------- #
+def test_model_templates_carry_shape_fields_not_paths():
+    for path in (_SFT_MODEL, _EMB_MODEL):
+        cfg = _load(path)
+        assert "model_path" not in cfg, f"{path.name} must not hard-code model_path"
+        assert "config_name" not in cfg.openpi, (
+            f"{path.name} must not carry config_name"
+        )
+        for field in _SHAPE_FIELDS:
+            assert field in cfg.openpi, f"{path.name} missing openpi.{field}"
+
+    # The SFT template carries no asset paths (they live in the experiment config).
+    sft = _load(_SFT_MODEL)
+    assert "assets_dir" not in sft.openpi and "asset_id" not in sft.openpi
+    # The embodiment template may carry assets_dir/asset_id placeholders.
+    emb = _load(_EMB_MODEL)
+    assert "assets_dir" in emb.openpi and "asset_id" in emb.openpi
+
+
+def test_sft_experiment_config_has_paths_and_data_fields():
+    cfg = _load(_SFT_EXP)
+    assert cfg.actor.model.model_path
+    assert cfg.actor.model.openpi.assets_dir
+    assert cfg.actor.model.openpi.asset_id
+    assert list(cfg.data.tasks) == ["turning_on_radio"]
+    assert cfg.data.use_skill is False
+
+
+def test_eval_experiment_config_has_paths():
+    cfg = _load(_EMB_EXP)
+    assert cfg.actor.model.openpi.assets_dir
+    assert cfg.actor.model.openpi.asset_id
+
+
+def test_composed_sft_model_snapshot():
+    """Template (shape) + experiment override (paths) compose to the expected set."""
+    template = _load(_SFT_MODEL)
+    override = _load(_SFT_EXP).actor.model
+    merged = OmegaConf.merge(template, override)
+    assert merged.model_path == "/mnt/public/xzxuan/models/pi05_base_pytorch_new"
+    assert merged.openpi.model_action_dim == 32
+    assert merged.openpi.paligemma_variant == "gemma_2b"
+    assert merged.openpi.action_expert_variant == "gemma_300m"
+    assert merged.openpi.asset_id == "behavior-1k/2025-challenge-demos"
+
+
+def test_composed_eval_model_snapshot():
+    """Eval template (shape) + experiment override (paths) compose as expected.
+
+    Mirrors the SFT snapshot for the eval side so template/path drift in the eval
+    composition is caught too (AC-9). ``model_path`` is an interpolation supplied
+    by the experiment config, so it is checked unresolved.
+    """
+    template = _load(_EMB_MODEL)
+    override = _load(_EMB_EXP).actor.model
+    merged = OmegaConf.merge(template, override)
+    raw = OmegaConf.to_container(merged, resolve=False)
+
+    # Shape fields come from the template; action dims / num_steps preserved.
+    assert merged.openpi.model_action_dim == 32
+    assert merged.openpi.paligemma_variant == "gemma_2b"
+    assert merged.openpi.action_expert_variant == "gemma_300m"
+    assert merged.num_action_chunks == 32
+    assert merged.action_dim == 23
+    assert merged.num_steps == 5
+    # Paths come from the experiment config; model_path is wired by interpolation.
+    assert raw["model_path"] == "${rollout.model.model_path}"
+    assert (
+        merged.openpi.assets_dir == "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets"
+    )
+    assert merged.openpi.asset_id == "behavior-1k/2025-challenge-demos"
+    # config_name is fully removed from the openpi_pytorch path (DEC-2).
+    assert "config_name" not in merged.openpi
+
+
+# --------------------------------------------------------------------------- #
+# AC-4 / AC-5: no in-package TrainConfig registry; config_name fully removed.
+# --------------------------------------------------------------------------- #
+def test_package_source_has_no_config_name_or_registry():
+    for py in _PACKAGE.rglob("*.py"):
+        text = py.read_text(encoding="utf-8")
+        assert "config_name" not in text, f"{py} still references config_name"
+        assert "TrainConfig" not in text, f"{py} defines/uses a TrainConfig registry"
+
+
+# --------------------------------------------------------------------------- #
+# AC-8: eval and SFT resolve the SAME canonical norm-stats via assets_dir/asset_id.
+# --------------------------------------------------------------------------- #
+def _write_norm_stats(directory: pathlib.Path, value: float) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "norm_stats.json").write_text(
+        json.dumps(
+            {
+                "norm_stats": {
+                    key: {
+                        "mean": [value] * 32,
+                        "std": [1.0] * 32,
+                        "q01": [0.0] * 32,
+                        "q99": [1.0] * 32,
+                    }
+                    for key in ("state", "actions")
+                }
+            }
+        )
+    )
+
+
+def test_norm_stats_resolver_is_shared_and_hash_equal(tmp_path):
+    from rlinf.data.datasets.behavior.behavior_sft_data_loader import (
+        _resolve_norm_stats,
+    )
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        resolve_norm_stats_dir,
+    )
+
+    assets_dir = tmp_path / "assets"
+    asset_id = "behavior-1k/2025-challenge-demos"
+    _write_norm_stats(assets_dir / asset_id, 0.0)
+
+    # The eval/model resolver and the SFT loader resolve the SAME file.
+    eval_dir = resolve_norm_stats_dir(assets_dir, asset_id)
+    assert (eval_dir / "norm_stats.json").is_file()
+    sft_stats = _resolve_norm_stats(assets_dir, asset_id)
+    eval_bytes = (eval_dir / "norm_stats.json").read_bytes()
+    sft_dir = resolve_norm_stats_dir(assets_dir, asset_id)
+    assert sft_dir == eval_dir  # same canonical directory
+    assert np.allclose(sft_stats["state"].mean, 0.0)
+    assert eval_bytes == (sft_dir / "norm_stats.json").read_bytes()
+
+
+def test_norm_stats_resolver_rejects_divergent_and_missing(tmp_path):
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        resolve_norm_stats_dir,
+    )
+
+    good = tmp_path / "good"
+    _write_norm_stats(good / "id", 0.0)
+    other = tmp_path / "other"
+    _write_norm_stats(other / "id", 9.0)
+    a = (resolve_norm_stats_dir(good, "id") / "norm_stats.json").read_bytes()
+    b = (resolve_norm_stats_dir(other, "id") / "norm_stats.json").read_bytes()
+    assert a != b  # divergent stats files differ
+
+    with pytest.raises(FileNotFoundError, match="norm_stats.json"):
+        resolve_norm_stats_dir(tmp_path / "missing", "id")
+
+
+def test_norm_stats_resolver_no_bare_fallback_when_asset_id_given(tmp_path):
+    """A requested asset_id must resolve EXACTLY {assets_dir}/{asset_id}; a bare
+    {assets_dir}/norm_stats.json must NOT be silently substituted (AC-8 negative).
+    """
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.normalize import (
+        resolve_norm_stats_dir,
+    )
+
+    assets_dir = tmp_path / "assets"
+    # Root stats exist, but the requested asset_id sub-directory does NOT.
+    _write_norm_stats(assets_dir, 7.0)
+    assert (assets_dir / "norm_stats.json").is_file()
+    with pytest.raises(FileNotFoundError, match="norm_stats.json"):
+        resolve_norm_stats_dir(assets_dir, "behavior-1k/2025-challenge-demos")
+
+    # A blank/whitespace asset_id must NOT fall back to the bare root stats: a
+    # blank YAML value is not a value (AC-8). It is distinct from asset_id=None.
+    for blank in ("", "   "):
+        with pytest.raises(FileNotFoundError, match="asset_id"):
+            resolve_norm_stats_dir(assets_dir, blank)
+
+    # With asset_id=None the bare-directory form is the intended resolution.
+    assert resolve_norm_stats_dir(assets_dir, None) == assets_dir
+
+
+# --------------------------------------------------------------------------- #
+# AC-5: Pi0Config is built from YAML; a checkpoint config.json is ignored.
+# --------------------------------------------------------------------------- #
+def test_get_model_builds_from_yaml_and_ignores_config_json(tmp_path):
+    torch = pytest.importorskip("torch")
+    import safetensors.torch
+
+    from rlinf.models.embodiment.openpi_pytorch import get_model
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+
+    base = Pi0Config(
+        dtype="bfloat16",
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        pi05=True,
+        action_horizon=4,
+        action_dim=32,
+        pcd=False,
+    )
+    # Eval builds expect a bf16 new-format checkpoint (get_model casts to bf16),
+    # so save the synthetic weights in bf16 — otherwise the dtype validation
+    # fires before the config.json-is-ignored path under test.
+    state_dict = base.create().to(torch.bfloat16).state_dict()
+    safetensors.torch.save_file(state_dict, str(tmp_path / "model.safetensors"))
+    # A checkpoint config.json with BOGUS shape values must be ignored.
+    (tmp_path / "config.json").write_text(
+        json.dumps({"action_horizon": 999, "action_dim": 7, "paligemma_variant": "x"})
+    )
+    _write_norm_stats(tmp_path / "physical-intelligence" / "behavior", 0.0)
+
+    cfg = OmegaConf.create(
+        {
+            "model_path": str(tmp_path),
+            "precision": "bf16",
+            "num_action_chunks": 4,
+            "action_dim": 23,
+            "openpi": {
+                "model_action_dim": 32,
+                "paligemma_variant": "dummy",
+                "action_expert_variant": "dummy",
+                "assets_dir": str(tmp_path),
+                "asset_id": "physical-intelligence/behavior",
+            },
+        }
+    )
+    # If the bogus config.json (action_horizon=999, action_dim=7) had been read,
+    # Pi0Config would build a mismatched model and the strict load would fail.
+    # A successful build proves the model shape came from the YAML fields (=4/32).
+    model = get_model(cfg)
+    assert model.processor is not None
+
+
+def test_get_model_eval_requires_assets_dir(tmp_path):
+    torch = pytest.importorskip("torch")
+    import safetensors.torch
+
+    from rlinf.models.embodiment.openpi_pytorch import get_model
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+
+    base = Pi0Config(
+        dtype="bfloat16",
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        pi05=True,
+        action_horizon=4,
+        action_dim=32,
+        pcd=False,
+    )
+    # bf16 eval-format weights so the build reaches the assets_dir check (the
+    # missing-norm-stats path under test), not the dtype validation.
+    safetensors.torch.save_file(
+        base.create().to(torch.bfloat16).state_dict(),
+        str(tmp_path / "model.safetensors"),
+    )
+    cfg = OmegaConf.create(
+        {
+            "model_path": str(tmp_path),
+            "precision": "bf16",
+            "num_action_chunks": 4,
+            "action_dim": 23,
+            "openpi": {
+                "model_action_dim": 32,
+                "paligemma_variant": "dummy",
+                "action_expert_variant": "dummy",
+            },
+        }
+    )
+    with pytest.raises(FileNotFoundError, match="assets_dir"):
+        get_model(cfg)
+
+
+# Sentinel: omit the openpi.asset_id key entirely (vs. setting it to a blank value).
+_OMIT = object()
+
+
+@pytest.mark.parametrize("asset_id_value", [_OMIT, "", "   "])
+def test_get_model_eval_requires_asset_id(tmp_path, asset_id_value):
+    """Eval must require a non-empty YAML openpi.asset_id — no hard-coded default
+    and no blank-value fallback (AC-8).
+
+    Reproduces the Codex findings: norm stats present at the OLD default location
+    `{assets_dir}/physical-intelligence/behavior/norm_stats.json` but `asset_id`
+    omitted (R4) OR blank/whitespace (R5) must FAIL, not silently load those stats.
+    """
+    torch = pytest.importorskip("torch")
+    import safetensors.torch
+
+    from rlinf.models.embodiment.openpi_pytorch import get_model
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
+
+    base = Pi0Config(
+        dtype="bfloat16",
+        paligemma_variant="dummy",
+        action_expert_variant="dummy",
+        pi05=True,
+        action_horizon=4,
+        action_dim=32,
+        pcd=False,
+    )
+    safetensors.torch.save_file(
+        base.create().to(torch.bfloat16).state_dict(),
+        str(tmp_path / "model.safetensors"),
+    )
+    # Stats DO exist at the formerly-defaulted asset path...
+    _write_norm_stats(tmp_path / "physical-intelligence" / "behavior", 0.0)
+    openpi = {
+        "model_action_dim": 32,
+        "paligemma_variant": "dummy",
+        "action_expert_variant": "dummy",
+        "assets_dir": str(tmp_path),
+    }
+    # ...but asset_id is omitted or blank -> must raise, never load root stats.
+    if asset_id_value is not _OMIT:
+        openpi["asset_id"] = asset_id_value
+    cfg = OmegaConf.create(
+        {
+            "model_path": str(tmp_path),
+            "precision": "bf16",
+            "num_action_chunks": 4,
+            "action_dim": 23,
+            "openpi": openpi,
+        }
+    )
+    with pytest.raises(FileNotFoundError, match="asset_id"):
+        get_model(cfg)
+
+
+def test_init_factory_has_no_hardcoded_asset_path():
+    """AC-9: the eval model factory hard-codes no BEHAVIOR asset path; the asset
+    location is sourced entirely from YAML openpi.assets_dir + openpi.asset_id."""
+    text = (_PACKAGE / "__init__.py").read_text(encoding="utf-8")
+    assert "physical-intelligence" not in text, (
+        "openpi_pytorch/__init__.py must not hard-code a BEHAVIOR asset path "
+        "(e.g. 'physical-intelligence/behavior'); resolve it from YAML asset_id."
+    )

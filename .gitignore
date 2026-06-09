@@ -21,3 +21,10 @@ rlinf/envs/maniskill/assets
 PKG-INFO
 *.egg-info/
 .claude/settings.json
+.claude/scheduled_tasks.lock
+requirement.md
+.humanize/
+refactor_debug.md
+debug_SFT.md
+precision.md
+debug_loss_gradnorm.md

@@ -1,0 +1,12 @@
+{
+  "audited_steps": 30000,
+  "epoch_len": 1679,
+  "ref_topology": "world_size=8, num_workers=8 (8 lanes)",
+  "rlinf_topology": "world_size=8, num_workers=1 (8 lanes, reference-aligned)",
+  "ref_run1_rolling": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",
+  "ref_run2_rolling": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",
+  "ref_byte_identical": true,
+  "rlinf_run1_rolling": "e79d4fd46fe7a62fd6b4cbea8663f312615ab6e1de096786e7527bff383d00e4",
+  "rlinf_run2_rolling": "e79d4fd46fe7a62fd6b4cbea8663f312615ab6e1de096786e7527bff383d00e4",
+  "rlinf_byte_identical": true
+}

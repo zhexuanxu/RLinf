@@ -1,0 +1,111 @@
+{
+  "all_current_touchpoints_aligned": true,
+  "canonical_sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726",
+  "control_eval_uses_canonical": true,
+  "current_touchpoints_aligned": {
+    "converter_out": true,
+    "reference": true,
+    "rlinf_eval": true,
+    "sft_train": true
+  },
+  "description": "BEHAVIOR norm-stats alignment across the RLinf SFT-train -> convert -> eval pipeline vs the reference. Every touchpoint is derived from its driving source (run dump, eval YAML, reference get_config), then resolved through the production resolve_norm_stats_dir and hashed.",
+  "old_is_a_different_file": true,
+  "old_vs_new_quantile_diff": {
+    "actions": {
+      "mean": {
+        "dim": 32,
+        "max_abs_diff": 0.335781992678454,
+        "mean_abs_diff": 0.06145699962374423
+      },
+      "q01": {
+        "dim": 32,
+        "max_abs_diff": 1.4140761082649231,
+        "mean_abs_diff": 0.25392438653400173
+      },
+      "q99": {
+        "dim": 32,
+        "max_abs_diff": 1.036653596758852,
+        "mean_abs_diff": 0.12417464992182867
+      },
+      "std": {
+        "dim": 32,
+        "max_abs_diff": 0.4098962788023038,
+        "mean_abs_diff": 0.07447943495681467
+      }
+    },
+    "state": {
+      "mean": {
+        "dim": 32,
+        "max_abs_diff": 0.33442251272961837,
+        "mean_abs_diff": 0.05630234893174998
+      },
+      "q01": {
+        "dim": 32,
+        "max_abs_diff": 1.407745875823498,
+        "mean_abs_diff": 0.25440092014436005
+      },
+      "q99": {
+        "dim": 32,
+        "max_abs_diff": 1.0330785208940592,
+        "mean_abs_diff": 0.1163520925100647
+      },
+      "std": {
+        "dim": 32,
+        "max_abs_diff": 0.41013201990944553,
+        "mean_abs_diff": 0.07613494612957794
+      }
+    }
+  },
+  "touchpoints": {
+    "converter_out": {
+      "bytes": 6346,
+      "equals_reference_input": true,
+      "resolved_file": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json",
+      "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
+    },
+    "old_pre_switch": {
+      "asset_id": "behavior-1k/2025-challenge-demos",
+      "assets_dir": "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets",
+      "bytes": 6368,
+      "resolved_file": "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets/behavior-1k/2025-challenge-demos/norm_stats.json",
+      "sha256": "d66ed16830a98f90dde8a315058b4a0df59f5e05734c1686d8b3f66787d0a929"
+    },
+    "reference": {
+      "asset_id": "behavior-1k/2025-challenge-demos",
+      "assets_dir": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed",
+      "bytes": 6346,
+      "reference_config_name": "pi05_b1k-task0000_sft_pytorch_mixed",
+      "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+      "resolved_file": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json",
+      "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
+    },
+    "reference_ckpt": {
+      "asset_id": "physical-intelligence/behavior",
+      "assets_dir": "/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew",
+      "bytes": 6346,
+      "resolved_file": "/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew/physical-intelligence/behavior/norm_stats.json",
+      "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
+    },
+    "rlinf_eval": {
+      "asset_id": "physical-intelligence/behavior",
+      "assets_dir": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new",
+      "bytes": 6346,
+      "resolved_file": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json",
+      "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
+    },
+    "sft_train": {
+      "asset_id": "behavior-1k/2025-challenge-demos",
+      "assets_dir": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed",
+      "bytes": 6346,
+      "resolved_file": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json",
+      "runlog_expected_workers": 8,
+      "runlog_loaded_dirs": [
+        "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos"
+      ],
+      "runlog_matches_resolved": true,
+      "runlog_worker_count_matches_expected": true,
+      "runlog_worker_loads": 8,
+      "sha256": "ff7e1ff0ae7b9615a2688f48e7215c2b4318da164d3d2b9f6ebf409421676726"
+    }
+  }
+}

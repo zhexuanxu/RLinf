@@ -1,0 +1,26 @@
+{
+  "purpose": "R27 INSPECTION of the first-50 grad_norm/descent divergence, from committed first-50 scalar logs + code reading (NOT a measured same-input distributed comparison). Builds on R26 (single-GPU same-batch model backward IDENTICAL). The earlier 'loader-ordering is the proven cause' verdict is RETRACTED (see status/verdict_RETRACTED); the mechanism is UNPROVEN and a measured same-input run (R28) is required.",
+  "grad_norm_means_first50": {
+    "RLinf_production_rank_folded_256frames": 2.423,
+    "RLinf_control_rank_independent_32frames": 2.382,
+    "reference_rank_independent_32frames": 1.414
+  },
+  "control_over_reference_ratio": {
+    "step0": 1.12,
+    "step25": 0.926,
+    "step49": 1.616,
+    "note": "the ratio GROWS (1.1->1.6), i.e. the weights diverge over steps from a per-step difference; not a constant scale factor."
+  },
+  "code_path_comparison_RLinf_vs_reference": {
+    "loss_scaling": "MATCH -- RLinf gradient_accumulation=256//32//8=1, loss=loss/1=loss (fsdp_sft_worker.py:53,174); reference loss=losses.mean()/len(batches)=losses.mean() (train_pytorch_new.py:548). Both = per-batch mean, no extra scaling.",
+    "optimizer": "MATCH -- both torch.optim.AdamW with the same betas/eps/wd (reference train_pytorch_new.py:391; RLinf task12-verified).",
+    "lr_schedule": "MATCH -- identical per step (R25, mean|diff|=1.8e-14).",
+    "grad_clip": "MATCH -- max_norm=1.0 both (reference model.clip_grad_norm_; RLinf fsdp.py clip).",
+    "grad_norm_computation": "MATCH (semantics) -- RLinf get_grad_norm_for_mixed_precision computes per-rank local sum-of-squares in fp32, all-reduces SUM across DP ranks, sqrt -> the correct global L2 norm (fsdp/utils.py:726, fsdp.py:446-452); the reference model.clip_grad_norm_ computes the same global L2 norm.",
+    "model_backward": "MATCH -- R26 same-batch grad parity ~0.2% (docs/evidence/r26_grad_parity.json)."
+  },
+  "status": "INSPECTION-ONLY -- this artifact is code reading + committed scalar logs, NOT a measured same-input distributed comparison. Its findings RULE OUT obvious code mismatches but DO NOT prove the mechanism. (Retracted the R27 'loader-ordering is the proven cause' verdict per Codex R27 review.)",
+  "remaining_difference_HYPOTHESES_unproven": "Code reading found NO obvious mismatch in loss scaling, optimizer, LR, clip, or grad-norm semantics, and R26 ruled out the single-GPU model backward. The mechanism of the ~1.7x grad-norm / faster descent therefore remains UNPROVEN by this artifact. Candidate hypotheses (none proven, NOT mutually exclusive): (a) the per-step INPUT composition each loader/RNG feeds (different per-step batches and/or noise/time); (b) a multi-step distributed-training effect not visible in a single-step grad comparison (e.g. optimizer-state evolution from a small per-step grad difference compounding). NOTE the per-step-input hypothesis CONFLICTS with prior committed evidence: R19 showed the rank-independent control emitted the reference's EXACT frame/action/prompt stream, and the fp32-master rerun on that exact-reference stream still descended faster than the reference (sft-first50-step-evidence.md control rows) -- so loader ordering CANNOT be asserted as the mechanism without a new measured same-input distributed comparison that also fixes noise/time and update state.",
+  "verdict_RETRACTED": "The earlier R27 verdict ('the divergence is a benign loader-ordering difference, not a correctness bug') is RETRACTED: it was an overclaim from inspection only. What is supported: (1) on an identical single batch the model backward matches ~0.2% (R26); (2) by code reading, loss scaling / optimizer / LR / clip / grad-norm computation show no mismatch; (3) the committed 8-rank grad-norm is ~1.7x the reference's and the ratio grows over steps. The MECHANISM is NOT yet proven and the residual is NOT yet shown benign; a measured same-input instrumented run is required.",
+  "next_R28": "Required (Codex R27 review): build a MEASURED same-input comparison -- feed RLinf's and the reference's stacks the IDENTICAL fixed batches + fixed noise/time from identical base weights for N steps with the production optimizer/clip/LR, and compare the per-step loss trajectories. If they MATCH on identical inputs, the model+optimizer+clip+LR stacks are identical and the divergence is the per-step INPUT (then replay the reference's exact production batch/noise sequence through RLinf to confirm). If they DIFFER, a real stack mechanism is localized and fixed, then the first-50 gate is rerun. Do NOT call the residual benign until that run exists."
+}

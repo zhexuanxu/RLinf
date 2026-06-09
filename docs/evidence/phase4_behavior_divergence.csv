@@ -1,0 +1,5 @@
+quantity,mean_abs,max_abs,p95_abs
+denorm_action_chunk_delta,0.008788389153778553,0.30570125579833984,0.02444576937705277
+normalized_model_action_delta,0.011233600787818432,0.89453125,0.03125
+paired_determinism,0.0,0.0,
+reference_action_mean_abs,0.2252255529165268,,

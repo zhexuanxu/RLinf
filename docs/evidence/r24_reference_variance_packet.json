@@ -1,0 +1,50 @@
+{
+  "purpose": "Reference-repeat variance packet: the external openpi-comet-pytorch-mixed trainer, first-50 steps, two seeds, to bound the reference run-to-run envelope for the DEC-1(b) task15 decision (Codex R23-review).",
+  "reference_repo": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+  "venv": "/mnt/public/xzxuan/repos/openpi-comet/.venv (python 3.11.14)",
+  "recipe": "pi05_b1k-task0000_sft_pytorch_mixed; DIST_METHOD=fsdp1 USE_AUTOCAST=0 USE_PREFETCH=0 USE_CONSISTENT=0; 8 GPUs; torch.compile=default; fp32 master + bf16 compute; reduce_dtype=fp32 (the documented run.sh recipe).",
+  "command_seed42": "TMPDIR=/dev/shm/r24_tmp WANDB_MODE=disabled DIST_METHOD=fsdp1 USE_AUTOCAST=0 USE_PREFETCH=0 USE_CONSISTENT=0 CUDA_VISIBLE_DEVICES=0-7 torchrun --nproc_per_node=8 scripts/train_pytorch_new.py pi05_b1k-task0000_sft_pytorch_mixed --exp_name=r24_ref_seed42 --num_train_steps=200 --save_interval=100000 --log_interval=1 --checkpoint_base_dir=/mnt/public/xzxuan/tmp/r24_ref --no-wandb_enabled --overwrite",
+  "command_seed123": "same, plus --seed=123 --exp_name=r24_ref_seed123",
+  "output_logs": [
+    "/mnt/public/xzxuan/tmp/r24_ref_seed42.log",
+    "/mnt/public/xzxuan/tmp/r24_ref_seed123.log"
+  ],
+  "extraction": "tr CR->LF on the log; grep 'Step N:'; regex grad_norm/learning_rate/loss; first 50 steps -> r24_ref_seed{42,123}_first50.csv",
+  "tmpdir_note": "torch.compile's triton .so cannot be loaded from the /mnt/public GPFS/manila network FS; TMPDIR set to /dev/shm/r24_tmp (tmpfs, exec-allowed, 920G, NOT /tmp and NOT the 100G overlay) so the compiled .so loads. Large outputs (logs, checkpoints) stay on /mnt/public via explicit args. No checkpoints saved (killed before the final-step save).",
+  "hashes_sha256_16": {
+    "model.safetensors": "f6391204c480d6c5",
+    "norm_stats.json": "d66ed16830a98f90",
+    "paligemma_tokenizer.model": "8986bb4f423f07f8"
+  },
+  "results_first50": {
+    "seed42": {
+      "step0": 0.2461,
+      "step49": 0.0903,
+      "mean": 0.1675
+    },
+    "seed123": {
+      "step0": 0.2471,
+      "step49": 0.0928,
+      "mean": 0.1685
+    },
+    "committed_log_r16_ref": {
+      "step49": 0.0903,
+      "mean": 0.1675
+    },
+    "reference_run_to_run_spread": {
+      "per_step_mean": 0.0042,
+      "per_step_max": 0.0186,
+      "step49": 0.0024
+    },
+    "RLinf_postfix_r22": {
+      "step49": 0.0481,
+      "mean": 0.1506,
+      "inside_envelope": "1/50 (pad=0); 12/50 (pad=0.01); 22/50 (pad=0.02)"
+    },
+    "RLinf_prefix_r16_flat": {
+      "inside_envelope": "2/50 (pad=0); 9/50 (pad=0.02)"
+    }
+  },
+  "verdict": "The reference is highly reproducible across seeds (run-to-run spread ~0.0042 mean, ~0.0024 at step49; seed42/seed123/committed all reach ~0.09 at step49, mean ~0.168). RLinf-postfix descends FASTER and is OUTSIDE the reference run-to-run envelope (1/50 at pad=0). The benign 'noise/time RNG realization' hypothesis is REFUTED: RLinf's faster descent is a REAL systematic divergence, not run-to-run noise. The pre-fix flat curve is also outside (opposite direction). task15 NOT met; NO variance-backed pass-rule is justified.",
+  "next_localization": "The one untested difference vs the reference is torch.compile: the reference run (committed log + both replays) uses torch.compile=default; RLinf runs eager. A reference EAGER run (TORCH_COMPILE_MODE=null) to test whether compile causes the slower descent was attempted but did not complete this round (torchrun launch instability after many runs). This is the next localization step."
+}

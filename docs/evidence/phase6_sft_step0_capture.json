@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "world_size": 8,
+  "per_rank_frame_count": [
+    32,
+    32,
+    32,
+    32,
+    32,
+    32,
+    32,
+    32
+  ],
+  "per_rank_frame_hash": [
+    "71b881c60a90158f",
+    "31e1987673ce5594",
+    "81379f1178c09f22",
+    "7eb93fc51b253a3b",
+    "77b23114c217aa89",
+    "f9fc476852a6974f",
+    "f3610103f01dc804",
+    "21c1447fd21721af"
+  ],
+  "global_unique_frames": 256,
+  "expected_global_batch": 256,
+  "rank_disjoint": true,
+  "global_set_hash": "459e94233e931cb3ea0636fb96a7e7178dea5d86da4800ad198b06e4f3fca640",
+  "fix_exercised": true,
+  "step0": {
+    "loss": 0.3275146484375,
+    "grad_norm": 6.690909385681152,
+    "lr": 2.4975024714990468e-08
+  }
+}

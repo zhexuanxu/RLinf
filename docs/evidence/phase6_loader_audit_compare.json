@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "audited_steps": 4,
+  "steps_matched": 0,
+  "all_steps_identical": false,
+  "frame_identity_comparable": false,
+  "cross_dump_distinct_overlap": 0,
+  "rlinf_total_distinct": 1024,
+  "ref_total_distinct": 1024,
+  "verdict": "INCONCLUSIVE_FRAME_IDENTITY_NOT_BYTE_COMPARABLE",
+  "first_mismatch": {
+    "step": 0,
+    "rlinf_only_sample": [
+      "0028d960f13c5ad8",
+      "007f2b3c4aa7b26d",
+      "01c8127d3270a8d3",
+      "025697fc143c5ab5",
+      "034f4ea68af3d187",
+      "04e798e20679869d"
+    ],
+    "ref_only_sample": [
+      "020b04fc06224643",
+      "03c3e9ba0f34c8e9",
+      "03f7b55b6d8485bd",
+      "054d79a0475271e3",
+      "07efd77e5f5ee0d3",
+      "0ab69f37cbe5994a"
+    ],
+    "symmetric_difference_sample": [
+      "0028d960f13c5ad8",
+      "007f2b3c4aa7b26d",
+      "01c8127d3270a8d3",
+      "020b04fc06224643",
+      "025697fc143c5ab5",
+      "034f4ea68af3d187",
+      "03c3e9ba0f34c8e9",
+      "03f7b55b6d8485bd",
+      "04e798e20679869d",
+      "054d79a0475271e3",
+      "06a1d050cbb19bbe",
+      "06ae793662cc7066"
+    ]
+  },
+  "mean_jaccard_overlap": 0.0,
+  "rlinf_distinct_per_step": [
+    256,
+    256,
+    256,
+    256
+  ],
+  "ref_distinct_per_step": [
+    256,
+    256,
+    256,
+    256
+  ],
+  "per_step": [
+    {
+      "step": 0,
+      "rlinf_distinct": 256,
+      "ref_distinct": 256,
+      "match": false,
+      "jaccard": 0.0
+    },
+    {
+      "step": 1,
+      "rlinf_distinct": 256,
+      "ref_distinct": 256,
+      "match": false,
+      "jaccard": 0.0
+    },
+    {
+      "step": 2,
+      "rlinf_distinct": 256,
+      "ref_distinct": 256,
+      "match": false,
+      "jaccard": 0.0
+    },
+    {
+      "step": 3,
+      "rlinf_distinct": 256,
+      "ref_distinct": 256,
+      "match": false,
+      "jaccard": 0.0
+    }
+  ],
+  "sources": {
+    "rlinf": {
+      "seed": 42,
+      "num_workers": null,
+      "world_size": 8
+    },
+    "ref": {
+      "config": "pi05_b1k-turning_on_radio_cs32_bs32_lr2.5e-5_step30k",
+      "world_size": 8,
+      "num_workers": 8
+    }
+  }
+}

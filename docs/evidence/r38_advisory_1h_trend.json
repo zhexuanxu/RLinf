@@ -1,0 +1,32 @@
+{
+  "purpose": "R38 ADVISORY ~1h long-run loss-trend evidence (DEC-1(c) advisory tier, never a CI gate): the NORMAL unpinned use_skill:false 8-GPU production SFT (train_vla_sft.py --config-name behavior_pi05_vla) run for a ~1h window, with its per-step train/loss trend compared in DIRECTION/shape to the reference long-run log. This is an advisory direction match, not a hard per-step gate.",
+  "provenance": {
+    "run_command": "python examples/sft/train_vla_sft.py --config-name behavior_pi05_vla runner.max_steps=800 runner.save_interval=100000 runner.logger.log_path=/mnt/public/xzxuan/tmp/r38_advisory_sft_results (8x A800, seed 42, FSDP FULL_SHARD bf16, NORMAL unpinned use_skill:false production recipe)",
+    "run_returncode": "0",
+    "rlinf_git_rev": "5109731f",
+    "tensorboard_event_file": "/mnt/public/xzxuan/tmp/r38_advisory_sft_results/tensorboard/events.out.tfevents.1780648917.is-dcvh2anfn7ushuq7-devmachine-0.2460265.0",
+    "loss_tag": "train/loss (rank-AVG)",
+    "reference_log": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/logs/pi05_b1k-pt-2k-8gpu-fmp-wo_prefetch-xzx.log",
+    "reference_git_rev": "cd99b39",
+    "model": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
+    "model_sha256_16": "f6391204c480d6c5",
+    "norm_stats": "/mnt/public/xzxuan/models/pi05-b1kpt50-cs32/assets/behavior-1k/2025-challenge-demos/norm_stats.json",
+    "norm_stats_sha256_16": "d66ed16830a98f90",
+    "tokenizer": "/mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model",
+    "tokenizer_sha256_16": "8986bb4f423f07f8",
+    "steps_run": 800,
+    "out_csv": "docs/evidence/r38_advisory_1h_trend.csv"
+  },
+  "trend": {
+    "rlinf_steps": 800,
+    "reference_steps_aligned": 800,
+    "rlinf_first10_mean": 0.239661,
+    "rlinf_last50_mean": 0.011717,
+    "reference_first10_mean": 0.243848,
+    "reference_last50_mean": 0.018188,
+    "both_descend": true,
+    "pearson_correlation_aligned": 0.97494,
+    "within_0.03_aligned": "788/800"
+  },
+  "verdict": "ADVISORY TREND MATCH: over the ~1h window the unpinned RLinf use_skill:false loss descends with the same direction as the reference (RLinf first10-mean 0.2397 -> last50-mean 0.0117; reference 0.2438 -> 0.0182; aligned-curve Pearson r=0.975). This is the DEC-1(c) advisory tier -- a direction/shape match over the long run, not a hard per-step gate (the two production runs use independent noise/time + shuffle, so per-step values differ; 788/800 aligned steps are within 0.03, reported for context only)."
+}

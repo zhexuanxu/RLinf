@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "audited_steps": 30000,
+  "epoch_len": 1679,
+  "global_rolling_hash_match": true,
+  "identical_prefix_steps": 30000,
+  "identical_full": true,
+  "identical_first_epoch": true,
+  "first_divergence_cause": null,
+  "frame_identity_comparable": true,
+  "cross_dump_distinct_overlap": 429928,
+  "rank_assignment_relation": "identical-order",
+  "verdict": "IDENTICAL_MULTISET",
+  "first_mismatch": null,
+  "rlinf": {
+    "schema_version": 2,
+    "audited_steps": 30000,
+    "num_workers": 8,
+    "global_rolling_hash": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",
+    "min_distinct": 256,
+    "max_distinct": 256
+  },
+  "ref": {
+    "schema_version": 2,
+    "audited_steps": 30000,
+    "num_workers": 8,
+    "global_rolling_hash": "958e67bd25d64dbab2827b3d53591aed656ef4bfa6b1b18aa9d3b2d9d81a60c8",
+    "min_distinct": 256,
+    "max_distinct": 256
+  }
+}

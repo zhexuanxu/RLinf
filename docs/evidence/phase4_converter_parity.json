@@ -1,0 +1,32 @@
+{
+  "consolidated_checkpoint": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/sft_behavior_pi05_vla/checkpoints/global_step_30000/actor/model_state_dict/full_weights.pt",
+  "converted_checkpoint": "/mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new/model.safetensors",
+  "description": "Value-parity of sft_to_new_pytorch.py: the converter's only value transform is strip-wrapper-prefix + bf16 cast. Weight identity proves value-losslessness up to that cast; the structural and forward checks confirm the converted checkpoint loads and behaves identically.",
+  "forward_parity": {
+    "denormalized_action_max_abs_diff": 0.0,
+    "loss_max_abs_diff": 0.0,
+    "normalized_action_max_abs_diff": 0.0,
+    "num_steps": 5,
+    "tolerance": 0.01,
+    "wrapper": {
+      "eval_denormalized_action_max_abs_diff": 0.0,
+      "eval_normalized_model_action_max_abs_diff": 0.0,
+      "sft_loss_max_abs_diff": 0.0
+    }
+  },
+  "structural_match": {
+    "dtypes_equal": true,
+    "key_set_equal": true,
+    "n_keys": 667,
+    "reference_checkpoint": "/mnt/public/xzxuan/models/ckpt/jax_task0000_sft_29999_ptnew/model.safetensors",
+    "shapes_equal": true
+  },
+  "weight_identity": {
+    "all_bf16": true,
+    "bitwise_lossless": true,
+    "key_map_is_prefix_strip_bijection": true,
+    "max_abs_diff_vs_bf16_cast": 0.0,
+    "n_tensors": 667,
+    "no_wrapper_prefix_survives": true
+  }
+}

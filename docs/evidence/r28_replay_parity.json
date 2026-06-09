@@ -1,0 +1,234 @@
+{
+  "purpose": "R28 MEASURED same-input N-step training replay: RLinf Pi0 vs the reference models_pytorch_new.Pi0 run the IDENTICAL fixed batches + fixed noise/time from identical base weights for N steps with the SAME fp32-master + bf16-compute + AdamW + clip + warmup-LR loop. Tests whether the model+optimizer+clip+LR stacks produce the same trajectory on identical inputs. Single-GPU; does NOT exercise the 8-rank FSDP all-reduce (R29).",
+  "provenance": {
+    "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_replay_parity_probe.py --out docs/evidence/r28_replay_parity.json",
+    "repo_cwd": "/mnt/public/xzxuan/repos/RLinf_pi05",
+    "reference_venv": "/mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python",
+    "reference_src": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+    "reference_dumper": "tests/unit_tests/_ref_train_replay_dump.py",
+    "ref_subprocess_returncode": 0,
+    "base_weights": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
+    "base_weights_sha256_16": "f6391204c480d6c5",
+    "config": "pi05_b1k-turning_on_radio_cs32_bs32_lr2.5e-5_step30k",
+    "n_steps": 20,
+    "batch_size": 8,
+    "seed": 1234,
+    "optimizer": "torch.optim.AdamW betas=(0.9, 0.95) eps=1e-08 wd=1e-10",
+    "clip": 1.0,
+    "lr": "openpi_cosine warmup peak=2.5e-05 warmup=1000 init=peak/(warmup+1)",
+    "model_ref": "openpi.models_pytorch_new.pi0.Pi0 (fp32 master + bf16 compute, train=True/rng=None)",
+    "batches_npz": "/mnt/public/xzxuan/tmp/ref_replay_batches.npz",
+    "batches_npz_sha256_16": "26cf5f0f837b78fe",
+    "noise_time_npz": "/mnt/public/xzxuan/tmp/ref_replay_noise_time.npz",
+    "noise_time_npz_sha256_16": "6addc8c0c88e1cb6",
+    "output": "docs/evidence/r28_replay_parity.json"
+  },
+  "ref_dump": "tests/unit_tests/_ref_train_replay_dump.py (reference venv)",
+  "rlinf_probe": "tools/sft_replay_parity_probe.py",
+  "steps": [
+    {
+      "step": 0,
+      "ref_loss": 0.356552,
+      "rlinf_loss": 0.356049,
+      "abs_loss_diff": 0.000504,
+      "ref_grad_norm": 25.83257,
+      "rlinf_grad_norm": 25.78309,
+      "abs_grad_norm_diff": 0.04948,
+      "lr": 2.4975024975024977e-08
+    },
+    {
+      "step": 1,
+      "ref_loss": 0.347828,
+      "rlinf_loss": 0.347813,
+      "abs_loss_diff": 1.5e-05,
+      "ref_grad_norm": 24.91645,
+      "rlinf_grad_norm": 24.58755,
+      "abs_grad_norm_diff": 0.32891,
+      "lr": 4.9950049950049954e-08
+    },
+    {
+      "step": 2,
+      "ref_loss": 0.323969,
+      "rlinf_loss": 0.325455,
+      "abs_loss_diff": 0.001486,
+      "ref_grad_norm": 18.86106,
+      "rlinf_grad_norm": 19.28951,
+      "abs_grad_norm_diff": 0.42845,
+      "lr": 7.492507492507493e-08
+    },
+    {
+      "step": 3,
+      "ref_loss": 0.273298,
+      "rlinf_loss": 0.270826,
+      "abs_loss_diff": 0.002472,
+      "ref_grad_norm": 17.12322,
+      "rlinf_grad_norm": 16.96693,
+      "abs_grad_norm_diff": 0.15629,
+      "lr": 9.990009990009991e-08
+    },
+    {
+      "step": 4,
+      "ref_loss": 0.324265,
+      "rlinf_loss": 0.324207,
+      "abs_loss_diff": 5.7e-05,
+      "ref_grad_norm": 15.86338,
+      "rlinf_grad_norm": 15.57997,
+      "abs_grad_norm_diff": 0.28341,
+      "lr": 1.2487512487512489e-07
+    },
+    {
+      "step": 5,
+      "ref_loss": 0.307434,
+      "rlinf_loss": 0.309814,
+      "abs_loss_diff": 0.00238,
+      "ref_grad_norm": 12.60994,
+      "rlinf_grad_norm": 12.4062,
+      "abs_grad_norm_diff": 0.20374,
+      "lr": 1.4985014985014986e-07
+    },
+    {
+      "step": 6,
+      "ref_loss": 0.296413,
+      "rlinf_loss": 0.295305,
+      "abs_loss_diff": 0.001108,
+      "ref_grad_norm": 14.72868,
+      "rlinf_grad_norm": 15.06362,
+      "abs_grad_norm_diff": 0.33494,
+      "lr": 1.7482517482517484e-07
+    },
+    {
+      "step": 7,
+      "ref_loss": 0.288883,
+      "rlinf_loss": 0.289564,
+      "abs_loss_diff": 0.000681,
+      "ref_grad_norm": 12.87963,
+      "rlinf_grad_norm": 12.56832,
+      "abs_grad_norm_diff": 0.31131,
+      "lr": 1.998001998001998e-07
+    },
+    {
+      "step": 8,
+      "ref_loss": 0.302902,
+      "rlinf_loss": 0.302256,
+      "abs_loss_diff": 0.000647,
+      "ref_grad_norm": 13.46132,
+      "rlinf_grad_norm": 13.39382,
+      "abs_grad_norm_diff": 0.0675,
+      "lr": 2.2477522477522477e-07
+    },
+    {
+      "step": 9,
+      "ref_loss": 0.294182,
+      "rlinf_loss": 0.293892,
+      "abs_loss_diff": 0.00029,
+      "ref_grad_norm": 6.94496,
+      "rlinf_grad_norm": 7.22569,
+      "abs_grad_norm_diff": 0.28073,
+      "lr": 2.4975024975024977e-07
+    },
+    {
+      "step": 10,
+      "ref_loss": 0.234264,
+      "rlinf_loss": 0.234251,
+      "abs_loss_diff": 1.3e-05,
+      "ref_grad_norm": 6.50474,
+      "rlinf_grad_norm": 6.67298,
+      "abs_grad_norm_diff": 0.16824,
+      "lr": 2.7472527472527475e-07
+    },
+    {
+      "step": 11,
+      "ref_loss": 0.42897,
+      "rlinf_loss": 0.428886,
+      "abs_loss_diff": 8.4e-05,
+      "ref_grad_norm": 9.63502,
+      "rlinf_grad_norm": 9.57371,
+      "abs_grad_norm_diff": 0.06131,
+      "lr": 2.997002997002997e-07
+    },
+    {
+      "step": 12,
+      "ref_loss": 0.267608,
+      "rlinf_loss": 0.266887,
+      "abs_loss_diff": 0.000721,
+      "ref_grad_norm": 8.79797,
+      "rlinf_grad_norm": 8.9382,
+      "abs_grad_norm_diff": 0.14023,
+      "lr": 3.246753246753247e-07
+    },
+    {
+      "step": 13,
+      "ref_loss": 0.275146,
+      "rlinf_loss": 0.274997,
+      "abs_loss_diff": 0.00015,
+      "ref_grad_norm": 4.06401,
+      "rlinf_grad_norm": 4.04647,
+      "abs_grad_norm_diff": 0.01755,
+      "lr": 3.4965034965034963e-07
+    },
+    {
+      "step": 14,
+      "ref_loss": 0.269211,
+      "rlinf_loss": 0.268826,
+      "abs_loss_diff": 0.000385,
+      "ref_grad_norm": 4.00175,
+      "rlinf_grad_norm": 3.99963,
+      "abs_grad_norm_diff": 0.00212,
+      "lr": 3.746253746253746e-07
+    },
+    {
+      "step": 15,
+      "ref_loss": 0.269503,
+      "rlinf_loss": 0.269287,
+      "abs_loss_diff": 0.000216,
+      "ref_grad_norm": 4.18577,
+      "rlinf_grad_norm": 4.1753,
+      "abs_grad_norm_diff": 0.01047,
+      "lr": 3.996003996003996e-07
+    },
+    {
+      "step": 16,
+      "ref_loss": 0.286858,
+      "rlinf_loss": 0.286346,
+      "abs_loss_diff": 0.000511,
+      "ref_grad_norm": 3.7965,
+      "rlinf_grad_norm": 3.77981,
+      "abs_grad_norm_diff": 0.01669,
+      "lr": 4.2457542457542456e-07
+    },
+    {
+      "step": 17,
+      "ref_loss": 0.268255,
+      "rlinf_loss": 0.268538,
+      "abs_loss_diff": 0.000282,
+      "ref_grad_norm": 6.45683,
+      "rlinf_grad_norm": 6.27973,
+      "abs_grad_norm_diff": 0.1771,
+      "lr": 4.4955044955044954e-07
+    },
+    {
+      "step": 18,
+      "ref_loss": 0.353611,
+      "rlinf_loss": 0.353714,
+      "abs_loss_diff": 0.000103,
+      "ref_grad_norm": 15.89425,
+      "rlinf_grad_norm": 16.19102,
+      "abs_grad_norm_diff": 0.29678,
+      "lr": 4.745254745254745e-07
+    },
+    {
+      "step": 19,
+      "ref_loss": 0.296928,
+      "rlinf_loss": 0.296303,
+      "abs_loss_diff": 0.000626,
+      "ref_grad_norm": 11.29223,
+      "rlinf_grad_norm": 11.28811,
+      "abs_grad_norm_diff": 0.00412,
+      "lr": 4.995004995004995e-07
+    }
+  ],
+  "mean_abs_loss_diff": 0.000637,
+  "max_abs_loss_diff": 0.002472,
+  "final_step_loss_gap_ref_minus_rlinf": 0.000625,
+  "verdict": "SAME-INPUT TRAJECTORIES MATCH: on the identical batches + noise/time + base weights, RLinf's Pi0 and the reference models_pytorch_new.Pi0 produce the same N-step loss trajectory (mean |\u0394loss|=0.00064, max |\u0394loss|=0.00247 over 20 steps; grad norms track within bf16 noise). So the single-GPU model + optimizer + clip + LR stack is EQUIVALENT on identical inputs (extending R26's single-step backward parity to the multi-step optimizer loop), and is RULED OUT as the cause of the production first-50 divergence. This is MEASURED (not code reading) and resolves the R27 contradiction: given truly identical inputs the two stacks descend identically, so RLinf does NOT 'descend faster on the same data' at the single-GPU stack level. What this does NOT prove (no overclaim): the two REMAINING candidates are (a) the per-step INPUT each loader/RNG feeds in production (R19 proved frame-SET identity for the rank-independent control, but NOT per-step-batch + noise/time identity), and (b) the 8-rank FSDP sharding / all-reduce, which this single-GPU probe does NOT exercise. NEXT (R29): (a) replay the reference's EXACT production first-N batch/noise/time sequence through RLinf and check it tracks the reference; (b) run the 8-rank FSDP step comparison. task15 stays open until one of those proves the mechanism or an accepted plan evolution is recorded."
+}

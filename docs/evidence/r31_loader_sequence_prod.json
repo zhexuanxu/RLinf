@@ -1,0 +1,395 @@
+{
+  "purpose": "R31 loader-sequence replay at GLOBAL batch 256 -- NOT production topology (corrected; see R32). This probe ran the RLinf loader in a single non-distributed process (world_size=1) and the reference loader with num_workers=0, so the per-step batch composition is NOT the production 8-rank / num_workers=8 rank/worker-aware partition. R32 (docs/evidence/r32_loader_topology.json) showed BOTH production loaders are rank-replicated (effective batch 32) and feed the SAME rank-0 frames, REFUTING this artifact's loader-difference conclusion. Retained only as a record of the global-256 replay.",
+  "provenance": {
+    "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_loader_sequence_prod_probe.py --out docs/evidence/r31_loader_sequence_prod.json",
+    "repo_cwd": "/mnt/public/xzxuan/repos/RLinf_pi05",
+    "reference_venv": "/mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python",
+    "reference_src": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+    "reference_dumper": "tests/unit_tests/_ref_seq_batch_dump.py",
+    "ref_subprocess_returncode": "reused",
+    "rlinf_loader": "create_behavior_sft_data_loader run in a SINGLE non-distributed process (world_size=1), 8 sequential micro-batches grouped per global step -- this is NOT the production 8-rank rank-aware partition (BehaviorSftDataset folds rank/world_size/worker_id; at world_size=1 it streams ALL chunks, not rank 0's 1/8). The earlier 'equivalent to build_behavior_sft_dataloader' claim is WITHDRAWN -- build_behavior_sft_dataloader runs under the production 8-rank/num_workers=8 topology.",
+    "global_batch": 256,
+    "micro_chunk": 32,
+    "n_chunks_per_step": 8,
+    "grad_accumulation": "8 chunks x 32; chunk loss scaled by 32/256; accumulated grad = 256-sample mean; logged loss = 256-sample mean.",
+    "base_weights": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
+    "base_weights_sha256_16": "f6391204c480d6c5",
+    "n_steps": 50,
+    "noise_time_seed": 1234,
+    "ref_seq_npz": "/mnt/public/xzxuan/tmp/ref_seq_batches.npz",
+    "ref_seq_npz_sha256_16": "e49d72fccfd3ddc0",
+    "loop": "fp32 weights + autocast bf16; torch.optim.AdamW(0.9,0.95)/eps1e-8/wd1e-10; clip_grad_norm_(1.0); openpi_cosine warmup peak=2.5e-5 warmup=1000",
+    "deviations_from_production": "NOT production topology: RLinf world_size=1 (vs 8) and reference num_workers=0 (vs 8); plus the global-256 batch is wrong (R32: production effective batch is 32, rank-replicated). Also fixed shared noise/time (vs internal) and fp32+autocast (vs FSDP MixedPrecision).",
+    "output": "docs/evidence/r31_loader_sequence_prod.json"
+  },
+  "reference_loader_vs_r24_production": {
+    "replay_last10_mean": 0.105566,
+    "curve_last10_mean": 0.10166,
+    "abs_last_mean_diff": 0.003906,
+    "max_abs_per_step_diff": 0.134999,
+    "tracks": true
+  },
+  "rlinf_loader_vs_r22_production": {
+    "replay_last10_mean": 0.089196,
+    "curve_last10_mean": 0.072876,
+    "abs_last_mean_diff": 0.01632,
+    "max_abs_per_step_diff": 0.143314,
+    "tracks": true
+  },
+  "steps": [
+    {
+      "step": 0,
+      "ref_loader_loss": 0.312417,
+      "rlinf_loader_loss": 0.220302,
+      "r24_ref_prod": 0.246094,
+      "r22_rlinf_prod": 0.230591
+    },
+    {
+      "step": 1,
+      "ref_loader_loss": 0.370351,
+      "rlinf_loader_loss": 0.220421,
+      "r24_ref_prod": 0.235352,
+      "r22_rlinf_prod": 0.208984
+    },
+    {
+      "step": 2,
+      "ref_loader_loss": 0.339206,
+      "rlinf_loader_loss": 0.239288,
+      "r24_ref_prod": 0.246094,
+      "r22_rlinf_prod": 0.217407
+    },
+    {
+      "step": 3,
+      "ref_loader_loss": 0.263202,
+      "rlinf_loader_loss": 0.234141,
+      "r24_ref_prod": 0.240234,
+      "r22_rlinf_prod": 0.232178
+    },
+    {
+      "step": 4,
+      "ref_loader_loss": 0.208155,
+      "rlinf_loader_loss": 0.232716,
+      "r24_ref_prod": 0.24707,
+      "r22_rlinf_prod": 0.231934
+    },
+    {
+      "step": 5,
+      "ref_loader_loss": 0.182795,
+      "rlinf_loader_loss": 0.236928,
+      "r24_ref_prod": 0.239258,
+      "r22_rlinf_prod": 0.203247
+    },
+    {
+      "step": 6,
+      "ref_loader_loss": 0.226032,
+      "rlinf_loader_loss": 0.236364,
+      "r24_ref_prod": 0.227539,
+      "r22_rlinf_prod": 0.265869
+    },
+    {
+      "step": 7,
+      "ref_loader_loss": 0.330548,
+      "rlinf_loader_loss": 0.227166,
+      "r24_ref_prod": 0.24707,
+      "r22_rlinf_prod": 0.176025
+    },
+    {
+      "step": 8,
+      "ref_loader_loss": 0.253796,
+      "rlinf_loader_loss": 0.216045,
+      "r24_ref_prod": 0.25,
+      "r22_rlinf_prod": 0.216553
+    },
+    {
+      "step": 9,
+      "ref_loader_loss": 0.316041,
+      "rlinf_loader_loss": 0.229763,
+      "r24_ref_prod": 0.259766,
+      "r22_rlinf_prod": 0.195068
+    },
+    {
+      "step": 10,
+      "ref_loader_loss": 0.251977,
+      "rlinf_loader_loss": 0.215142,
+      "r24_ref_prod": 0.248047,
+      "r22_rlinf_prod": 0.199951
+    },
+    {
+      "step": 11,
+      "ref_loader_loss": 0.209195,
+      "rlinf_loader_loss": 0.22069,
+      "r24_ref_prod": 0.251953,
+      "r22_rlinf_prod": 0.236938
+    },
+    {
+      "step": 12,
+      "ref_loader_loss": 0.295177,
+      "rlinf_loader_loss": 0.214146,
+      "r24_ref_prod": 0.236328,
+      "r22_rlinf_prod": 0.212646
+    },
+    {
+      "step": 13,
+      "ref_loader_loss": 0.304404,
+      "rlinf_loader_loss": 0.213615,
+      "r24_ref_prod": 0.237305,
+      "r22_rlinf_prod": 0.190796
+    },
+    {
+      "step": 14,
+      "ref_loader_loss": 0.205873,
+      "rlinf_loader_loss": 0.202975,
+      "r24_ref_prod": 0.213867,
+      "r22_rlinf_prod": 0.216431
+    },
+    {
+      "step": 15,
+      "ref_loader_loss": 0.183772,
+      "rlinf_loader_loss": 0.185959,
+      "r24_ref_prod": 0.198242,
+      "r22_rlinf_prod": 0.148804
+    },
+    {
+      "step": 16,
+      "ref_loader_loss": 0.165735,
+      "rlinf_loader_loss": 0.178951,
+      "r24_ref_prod": 0.191406,
+      "r22_rlinf_prod": 0.185425
+    },
+    {
+      "step": 17,
+      "ref_loader_loss": 0.230727,
+      "rlinf_loader_loss": 0.179584,
+      "r24_ref_prod": 0.185547,
+      "r22_rlinf_prod": 0.168823
+    },
+    {
+      "step": 18,
+      "ref_loader_loss": 0.218709,
+      "rlinf_loader_loss": 0.173541,
+      "r24_ref_prod": 0.174805,
+      "r22_rlinf_prod": 0.169556
+    },
+    {
+      "step": 19,
+      "ref_loader_loss": 0.216838,
+      "rlinf_loader_loss": 0.171139,
+      "r24_ref_prod": 0.179688,
+      "r22_rlinf_prod": 0.314453
+    },
+    {
+      "step": 20,
+      "ref_loader_loss": 0.14939,
+      "rlinf_loader_loss": 0.15532,
+      "r24_ref_prod": 0.166992,
+      "r22_rlinf_prod": 0.182251
+    },
+    {
+      "step": 21,
+      "ref_loader_loss": 0.252324,
+      "rlinf_loader_loss": 0.158409,
+      "r24_ref_prod": 0.160156,
+      "r22_rlinf_prod": 0.181274
+    },
+    {
+      "step": 22,
+      "ref_loader_loss": 0.261399,
+      "rlinf_loader_loss": 0.159178,
+      "r24_ref_prod": 0.157227,
+      "r22_rlinf_prod": 0.165894
+    },
+    {
+      "step": 23,
+      "ref_loader_loss": 0.182796,
+      "rlinf_loader_loss": 0.1624,
+      "r24_ref_prod": 0.176758,
+      "r22_rlinf_prod": 0.11908
+    },
+    {
+      "step": 24,
+      "ref_loader_loss": 0.184412,
+      "rlinf_loader_loss": 0.16695,
+      "r24_ref_prod": 0.174805,
+      "r22_rlinf_prod": 0.148682
+    },
+    {
+      "step": 25,
+      "ref_loader_loss": 0.188054,
+      "rlinf_loader_loss": 0.159872,
+      "r24_ref_prod": 0.168945,
+      "r22_rlinf_prod": 0.124939
+    },
+    {
+      "step": 26,
+      "ref_loader_loss": 0.163697,
+      "rlinf_loader_loss": 0.159819,
+      "r24_ref_prod": 0.178711,
+      "r22_rlinf_prod": 0.15564
+    },
+    {
+      "step": 27,
+      "ref_loader_loss": 0.154558,
+      "rlinf_loader_loss": 0.148533,
+      "r24_ref_prod": 0.162109,
+      "r22_rlinf_prod": 0.2146
+    },
+    {
+      "step": 28,
+      "ref_loader_loss": 0.147384,
+      "rlinf_loader_loss": 0.13777,
+      "r24_ref_prod": 0.154297,
+      "r22_rlinf_prod": 0.137329
+    },
+    {
+      "step": 29,
+      "ref_loader_loss": 0.198046,
+      "rlinf_loader_loss": 0.130277,
+      "r24_ref_prod": 0.146484,
+      "r22_rlinf_prod": 0.115662
+    },
+    {
+      "step": 30,
+      "ref_loader_loss": 0.167269,
+      "rlinf_loader_loss": 0.131092,
+      "r24_ref_prod": 0.132812,
+      "r22_rlinf_prod": 0.123657
+    },
+    {
+      "step": 31,
+      "ref_loader_loss": 0.150174,
+      "rlinf_loader_loss": 0.115658,
+      "r24_ref_prod": 0.119141,
+      "r22_rlinf_prod": 0.100525
+    },
+    {
+      "step": 32,
+      "ref_loader_loss": 0.167637,
+      "rlinf_loader_loss": 0.110907,
+      "r24_ref_prod": 0.114746,
+      "r22_rlinf_prod": 0.117737
+    },
+    {
+      "step": 33,
+      "ref_loader_loss": 0.105479,
+      "rlinf_loader_loss": 0.113019,
+      "r24_ref_prod": 0.115234,
+      "r22_rlinf_prod": 0.092834
+    },
+    {
+      "step": 34,
+      "ref_loader_loss": 0.120057,
+      "rlinf_loader_loss": 0.110128,
+      "r24_ref_prod": 0.117676,
+      "r22_rlinf_prod": 0.109131
+    },
+    {
+      "step": 35,
+      "ref_loader_loss": 0.122475,
+      "rlinf_loader_loss": 0.119104,
+      "r24_ref_prod": 0.125977,
+      "r22_rlinf_prod": 0.147339
+    },
+    {
+      "step": 36,
+      "ref_loader_loss": 0.141389,
+      "rlinf_loader_loss": 0.104666,
+      "r24_ref_prod": 0.111816,
+      "r22_rlinf_prod": 0.107971
+    },
+    {
+      "step": 37,
+      "ref_loader_loss": 0.103164,
+      "rlinf_loader_loss": 0.099857,
+      "r24_ref_prod": 0.104004,
+      "r22_rlinf_prod": 0.07782
+    },
+    {
+      "step": 38,
+      "ref_loader_loss": 0.092814,
+      "rlinf_loader_loss": 0.097369,
+      "r24_ref_prod": 0.105469,
+      "r22_rlinf_prod": 0.086426
+    },
+    {
+      "step": 39,
+      "ref_loader_loss": 0.111831,
+      "rlinf_loader_loss": 0.101585,
+      "r24_ref_prod": 0.109375,
+      "r22_rlinf_prod": 0.070984
+    },
+    {
+      "step": 40,
+      "ref_loader_loss": 0.134465,
+      "rlinf_loader_loss": 0.101063,
+      "r24_ref_prod": 0.111328,
+      "r22_rlinf_prod": 0.093018
+    },
+    {
+      "step": 41,
+      "ref_loader_loss": 0.150686,
+      "rlinf_loader_loss": 0.100726,
+      "r24_ref_prod": 0.106445,
+      "r22_rlinf_prod": 0.072327
+    },
+    {
+      "step": 42,
+      "ref_loader_loss": 0.089803,
+      "rlinf_loader_loss": 0.096618,
+      "r24_ref_prod": 0.105957,
+      "r22_rlinf_prod": 0.077942
+    },
+    {
+      "step": 43,
+      "ref_loader_loss": 0.094022,
+      "rlinf_loader_loss": 0.090851,
+      "r24_ref_prod": 0.098145,
+      "r22_rlinf_prod": 0.123718
+    },
+    {
+      "step": 44,
+      "ref_loader_loss": 0.093184,
+      "rlinf_loader_loss": 0.099103,
+      "r24_ref_prod": 0.109863,
+      "r22_rlinf_prod": 0.074158
+    },
+    {
+      "step": 45,
+      "ref_loader_loss": 0.108106,
+      "rlinf_loader_loss": 0.095618,
+      "r24_ref_prod": 0.11377,
+      "r22_rlinf_prod": 0.050659
+    },
+    {
+      "step": 46,
+      "ref_loader_loss": 0.076428,
+      "rlinf_loader_loss": 0.08428,
+      "r24_ref_prod": 0.097168,
+      "r22_rlinf_prod": 0.05722
+    },
+    {
+      "step": 47,
+      "ref_loader_loss": 0.097427,
+      "rlinf_loader_loss": 0.076705,
+      "r24_ref_prod": 0.090332,
+      "r22_rlinf_prod": 0.042938
+    },
+    {
+      "step": 48,
+      "ref_loader_loss": 0.128299,
+      "rlinf_loader_loss": 0.073161,
+      "r24_ref_prod": 0.093262,
+      "r22_rlinf_prod": 0.088684
+    },
+    {
+      "step": 49,
+      "ref_loader_loss": 0.083242,
+      "rlinf_loader_loss": 0.07383,
+      "r24_ref_prod": 0.090332,
+      "r22_rlinf_prod": 0.048096
+    }
+  ],
+  "verdict": "SUPERSEDED / WITHDRAWN. This global-256 replay is NOT production-faithful: it bypassed the loader topology (RLinf world_size=1, reference num_workers=0) and used the wrong effective batch (256; R32 showed production is rank-replicated effective-32). Its loader-difference conclusion is REFUTED by R32 (both production loaders feed the SAME data). No conclusion should be drawn from this artifact; see docs/evidence/r32_loader_topology.json + r32_topology_replay.json.",
+  "caveats": "(1) Tracking is in the AGGREGATE (last-10 mean within 0.03), NOT step-by-step: the per-step max |\u0394| vs the production curve is ~0.135 (reference) / ~0.143 (RLinf) -- the replay's fixed shared noise/time + a different data shuffle than the exact production run make individual per-step losses differ, so the replay reproduces the production curves in aggregate, not per step. (2) The loader-driven gap at global-256 (~0.017 last-10) is MODEST -- smaller than R30's batch-16 gap (0.088) and than the production r22-vs-r24 step-49 gap (0.042) -- as expected when a larger batch averages out per-step composition differences; so the loader explains the DIRECTION and a portion of the magnitude, and the replay's single-GPU/fixed-noise deviations (R29 ~0.2%, R24 ~0.004) plus shuffle differences account for the rest. (3) The RLinf replay last-10 (0.089) sits above r22's last-10 (0.073), within 0.03 but not exact.",
+  "ac11_path_proposal": "WITHDRAWN. No AC-11 plan evolution is proposed on this artifact; the loader-composition hypothesis it supported is refuted by R32. task15 stays OPEN.",
+  "status_correction_R32": "See R32 (docs/evidence/r32_loader_topology.json): both production loaders rank-replicated + same frames -> this artifact's loader conclusion is refuted; all top-level fields above rewritten to mark R31 as a world_size=1/num_workers=0 probe."
+}

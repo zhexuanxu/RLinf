@@ -1,0 +1,441 @@
+{
+  "purpose": "R30 production-sequence replay: RLinf's Pi0 runs the SAME fp32-master+bf16 AdamW+clip+warmup-LR loop for N steps on the reference loader's batch sequence vs RLinf's own SFT loader's batch sequence, from identical base weights with the SAME fixed noise/time, so the ONLY variable is the per-step batch source. Tests whether the per-step INPUT (loader batch composition) drives the production faster-descent.",
+  "provenance": {
+    "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_loader_sequence_probe.py --out docs/evidence/r30_loader_sequence.json",
+    "repo_cwd": "/mnt/public/xzxuan/repos/RLinf_pi05",
+    "reference_venv": "/mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python",
+    "reference_src": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+    "reference_dumper": "tests/unit_tests/_ref_seq_batch_dump.py",
+    "ref_subprocess_returncode": 0,
+    "rlinf_loader": "rlinf.data.datasets.behavior.create_behavior_sft_data_loader (tasks=[turning_on_radio], use_skill:false default)",
+    "base_weights": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
+    "base_weights_sha256_16": "f6391204c480d6c5",
+    "n_steps": 50,
+    "batch_size": 16,
+    "noise_time_seed": 1234,
+    "task": "turning_on_radio (both loaders, the only difference is the loader)",
+    "ref_seq_npz": "/mnt/public/xzxuan/tmp/ref_seq_batches.npz",
+    "ref_seq_npz_sha256_16": "a19f33f5158d5cf0",
+    "rlinf_seq_npz": "/mnt/public/xzxuan/tmp/rlinf_seq_batches.npz",
+    "rlinf_seq_npz_sha256_16": "102fc587cce9b92c",
+    "loop": "fp32-master + bf16-compute, torch.optim.AdamW(betas=(0.9,0.95),eps=1e-8,wd=1e-10), clip_grad_norm_(1.0), openpi_cosine warmup LR peak=2.5e-5 warmup=1000",
+    "output": "docs/evidence/r30_loader_sequence.json"
+  },
+  "ref_loader_first5_mean": 0.262625,
+  "rlinf_loader_first5_mean": 0.189847,
+  "ref_loader_last5_mean": 0.161552,
+  "rlinf_loader_last5_mean": 0.073856,
+  "last5_gap_ref_minus_rlinf": 0.087696,
+  "committed_production_curves": {
+    "reference_r24_step49": 0.0903,
+    "rlinf_r22_step49": 0.0469,
+    "note": "production runs were 8-rank GLOBAL batch 256; THIS probe is single-GPU batch 16 (corrected: an earlier draft wrongly said batch-32), so absolute magnitudes are NOT comparable and the reference-loader trajectory does not track r24. R31 reruns at global 256."
+  },
+  "steps": [
+    {
+      "step": 0,
+      "ref_loader_loss": 0.251239,
+      "rlinf_loader_loss": 0.165404,
+      "loss_diff_ref_minus_rlinf": 0.085835,
+      "ref_loader_grad_norm": 13.01301,
+      "rlinf_loader_grad_norm": 1.8528
+    },
+    {
+      "step": 1,
+      "ref_loader_loss": 0.241072,
+      "rlinf_loader_loss": 0.1933,
+      "loss_diff_ref_minus_rlinf": 0.047772,
+      "ref_loader_grad_norm": 10.35685,
+      "rlinf_loader_grad_norm": 2.50283
+    },
+    {
+      "step": 2,
+      "ref_loader_loss": 0.299716,
+      "rlinf_loader_loss": 0.20881,
+      "loss_diff_ref_minus_rlinf": 0.090906,
+      "ref_loader_grad_norm": 13.56853,
+      "rlinf_loader_grad_norm": 2.18409
+    },
+    {
+      "step": 3,
+      "ref_loader_loss": 0.261431,
+      "rlinf_loader_loss": 0.180458,
+      "loss_diff_ref_minus_rlinf": 0.080973,
+      "ref_loader_grad_norm": 20.29912,
+      "rlinf_loader_grad_norm": 2.31676
+    },
+    {
+      "step": 4,
+      "ref_loader_loss": 0.259667,
+      "rlinf_loader_loss": 0.201263,
+      "loss_diff_ref_minus_rlinf": 0.058404,
+      "ref_loader_grad_norm": 13.51045,
+      "rlinf_loader_grad_norm": 2.04041
+    },
+    {
+      "step": 5,
+      "ref_loader_loss": 0.290695,
+      "rlinf_loader_loss": 0.190648,
+      "loss_diff_ref_minus_rlinf": 0.100047,
+      "ref_loader_grad_norm": 5.2748,
+      "rlinf_loader_grad_norm": 2.36074
+    },
+    {
+      "step": 6,
+      "ref_loader_loss": 0.23649,
+      "rlinf_loader_loss": 0.183016,
+      "loss_diff_ref_minus_rlinf": 0.053474,
+      "ref_loader_grad_norm": 4.92118,
+      "rlinf_loader_grad_norm": 2.0594
+    },
+    {
+      "step": 7,
+      "ref_loader_loss": 0.255454,
+      "rlinf_loader_loss": 0.20808,
+      "loss_diff_ref_minus_rlinf": 0.047374,
+      "ref_loader_grad_norm": 3.62153,
+      "rlinf_loader_grad_norm": 1.97525
+    },
+    {
+      "step": 8,
+      "ref_loader_loss": 0.237347,
+      "rlinf_loader_loss": 0.163434,
+      "loss_diff_ref_minus_rlinf": 0.073913,
+      "ref_loader_grad_norm": 3.92485,
+      "rlinf_loader_grad_norm": 1.76023
+    },
+    {
+      "step": 9,
+      "ref_loader_loss": 0.320675,
+      "rlinf_loader_loss": 0.201851,
+      "loss_diff_ref_minus_rlinf": 0.118824,
+      "ref_loader_grad_norm": 15.34083,
+      "rlinf_loader_grad_norm": 1.81227
+    },
+    {
+      "step": 10,
+      "ref_loader_loss": 0.230494,
+      "rlinf_loader_loss": 0.168125,
+      "loss_diff_ref_minus_rlinf": 0.062369,
+      "ref_loader_grad_norm": 13.17697,
+      "rlinf_loader_grad_norm": 1.62802
+    },
+    {
+      "step": 11,
+      "ref_loader_loss": 0.261392,
+      "rlinf_loader_loss": 0.183335,
+      "loss_diff_ref_minus_rlinf": 0.078057,
+      "ref_loader_grad_norm": 15.12926,
+      "rlinf_loader_grad_norm": 1.67004
+    },
+    {
+      "step": 12,
+      "ref_loader_loss": 0.215857,
+      "rlinf_loader_loss": 0.188872,
+      "loss_diff_ref_minus_rlinf": 0.026985,
+      "ref_loader_grad_norm": 7.58809,
+      "rlinf_loader_grad_norm": 1.47335
+    },
+    {
+      "step": 13,
+      "ref_loader_loss": 0.21068,
+      "rlinf_loader_loss": 0.212446,
+      "loss_diff_ref_minus_rlinf": -0.001766,
+      "ref_loader_grad_norm": 9.85602,
+      "rlinf_loader_grad_norm": 1.75148
+    },
+    {
+      "step": 14,
+      "ref_loader_loss": 0.189741,
+      "rlinf_loader_loss": 0.180446,
+      "loss_diff_ref_minus_rlinf": 0.009295,
+      "ref_loader_grad_norm": 4.93446,
+      "rlinf_loader_grad_norm": 1.89357
+    },
+    {
+      "step": 15,
+      "ref_loader_loss": 0.188039,
+      "rlinf_loader_loss": 0.179218,
+      "loss_diff_ref_minus_rlinf": 0.008821,
+      "ref_loader_grad_norm": 4.01806,
+      "rlinf_loader_grad_norm": 1.86865
+    },
+    {
+      "step": 16,
+      "ref_loader_loss": 0.197567,
+      "rlinf_loader_loss": 0.19719,
+      "loss_diff_ref_minus_rlinf": 0.000377,
+      "ref_loader_grad_norm": 2.50749,
+      "rlinf_loader_grad_norm": 2.15376
+    },
+    {
+      "step": 17,
+      "ref_loader_loss": 0.193729,
+      "rlinf_loader_loss": 0.195563,
+      "loss_diff_ref_minus_rlinf": -0.001834,
+      "ref_loader_grad_norm": 2.25947,
+      "rlinf_loader_grad_norm": 1.86294
+    },
+    {
+      "step": 18,
+      "ref_loader_loss": 0.179449,
+      "rlinf_loader_loss": 0.200906,
+      "loss_diff_ref_minus_rlinf": -0.021457,
+      "ref_loader_grad_norm": 2.29608,
+      "rlinf_loader_grad_norm": 2.07025
+    },
+    {
+      "step": 19,
+      "ref_loader_loss": 0.217491,
+      "rlinf_loader_loss": 0.211623,
+      "loss_diff_ref_minus_rlinf": 0.005868,
+      "ref_loader_grad_norm": 2.63784,
+      "rlinf_loader_grad_norm": 3.01443
+    },
+    {
+      "step": 20,
+      "ref_loader_loss": 0.181079,
+      "rlinf_loader_loss": 0.135018,
+      "loss_diff_ref_minus_rlinf": 0.046061,
+      "ref_loader_grad_norm": 2.2416,
+      "rlinf_loader_grad_norm": 1.60499
+    },
+    {
+      "step": 21,
+      "ref_loader_loss": 0.183166,
+      "rlinf_loader_loss": 0.141298,
+      "loss_diff_ref_minus_rlinf": 0.041868,
+      "ref_loader_grad_norm": 2.73125,
+      "rlinf_loader_grad_norm": 1.86101
+    },
+    {
+      "step": 22,
+      "ref_loader_loss": 0.195235,
+      "rlinf_loader_loss": 0.148178,
+      "loss_diff_ref_minus_rlinf": 0.047057,
+      "ref_loader_grad_norm": 2.99229,
+      "rlinf_loader_grad_norm": 1.6476
+    },
+    {
+      "step": 23,
+      "ref_loader_loss": 0.178001,
+      "rlinf_loader_loss": 0.123934,
+      "loss_diff_ref_minus_rlinf": 0.054067,
+      "ref_loader_grad_norm": 2.55577,
+      "rlinf_loader_grad_norm": 1.32303
+    },
+    {
+      "step": 24,
+      "ref_loader_loss": 0.227524,
+      "rlinf_loader_loss": 0.135743,
+      "loss_diff_ref_minus_rlinf": 0.091781,
+      "ref_loader_grad_norm": 2.26833,
+      "rlinf_loader_grad_norm": 1.38504
+    },
+    {
+      "step": 25,
+      "ref_loader_loss": 0.221197,
+      "rlinf_loader_loss": 0.116562,
+      "loss_diff_ref_minus_rlinf": 0.104635,
+      "ref_loader_grad_norm": 2.93025,
+      "rlinf_loader_grad_norm": 1.8222
+    },
+    {
+      "step": 26,
+      "ref_loader_loss": 0.227876,
+      "rlinf_loader_loss": 0.119695,
+      "loss_diff_ref_minus_rlinf": 0.108181,
+      "ref_loader_grad_norm": 2.81708,
+      "rlinf_loader_grad_norm": 1.79081
+    },
+    {
+      "step": 27,
+      "ref_loader_loss": 0.217207,
+      "rlinf_loader_loss": 0.108357,
+      "loss_diff_ref_minus_rlinf": 0.10885,
+      "ref_loader_grad_norm": 3.34821,
+      "rlinf_loader_grad_norm": 1.81567
+    },
+    {
+      "step": 28,
+      "ref_loader_loss": 0.153233,
+      "rlinf_loader_loss": 0.110377,
+      "loss_diff_ref_minus_rlinf": 0.042856,
+      "ref_loader_grad_norm": 2.36697,
+      "rlinf_loader_grad_norm": 1.62655
+    },
+    {
+      "step": 29,
+      "ref_loader_loss": 0.147143,
+      "rlinf_loader_loss": 0.106622,
+      "loss_diff_ref_minus_rlinf": 0.040521,
+      "ref_loader_grad_norm": 3.05244,
+      "rlinf_loader_grad_norm": 1.91643
+    },
+    {
+      "step": 30,
+      "ref_loader_loss": 0.135931,
+      "rlinf_loader_loss": 0.089125,
+      "loss_diff_ref_minus_rlinf": 0.046806,
+      "ref_loader_grad_norm": 2.69111,
+      "rlinf_loader_grad_norm": 1.40398
+    },
+    {
+      "step": 31,
+      "ref_loader_loss": 0.157496,
+      "rlinf_loader_loss": 0.11984,
+      "loss_diff_ref_minus_rlinf": 0.037656,
+      "ref_loader_grad_norm": 1.94167,
+      "rlinf_loader_grad_norm": 1.50557
+    },
+    {
+      "step": 32,
+      "ref_loader_loss": 0.167011,
+      "rlinf_loader_loss": 0.151222,
+      "loss_diff_ref_minus_rlinf": 0.015789,
+      "ref_loader_grad_norm": 1.93288,
+      "rlinf_loader_grad_norm": 2.75628
+    },
+    {
+      "step": 33,
+      "ref_loader_loss": 0.160811,
+      "rlinf_loader_loss": 0.122757,
+      "loss_diff_ref_minus_rlinf": 0.038054,
+      "ref_loader_grad_norm": 1.66236,
+      "rlinf_loader_grad_norm": 1.98713
+    },
+    {
+      "step": 34,
+      "ref_loader_loss": 0.148782,
+      "rlinf_loader_loss": 0.121515,
+      "loss_diff_ref_minus_rlinf": 0.027267,
+      "ref_loader_grad_norm": 1.57047,
+      "rlinf_loader_grad_norm": 1.90226
+    },
+    {
+      "step": 35,
+      "ref_loader_loss": 0.158337,
+      "rlinf_loader_loss": 0.077112,
+      "loss_diff_ref_minus_rlinf": 0.081225,
+      "ref_loader_grad_norm": 1.65493,
+      "rlinf_loader_grad_norm": 1.40174
+    },
+    {
+      "step": 36,
+      "ref_loader_loss": 0.149021,
+      "rlinf_loader_loss": 0.105528,
+      "loss_diff_ref_minus_rlinf": 0.043493,
+      "ref_loader_grad_norm": 1.65503,
+      "rlinf_loader_grad_norm": 1.94946
+    },
+    {
+      "step": 37,
+      "ref_loader_loss": 0.169777,
+      "rlinf_loader_loss": 0.083837,
+      "loss_diff_ref_minus_rlinf": 0.08594,
+      "ref_loader_grad_norm": 1.61449,
+      "rlinf_loader_grad_norm": 1.18074
+    },
+    {
+      "step": 38,
+      "ref_loader_loss": 0.136593,
+      "rlinf_loader_loss": 0.070675,
+      "loss_diff_ref_minus_rlinf": 0.065918,
+      "ref_loader_grad_norm": 1.04095,
+      "rlinf_loader_grad_norm": 1.04242
+    },
+    {
+      "step": 39,
+      "ref_loader_loss": 0.11956,
+      "rlinf_loader_loss": 0.060191,
+      "loss_diff_ref_minus_rlinf": 0.059369,
+      "ref_loader_grad_norm": 1.33656,
+      "rlinf_loader_grad_norm": 1.08966
+    },
+    {
+      "step": 40,
+      "ref_loader_loss": 0.21779,
+      "rlinf_loader_loss": 0.060646,
+      "loss_diff_ref_minus_rlinf": 0.157144,
+      "ref_loader_grad_norm": 2.13941,
+      "rlinf_loader_grad_norm": 1.01592
+    },
+    {
+      "step": 41,
+      "ref_loader_loss": 0.223644,
+      "rlinf_loader_loss": 0.050954,
+      "loss_diff_ref_minus_rlinf": 0.17269,
+      "ref_loader_grad_norm": 2.27477,
+      "rlinf_loader_grad_norm": 0.79943
+    },
+    {
+      "step": 42,
+      "ref_loader_loss": 0.185283,
+      "rlinf_loader_loss": 0.066168,
+      "loss_diff_ref_minus_rlinf": 0.119115,
+      "ref_loader_grad_norm": 2.13781,
+      "rlinf_loader_grad_norm": 0.93103
+    },
+    {
+      "step": 43,
+      "ref_loader_loss": 0.185473,
+      "rlinf_loader_loss": 0.074799,
+      "loss_diff_ref_minus_rlinf": 0.110674,
+      "ref_loader_grad_norm": 2.13575,
+      "rlinf_loader_grad_norm": 0.86774
+    },
+    {
+      "step": 44,
+      "ref_loader_loss": 0.188404,
+      "rlinf_loader_loss": 0.054362,
+      "loss_diff_ref_minus_rlinf": 0.134042,
+      "ref_loader_grad_norm": 2.2823,
+      "rlinf_loader_grad_norm": 1.17802
+    },
+    {
+      "step": 45,
+      "ref_loader_loss": 0.171296,
+      "rlinf_loader_loss": 0.058367,
+      "loss_diff_ref_minus_rlinf": 0.112929,
+      "ref_loader_grad_norm": 1.88655,
+      "rlinf_loader_grad_norm": 1.18421
+    },
+    {
+      "step": 46,
+      "ref_loader_loss": 0.174157,
+      "rlinf_loader_loss": 0.06604,
+      "loss_diff_ref_minus_rlinf": 0.108117,
+      "ref_loader_grad_norm": 1.78616,
+      "rlinf_loader_grad_norm": 0.82017
+    },
+    {
+      "step": 47,
+      "ref_loader_loss": 0.161202,
+      "rlinf_loader_loss": 0.093078,
+      "loss_diff_ref_minus_rlinf": 0.068124,
+      "ref_loader_grad_norm": 1.64477,
+      "rlinf_loader_grad_norm": 1.5957
+    },
+    {
+      "step": 48,
+      "ref_loader_loss": 0.142233,
+      "rlinf_loader_loss": 0.079593,
+      "loss_diff_ref_minus_rlinf": 0.06264,
+      "ref_loader_grad_norm": 1.92444,
+      "rlinf_loader_grad_norm": 1.85639
+    },
+    {
+      "step": 49,
+      "ref_loader_loss": 0.158871,
+      "rlinf_loader_loss": 0.072202,
+      "loss_diff_ref_minus_rlinf": 0.086669,
+      "ref_loader_grad_norm": 2.15431,
+      "rlinf_loader_grad_norm": 1.42643
+    }
+  ],
+  "verdict": "[CORRECTED PER CODEX R30 REVIEW -- this is a REDUCED-SCALE HYPOTHESIS, not the production proof] At batch 16 (num_workers=0, seed=0), through the IDENTICAL RLinf model+loop+noise/time, RLinf's own loader sequence descends faster (last-5 0.0739) than the reference loader sequence (last-5 0.1616), and the step-0 gap on identical weights+noise/time (0.165 vs 0.251) isolates that difference to the batch. This is DIRECTIONAL evidence that loader batch composition changes the trajectory under a shared loop. It is NOT the decisive production proof: the reference-loader trajectory here (0.162) does NOT track the reference production curve (r24 ~0.090), and the recipe is not the production global-256 / seed-42 / num_workers-8 one. The production-faithful replay is R31. Do NOT mark task15 met on this artifact.",
+  "key_finding_step0": "On IDENTICAL base weights + IDENTICAL shared noise/time, step 0 loss is ref-loader 0.2512 vs rlinf-loader 0.1654 -- since weights+noise/time are identical, this difference is PURELY the batch (data), cleanly proving the two loaders feed different per-step inputs (no noise/time-RNG confound, unlike the earlier R27 step-0 observation).",
+  "likely_mechanism_hypothesis": "RLinf's BEHAVIOR SFT loader streams CONTIGUOUS keyframe chunks (AC-6 streaming sharding), so its per-step batches are more correlated (same-episode frames) and fit faster, whereas the reference create_behavior_data_loader_torch shuffles more globally -> more diverse, harder batches. R19 established the two loaders draw the SAME frame corpus; the difference is the per-step grouping/order. This is a HYPOTHESIS for the mechanism (not separately proven this round); the MEASURED fact is that the loader batch composition drives the descent-rate difference.",
+  "ac11_path_proposal": "DEFERRED to R31 (the production-faithful global-256 replay). No AC-11 plan evolution is proposed on this reduced-scale artifact.",
+  "status_correction_R31": "REDUCED-SCALE HYPOTHESIS, NOT the production proof (corrected per Codex R30 review). This replay is single-GPU at batch 16 with num_workers=0 and seed=0 -- NOT the production global batch 256 / seed=42 / num_workers=8 recipe -- and the reference-loader trajectory here (last-5 0.162) does NOT track the committed reference production curve (r24 ~0.090 @step49). So R30 only shows DIRECTIONALLY that loader batch composition can change the trajectory under a shared loop; it does not prove the production faster-descent is fully root-caused to the loader. The production-faithful global-256 replay is R31 (docs/evidence/r31_loader_sequence_prod.json). task15 stays OPEN."
+}

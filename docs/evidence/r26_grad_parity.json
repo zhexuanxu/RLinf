@@ -1,0 +1,196 @@
+{
+  "purpose": "same-batch gradient-norm parity: RLinf Pi0 vs reference models_pytorch_new.Pi0 on identical base weights + fixed batch + fixed noise/time (bf16 compute, eval, train=True/rng=None).",
+  "provenance": {
+    "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_grad_parity_probe.py --out docs/evidence/r26_grad_parity.json",
+    "repo_cwd": "/mnt/public/xzxuan/repos/RLinf_pi05",
+    "reference_venv": "/mnt/public/xzxuan/repos/openpi-comet/.venv/bin/python",
+    "reference_src": "/mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed",
+    "reference_dumper": "tests/unit_tests/_ref_model_grad_dump.py",
+    "ref_subprocess_returncode": 0,
+    "base_weights": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
+    "base_weights_sha256_16": "f6391204c480d6c5",
+    "config": "pi05_b1k-turning_on_radio_cs32_bs32_lr2.5e-5_step30k",
+    "n_batches": 4,
+    "batch_size": 8,
+    "seed": 1234,
+    "model": "openpi.models_pytorch_new.pi0.Pi0 (bf16, eval, train=True/rng=None)",
+    "batches_npz": "/mnt/public/xzxuan/tmp/ref_grad_batches.npz",
+    "batches_npz_sha256_16": "ca89a7d5b4602904",
+    "noise_time_npz": "/mnt/public/xzxuan/tmp/ref_grad_noise_time.npz",
+    "noise_time_npz_sha256_16": "7b863f711ea7e61d",
+    "output": "docs/evidence/r26_grad_parity.json"
+  },
+  "ref_dump": "tests/unit_tests/_ref_model_grad_dump.py (reference venv)",
+  "rlinf_probe": "tools/sft_grad_parity_probe.py",
+  "batches": [
+    {
+      "batch": 0,
+      "abs_global_grad_norm_diff": 0.04948,
+      "ref_loss": 0.356552,
+      "ref_lr": "not_applicable_single_batch_probe",
+      "ref_global_grad_norm": 25.83257,
+      "ref_clipped_grad_norm": 1.0,
+      "ref_was_clipped": true,
+      "ref_n_params_with_grad": 662,
+      "ref_per_module_grad_norm": {
+        "llm": 7.15458,
+        "img": 24.75004,
+        "action_in_proj": 0.18655,
+        "action_out_proj": 1.67528,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.85294
+      },
+      "rlinf_loss": 0.356049,
+      "rlinf_lr": "not_applicable_single_batch_probe",
+      "rlinf_global_grad_norm": 25.78309,
+      "rlinf_clipped_grad_norm": 1.0,
+      "rlinf_was_clipped": true,
+      "rlinf_n_params_with_grad": 662,
+      "rlinf_per_module_grad_norm": {
+        "llm": 7.14042,
+        "img": 24.70257,
+        "action_in_proj": 0.18614,
+        "action_out_proj": 1.67475,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.8518
+      }
+    },
+    {
+      "batch": 1,
+      "abs_global_grad_norm_diff": 0.01289,
+      "ref_loss": 0.344925,
+      "ref_lr": "not_applicable_single_batch_probe",
+      "ref_global_grad_norm": 26.65346,
+      "ref_clipped_grad_norm": 1.0,
+      "ref_was_clipped": true,
+      "ref_n_params_with_grad": 662,
+      "ref_per_module_grad_norm": {
+        "llm": 7.23218,
+        "img": 25.5937,
+        "action_in_proj": 0.17041,
+        "action_out_proj": 1.59885,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.69281
+      },
+      "rlinf_loss": 0.344444,
+      "rlinf_lr": "not_applicable_single_batch_probe",
+      "rlinf_global_grad_norm": 26.64058,
+      "rlinf_clipped_grad_norm": 1.0,
+      "rlinf_was_clipped": true,
+      "rlinf_n_params_with_grad": 662,
+      "rlinf_per_module_grad_norm": {
+        "llm": 7.23231,
+        "img": 25.58037,
+        "action_in_proj": 0.17024,
+        "action_out_proj": 1.59732,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.69158
+      }
+    },
+    {
+      "batch": 2,
+      "abs_global_grad_norm_diff": 0.05469,
+      "ref_loss": 0.324997,
+      "ref_lr": "not_applicable_single_batch_probe",
+      "ref_global_grad_norm": 19.2512,
+      "ref_clipped_grad_norm": 1.0,
+      "ref_was_clipped": true,
+      "ref_n_params_with_grad": 662,
+      "ref_per_module_grad_norm": {
+        "llm": 5.74453,
+        "img": 18.30826,
+        "action_in_proj": 0.13043,
+        "action_out_proj": 1.45035,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.54441
+      },
+      "rlinf_loss": 0.325212,
+      "rlinf_lr": "not_applicable_single_batch_probe",
+      "rlinf_global_grad_norm": 19.30589,
+      "rlinf_clipped_grad_norm": 1.0,
+      "rlinf_was_clipped": true,
+      "rlinf_n_params_with_grad": 662,
+      "rlinf_per_module_grad_norm": {
+        "llm": 5.75678,
+        "img": 18.36179,
+        "action_in_proj": 0.1309,
+        "action_out_proj": 1.45141,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.5458
+      }
+    },
+    {
+      "batch": 3,
+      "abs_global_grad_norm_diff": 0.04184,
+      "ref_loss": 0.270155,
+      "ref_lr": "not_applicable_single_batch_probe",
+      "ref_global_grad_norm": 17.19512,
+      "ref_clipped_grad_norm": 1.0,
+      "ref_was_clipped": true,
+      "ref_n_params_with_grad": 662,
+      "ref_per_module_grad_norm": {
+        "llm": 4.95894,
+        "img": 16.41181,
+        "action_in_proj": 0.07739,
+        "action_out_proj": 1.25815,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.3804
+      },
+      "rlinf_loss": 0.270624,
+      "rlinf_lr": "not_applicable_single_batch_probe",
+      "rlinf_global_grad_norm": 17.15329,
+      "rlinf_clipped_grad_norm": 1.0,
+      "rlinf_was_clipped": true,
+      "rlinf_n_params_with_grad": 662,
+      "rlinf_per_module_grad_norm": {
+        "llm": 4.94646,
+        "img": 16.37173,
+        "action_in_proj": 0.07731,
+        "action_out_proj": 1.25818,
+        "state_proj": 0.0,
+        "time_mlp": 0.0,
+        "_other": 0.38085
+      }
+    }
+  ],
+  "mean_abs_global_grad_norm_diff": 0.03972,
+  "per_module_abs_diff_all_batches": {
+    "llm": {
+      "mean": 0.00975,
+      "max": 0.01416
+    },
+    "img": {
+      "mean": 0.0386,
+      "max": 0.05354
+    },
+    "action_in_proj": {
+      "mean": 0.00028,
+      "max": 0.00047
+    },
+    "action_out_proj": {
+      "mean": 0.00079,
+      "max": 0.00154
+    },
+    "state_proj": {
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "time_mlp": {
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "_other": {
+      "mean": 0.00105,
+      "max": 0.00139
+    }
+  },
+  "rel_diff_pct": 0.179,
+  "verdict": "SAME-BATCH MODEL BACKWARD IS IDENTICAL: on the identical batch + weights + noise/time, RLinf's Pi0 and the reference models_pytorch_new.Pi0 grad norms agree to ~0.2% (loss + #params + per-module also match), so RLinf vendored the reference backward and the model code is RULED OUT as the cause of the production grad_norm/descent difference. NOTE: this does NOT prove the production gap is the data -- the R20 rank-independent control (RLinf stack + the reference's EXACT R19 data stream) still descended faster than the reference, so the remaining difference is the DISTRIBUTED TRAINING STEP (FSDP gradient all-reduce, gradient clipping, or the optimizer step), not the model backward. Next: compare the distributed grad-aggregation + clip + optimizer step."
+}

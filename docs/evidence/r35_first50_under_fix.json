@@ -1,0 +1,33 @@
+{
+  "purpose": "R35 first-50 BEHAVIOR use_skill:false SFT under the R34 effective-batch fix (RLinf now rank-disjoint, effective batch 256) on 8 GPUs, evaluated against the reference production curve r24 on the DEC-1(b) gate.",
+  "run": {
+    "command": "python examples/sft/train_vla_sft.py --config-name behavior_pi05_vla runner.max_steps=60 (8x A800, CUDA_VISIBLE_DEVICES=0-7, seed 42, use_skill:false, turning_on_radio, FSDP FULL_SHARD bf16, the R34 fix at git 729c48d1)",
+    "tensorboard": "/mnt/public/xzxuan/tmp/r35_sft_results/tensorboard/events.out.tfevents.1780629349.is-dcvh2anfn7ushuq7-devmachine-0.4135215.0",
+    "steps_run": 60,
+    "loss_tag": "train/loss (rank-AVG)"
+  },
+  "dec1b_eval": {
+    "within_0.03": "40/50",
+    "within_2sigma": "17/50",
+    "ref_step_to_step_2sigma": 0.01096,
+    "rlinf_fixed_step49": 0.0826,
+    "ref_r24_step49": 0.0903,
+    "abs_delta_step49": 0.0078,
+    "rlinf_fixed_mean": 0.1552,
+    "ref_r24_mean": 0.1675,
+    "rlinf_fixed_first5": 0.246,
+    "ref_first5": 0.243,
+    "rlinf_fixed_last5": 0.0779,
+    "ref_last5": 0.097
+  },
+  "before_vs_after": {
+    "pre_fix_r22_step49": 0.0481,
+    "pre_fix_r22_mean": 0.1506,
+    "pre_fix_within_0.03": "30/50 (committed)",
+    "post_fix_within_0.03": "40/50",
+    "note": "the pre-fix RLinf (effective batch 32) descended systematically ~2x below the reference (step49 0.046 vs 0.090); under the fix (effective batch 256) RLinf descends much closer (step49 0.083 vs 0.090) and within-0.03 rises 30->40/50 -- a material improvement, but NOT the strict 50/50 gate."
+  },
+  "csv": "docs/evidence/r35_first50_under_fix.csv",
+  "verdict": "MATERIAL IMPROVEMENT, strict DEC-1(b) gate STILL UNMET, residual cause NOT proven. The R34 effective-batch fix materially improved the first-50 curve: under the fix RLinf descends much closer to the reference (step49 0.0826 vs 0.0903, |\u0394|=0.008; overall mean 0.155 vs 0.168; first-5 0.246 vs 0.243), vs the pre-fix RLinf's systematic ~2x-lower end (step49 0.046). Per-step |\u0394|<=0.03 rises 30/50 -> 40/50 (\u00b12\u03c3: 17/50). But this does NOT pass the strict DEC-1(b) per-step first-50 gate (40/50, not 50/50). The 10 failing steps are 0,9,10,11,13,14,15,25,26,29. The CAUSE of those outliers is NOT PROVEN -- the working HYPOTHESIS is cross-implementation noise/time-RNG + data-ordering (RLinf and the reference sample flow-matching noise/time INDEPENDENTLY and shuffle independently; the step-0 |\u0394|=0.055 on identical base weights is consistent with it but is NOT a proof). This is tested directly by the R36 pinned same-input experiment (feed BOTH the reference model and RLinf the identical reference rank-0-fanout batches + shared noise/time; 50/50 there proves the residual is the input). task15 remains ACTIVE: the effective-batch root cause is fixed but the strict first-50 gate is unmet and the residual is unproven; task15 closes only on a 50/50 first-50 under the original gate or an explicitly accepted plan evolution (NOT on 40/50). [R36 UPDATE: the pinned same-input experiment has since RUN and PROVED this hypothesis -- on the identical reference rank-0-fanout batches + shared noise/time (hashes verified identical all 50 steps) RLinf == the reference 50/50, max |delta|=0.0003 (docs/evidence/r36_pinned_residual.json). So the residual IS the per-step input (benign cross-implementation RNG/shuffle); it is no longer a hypothesis. task15 still ACTIVE pending an accepted AC-11 plan evolution or a 50/50 production run.]",
+  "status": "task15 ACTIVE -- strict DEC-1(b) first-50 PRODUCTION gate UNMET (40/50); residual cause PROVEN by R36 to be the per-step input (50/50 on identical inputs, max |delta|=0.0003; docs/evidence/r36_pinned_residual.json) -- benign cross-implementation RNG/shuffle."
+}

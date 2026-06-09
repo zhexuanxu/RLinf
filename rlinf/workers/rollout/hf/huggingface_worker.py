@@ -33,6 +33,16 @@ from rlinf.utils.comm_mapping import CommMapper
 from rlinf.utils.placement import HybridComponentPlacement
 
 
+def deterministic_eval_seed(base_seed: int, rank: int, step: int) -> int:
+    """Reproducible per-(rank, step) flow-matching noise seed for paired eval.
+
+    The rank offset keeps ranks from sharing a noise schedule while staying
+    deterministic across runs (same base_seed + rank + step -> same seed), so two
+    eval runs with the same config inject the same noise sequence.
+    """
+    return int(base_seed) + int(rank) * 1_000_003 + int(step)
+
+
 class MultiStepRolloutWorker(Worker):
     def __init__(self, cfg: DictConfig):
         Worker.__init__(self)
@@ -54,6 +64,20 @@ class MultiStepRolloutWorker(Worker):
         self._weight_sync_is_sender = self._rank == 0
         self.rollout_epoch = cfg.algorithm.get("rollout_epoch", 1)
         self.collect_transitions = self.cfg.rollout.get("collect_transitions", False)
+        # Deterministic / paired eval: when enabled, predict() injects a seeded
+        # per-step generator into the flow-matching sampler so two eval runs with
+        # the same config see the same noise schedule. Default off -> production
+        # eval sampling is unchanged (stochastic).
+        self._eval_deterministic_noise = bool(
+            self.cfg.rollout.get("eval_deterministic_noise", False)
+        )
+        self._eval_noise_seed = int(self.cfg.rollout.get("eval_noise_seed", 0))
+        self._eval_noise_step = 0
+        # Only the openpi_pytorch flow-matching sampler accepts an injected rng.
+        self._eval_supports_det_noise = (
+            SupportedModel(self.cfg.actor.model.model_type)
+            == SupportedModel.OPENPI_PYTORCH
+        )
         self.expert_model = None
 
         self.total_num_train_envs = cfg.env.train.total_num_envs
@@ -101,9 +125,7 @@ class MultiStepRolloutWorker(Worker):
                     vla_cfg.precision = self.cfg.rollout.model.precision
                     vla_cfg.model_path = entry.model_path
                 vla_model_i = get_model(vla_cfg)
-                self._vla_models_with_skills.append(
-                    (vla_model_i, str(entry.skill))
-                )
+                self._vla_models_with_skills.append((vla_model_i, str(entry.skill)))
             # Primary model for weight_syncer / cuda_graph compatibility.
             self.hf_model: BasePolicy = self._vla_models_with_skills[0][0]
             self.log_info(
@@ -281,12 +303,20 @@ class MultiStepRolloutWorker(Worker):
         # VLM sampling parameters (used by the dual-system agentloop).
         if self.cfg.get("vlm", None) is not None:
             self._vlm_sampling_params = {
-                "do_sample": self.cfg.vlm.get("sampling_params", {}).get("do_sample", True),
-                "temperature": self.cfg.vlm.get("sampling_params", {}).get("temperature", 1.0),
+                "do_sample": self.cfg.vlm.get("sampling_params", {}).get(
+                    "do_sample", True
+                ),
+                "temperature": self.cfg.vlm.get("sampling_params", {}).get(
+                    "temperature", 1.0
+                ),
                 "top_p": self.cfg.vlm.get("sampling_params", {}).get("top_p", 1.0),
                 "top_k": self.cfg.vlm.get("sampling_params", {}).get("top_k", 20),
-                "repetition_penalty": self.cfg.vlm.get("sampling_params", {}).get("repetition_penalty", 1.0),
-                "max_new_tokens": self.cfg.vlm.get("sampling_params", {}).get("max_new_tokens", 512),
+                "repetition_penalty": self.cfg.vlm.get("sampling_params", {}).get(
+                    "repetition_penalty", 1.0
+                ),
+                "max_new_tokens": self.cfg.vlm.get("sampling_params", {}).get(
+                    "max_new_tokens", 512
+                ),
             }
 
     def update_dagger_beta(self):
@@ -338,6 +368,29 @@ class MultiStepRolloutWorker(Worker):
             dst_rank=self._rank,
         )
 
+    def _next_eval_noise_generator(self, mode: str):
+        """Seeded per-step generator for deterministic/paired eval, or ``None``.
+
+        Returns ``None`` (production stochastic sampling, unchanged) unless eval
+        mode + the openpi_pytorch model + ``rollout.eval_deterministic_noise`` are
+        all active. The seed is reproducible per ``(rank, step)``
+        (:func:`deterministic_eval_seed`); the per-step counter advances on each
+        call and is reset at the start of :meth:`evaluate`, so two eval runs with
+        the same config inject the same noise schedule.
+        """
+        if not (
+            self._eval_deterministic_noise
+            and mode == "eval"
+            and self._eval_supports_det_noise
+        ):
+            return None
+        seed = deterministic_eval_seed(
+            self._eval_noise_seed, self._rank, self._eval_noise_step
+        )
+        self._eval_noise_step += 1
+        device = getattr(self.hf_model, "device", self.device)
+        return torch.Generator(device=device).manual_seed(seed)
+
     @Worker.timer("predict")
     def predict(
         self, env_obs: dict[str, Any], mode: Literal["train", "eval"] = "train"
@@ -350,6 +403,7 @@ class MultiStepRolloutWorker(Worker):
 
         if SupportedModel(self.cfg.actor.model.model_type) in [
             SupportedModel.OPENPI,
+            SupportedModel.OPENPI_PYTORCH,
             SupportedModel.MLP_POLICY,
             SupportedModel.GR00T,
             SupportedModel.ABOT_M0,
@@ -368,6 +422,13 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.MLP_POLICY,
         ]:
             kwargs["return_obs"] = not hasattr(self.hf_model, "q_head")
+
+        # Deterministic eval: inject a reproducible per-step generator into the
+        # openpi_pytorch flow-matching sampler so a knob-matched eval is paired
+        # across runs. Off by default, so production eval sampling is unchanged.
+        eval_rng = self._next_eval_noise_generator(mode)
+        if eval_rng is not None:
+            kwargs["rng"] = eval_rng
 
         # Dual-system agentloop path: reuses the same kwargs computed above
         # so the VLA call is fully consistent with the standard path.
@@ -563,6 +624,10 @@ class MultiStepRolloutWorker(Worker):
         if self.enable_offload:
             self.reload_model()
 
+        # Restart the deterministic-eval noise schedule so each eval run injects
+        # the same per-step noise sequence (paired/expanded protocol).
+        self._eval_noise_step = 0
+
         eval_trajectory: list[dict[str, Any]] = []
         auto_reset = self.cfg.env.eval.get("auto_reset", False)
 
@@ -738,9 +803,7 @@ class MultiStepRolloutWorker(Worker):
         # Merge optional dones tensor (present in eval mode for memory reset).
         dones_list = [obs_batch.get("dones", None) for obs_batch in obs_batches]
         if any(d is not None for d in dones_list):
-            merged_dones = torch.cat(
-                [d for d in dones_list if d is not None], dim=0
-            )
+            merged_dones = torch.cat([d for d in dones_list if d is not None], dim=0)
         else:
             merged_dones = None
 

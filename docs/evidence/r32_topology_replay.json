@@ -1,0 +1,395 @@
+{
+  "purpose": "R32 topology-faithful replay at the CORRECT effective batch 32 (both production loaders are rank-replicated per docs/evidence/r32_loader_topology.json). RLinf's Pi0 runs the SAME loop + shared fixed noise/time on the reference vs RLinf rank-0 first-50 batch-32 streams (dumped at the production 8-rank/num_workers=8 topology); only the loader differs.",
+  "provenance": {
+    "command": "TMPDIR=/mnt/public/xzxuan/tmp CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/mnt/public/xzxuan/repos/RLinf_pi05 python tools/sft_loader_topology_replay.py --out docs/evidence/r32_topology_replay.json",
+    "repo_cwd": "/mnt/public/xzxuan/repos/RLinf_pi05",
+    "base_weights": "/mnt/public/xzxuan/models/pi05_base_pytorch_new/model.safetensors",
+    "base_weights_sha256_16": "f6391204c480d6c5",
+    "rlinf_rank0_npz": "/mnt/public/xzxuan/tmp/rlinf_rank0_batches.npz",
+    "rlinf_rank0_npz_sha256_16": "f235b37f4bfb44fc",
+    "ref_rank0_npz": "/mnt/public/xzxuan/tmp/ref_rank0_batches.npz",
+    "ref_rank0_npz_sha256_16": "b9ab2de4989a3e75",
+    "n_steps": 50,
+    "batch": 32,
+    "noise_time_seed": 1234,
+    "topology": "rank-0 streams from the 8-rank num_workers=8 dump (both loaders rank-replicated -> rank-0 stream IS the effective per-step batch). See docs/evidence/r32_loader_topology.json.",
+    "loop": "fp32 weights + autocast bf16; AdamW(0.9,0.95)/eps1e-8/wd1e-10; clip_grad_norm_(1.0); openpi_cosine warmup peak=2.5e-5 warmup=1000",
+    "output": "docs/evidence/r32_topology_replay.json"
+  },
+  "same_frames": {
+    "image_base_0_rgb_max_abs_diff": 0.0,
+    "state_max_abs_diff": 5.69e-08,
+    "actions_max_abs_diff": 2.98e-08,
+    "tokenized_prompt_equal_rate": 0.9999969,
+    "per_step_frame_overlap_of_32_min": 0,
+    "per_step_frame_overlap_of_32_mean": 0.0,
+    "note": "image diff after HWC->CHW transpose; state/actions are loader-transformed tensors of the SAME frames (~float noise); the per-step (state,actions)-hash overlap counts how many of each rank-0 step's 32 frames are byte-identical across the two loaders (loaders preprocess slightly differently, so use the image/state/action max-diffs as the primary same-frame signal)."
+  },
+  "reference_loader_vs_r24_production": {
+    "replay_last10_mean": 0.074675,
+    "curve_last10_mean": 0.10166,
+    "abs_last_mean_diff": 0.026985,
+    "max_abs_per_step_diff": 0.13852,
+    "tracks": true
+  },
+  "rlinf_loader_vs_r22_production": {
+    "replay_last10_mean": 0.074756,
+    "curve_last10_mean": 0.072876,
+    "abs_last_mean_diff": 0.00188,
+    "max_abs_per_step_diff": 0.017494,
+    "tracks": true
+  },
+  "steps": [
+    {
+      "step": 0,
+      "ref_loader_loss": 0.227013,
+      "rlinf_loader_loss": 0.227005,
+      "r24_ref_prod": 0.246094,
+      "r22_rlinf_prod": 0.230591
+    },
+    {
+      "step": 1,
+      "ref_loader_loss": 0.196492,
+      "rlinf_loader_loss": 0.196764,
+      "r24_ref_prod": 0.235352,
+      "r22_rlinf_prod": 0.208984
+    },
+    {
+      "step": 2,
+      "ref_loader_loss": 0.21703,
+      "rlinf_loader_loss": 0.217133,
+      "r24_ref_prod": 0.246094,
+      "r22_rlinf_prod": 0.217407
+    },
+    {
+      "step": 3,
+      "ref_loader_loss": 0.226095,
+      "rlinf_loader_loss": 0.22587,
+      "r24_ref_prod": 0.240234,
+      "r22_rlinf_prod": 0.232178
+    },
+    {
+      "step": 4,
+      "ref_loader_loss": 0.249543,
+      "rlinf_loader_loss": 0.249428,
+      "r24_ref_prod": 0.24707,
+      "r22_rlinf_prod": 0.231934
+    },
+    {
+      "step": 5,
+      "ref_loader_loss": 0.21394,
+      "rlinf_loader_loss": 0.213815,
+      "r24_ref_prod": 0.239258,
+      "r22_rlinf_prod": 0.203247
+    },
+    {
+      "step": 6,
+      "ref_loader_loss": 0.273407,
+      "rlinf_loader_loss": 0.271783,
+      "r24_ref_prod": 0.227539,
+      "r22_rlinf_prod": 0.265869
+    },
+    {
+      "step": 7,
+      "ref_loader_loss": 0.176776,
+      "rlinf_loader_loss": 0.176911,
+      "r24_ref_prod": 0.24707,
+      "r22_rlinf_prod": 0.176025
+    },
+    {
+      "step": 8,
+      "ref_loader_loss": 0.209107,
+      "rlinf_loader_loss": 0.20896,
+      "r24_ref_prod": 0.25,
+      "r22_rlinf_prod": 0.216553
+    },
+    {
+      "step": 9,
+      "ref_loader_loss": 0.18381,
+      "rlinf_loader_loss": 0.184291,
+      "r24_ref_prod": 0.259766,
+      "r22_rlinf_prod": 0.195068
+    },
+    {
+      "step": 10,
+      "ref_loader_loss": 0.187069,
+      "rlinf_loader_loss": 0.187058,
+      "r24_ref_prod": 0.248047,
+      "r22_rlinf_prod": 0.199951
+    },
+    {
+      "step": 11,
+      "ref_loader_loss": 0.242495,
+      "rlinf_loader_loss": 0.242506,
+      "r24_ref_prod": 0.251953,
+      "r22_rlinf_prod": 0.236938
+    },
+    {
+      "step": 12,
+      "ref_loader_loss": 0.205914,
+      "rlinf_loader_loss": 0.205761,
+      "r24_ref_prod": 0.236328,
+      "r22_rlinf_prod": 0.212646
+    },
+    {
+      "step": 13,
+      "ref_loader_loss": 0.195373,
+      "rlinf_loader_loss": 0.195411,
+      "r24_ref_prod": 0.237305,
+      "r22_rlinf_prod": 0.190796
+    },
+    {
+      "step": 14,
+      "ref_loader_loss": 0.212598,
+      "rlinf_loader_loss": 0.212417,
+      "r24_ref_prod": 0.213867,
+      "r22_rlinf_prod": 0.216431
+    },
+    {
+      "step": 15,
+      "ref_loader_loss": 0.144573,
+      "rlinf_loader_loss": 0.144463,
+      "r24_ref_prod": 0.198242,
+      "r22_rlinf_prod": 0.148804
+    },
+    {
+      "step": 16,
+      "ref_loader_loss": 0.195257,
+      "rlinf_loader_loss": 0.19523,
+      "r24_ref_prod": 0.191406,
+      "r22_rlinf_prod": 0.185425
+    },
+    {
+      "step": 17,
+      "ref_loader_loss": 0.164736,
+      "rlinf_loader_loss": 0.164784,
+      "r24_ref_prod": 0.185547,
+      "r22_rlinf_prod": 0.168823
+    },
+    {
+      "step": 18,
+      "ref_loader_loss": 0.165932,
+      "rlinf_loader_loss": 0.16603,
+      "r24_ref_prod": 0.174805,
+      "r22_rlinf_prod": 0.169556
+    },
+    {
+      "step": 19,
+      "ref_loader_loss": 0.318208,
+      "rlinf_loader_loss": 0.318282,
+      "r24_ref_prod": 0.179688,
+      "r22_rlinf_prod": 0.314453
+    },
+    {
+      "step": 20,
+      "ref_loader_loss": 0.18682,
+      "rlinf_loader_loss": 0.186805,
+      "r24_ref_prod": 0.166992,
+      "r22_rlinf_prod": 0.182251
+    },
+    {
+      "step": 21,
+      "ref_loader_loss": 0.183132,
+      "rlinf_loader_loss": 0.182986,
+      "r24_ref_prod": 0.160156,
+      "r22_rlinf_prod": 0.181274
+    },
+    {
+      "step": 22,
+      "ref_loader_loss": 0.171536,
+      "rlinf_loader_loss": 0.171516,
+      "r24_ref_prod": 0.157227,
+      "r22_rlinf_prod": 0.165894
+    },
+    {
+      "step": 23,
+      "ref_loader_loss": 0.125591,
+      "rlinf_loader_loss": 0.125515,
+      "r24_ref_prod": 0.176758,
+      "r22_rlinf_prod": 0.11908
+    },
+    {
+      "step": 24,
+      "ref_loader_loss": 0.150123,
+      "rlinf_loader_loss": 0.150047,
+      "r24_ref_prod": 0.174805,
+      "r22_rlinf_prod": 0.148682
+    },
+    {
+      "step": 25,
+      "ref_loader_loss": 0.138587,
+      "rlinf_loader_loss": 0.138445,
+      "r24_ref_prod": 0.168945,
+      "r22_rlinf_prod": 0.124939
+    },
+    {
+      "step": 26,
+      "ref_loader_loss": 0.156772,
+      "rlinf_loader_loss": 0.156951,
+      "r24_ref_prod": 0.178711,
+      "r22_rlinf_prod": 0.15564
+    },
+    {
+      "step": 27,
+      "ref_loader_loss": 0.209639,
+      "rlinf_loader_loss": 0.209501,
+      "r24_ref_prod": 0.162109,
+      "r22_rlinf_prod": 0.2146
+    },
+    {
+      "step": 28,
+      "ref_loader_loss": 0.125475,
+      "rlinf_loader_loss": 0.125415,
+      "r24_ref_prod": 0.154297,
+      "r22_rlinf_prod": 0.137329
+    },
+    {
+      "step": 29,
+      "ref_loader_loss": 0.111551,
+      "rlinf_loader_loss": 0.111614,
+      "r24_ref_prod": 0.146484,
+      "r22_rlinf_prod": 0.115662
+    },
+    {
+      "step": 30,
+      "ref_loader_loss": 0.114627,
+      "rlinf_loader_loss": 0.114707,
+      "r24_ref_prod": 0.132812,
+      "r22_rlinf_prod": 0.123657
+    },
+    {
+      "step": 31,
+      "ref_loader_loss": 0.099188,
+      "rlinf_loader_loss": 0.099223,
+      "r24_ref_prod": 0.119141,
+      "r22_rlinf_prod": 0.100525
+    },
+    {
+      "step": 32,
+      "ref_loader_loss": 0.11309,
+      "rlinf_loader_loss": 0.113056,
+      "r24_ref_prod": 0.114746,
+      "r22_rlinf_prod": 0.117737
+    },
+    {
+      "step": 33,
+      "ref_loader_loss": 0.095108,
+      "rlinf_loader_loss": 0.095067,
+      "r24_ref_prod": 0.115234,
+      "r22_rlinf_prod": 0.092834
+    },
+    {
+      "step": 34,
+      "ref_loader_loss": 0.111453,
+      "rlinf_loader_loss": 0.111497,
+      "r24_ref_prod": 0.117676,
+      "r22_rlinf_prod": 0.109131
+    },
+    {
+      "step": 35,
+      "ref_loader_loss": 0.154256,
+      "rlinf_loader_loss": 0.154536,
+      "r24_ref_prod": 0.125977,
+      "r22_rlinf_prod": 0.147339
+    },
+    {
+      "step": 36,
+      "ref_loader_loss": 0.097666,
+      "rlinf_loader_loss": 0.097526,
+      "r24_ref_prod": 0.111816,
+      "r22_rlinf_prod": 0.107971
+    },
+    {
+      "step": 37,
+      "ref_loader_loss": 0.077666,
+      "rlinf_loader_loss": 0.077662,
+      "r24_ref_prod": 0.104004,
+      "r22_rlinf_prod": 0.07782
+    },
+    {
+      "step": 38,
+      "ref_loader_loss": 0.090483,
+      "rlinf_loader_loss": 0.090479,
+      "r24_ref_prod": 0.105469,
+      "r22_rlinf_prod": 0.086426
+    },
+    {
+      "step": 39,
+      "ref_loader_loss": 0.076508,
+      "rlinf_loader_loss": 0.0765,
+      "r24_ref_prod": 0.109375,
+      "r22_rlinf_prod": 0.070984
+    },
+    {
+      "step": 40,
+      "ref_loader_loss": 0.095358,
+      "rlinf_loader_loss": 0.095479,
+      "r24_ref_prod": 0.111328,
+      "r22_rlinf_prod": 0.093018
+    },
+    {
+      "step": 41,
+      "ref_loader_loss": 0.074457,
+      "rlinf_loader_loss": 0.074501,
+      "r24_ref_prod": 0.106445,
+      "r22_rlinf_prod": 0.072327
+    },
+    {
+      "step": 42,
+      "ref_loader_loss": 0.07506,
+      "rlinf_loader_loss": 0.075037,
+      "r24_ref_prod": 0.105957,
+      "r22_rlinf_prod": 0.077942
+    },
+    {
+      "step": 43,
+      "ref_loader_loss": 0.129514,
+      "rlinf_loader_loss": 0.129823,
+      "r24_ref_prod": 0.098145,
+      "r22_rlinf_prod": 0.123718
+    },
+    {
+      "step": 44,
+      "ref_loader_loss": 0.069288,
+      "rlinf_loader_loss": 0.069317,
+      "r24_ref_prod": 0.109863,
+      "r22_rlinf_prod": 0.074158
+    },
+    {
+      "step": 45,
+      "ref_loader_loss": 0.056816,
+      "rlinf_loader_loss": 0.056942,
+      "r24_ref_prod": 0.11377,
+      "r22_rlinf_prod": 0.050659
+    },
+    {
+      "step": 46,
+      "ref_loader_loss": 0.060402,
+      "rlinf_loader_loss": 0.060546,
+      "r24_ref_prod": 0.097168,
+      "r22_rlinf_prod": 0.05722
+    },
+    {
+      "step": 47,
+      "ref_loader_loss": 0.046477,
+      "rlinf_loader_loss": 0.046553,
+      "r24_ref_prod": 0.090332,
+      "r22_rlinf_prod": 0.042938
+    },
+    {
+      "step": 48,
+      "ref_loader_loss": 0.087744,
+      "rlinf_loader_loss": 0.0877,
+      "r24_ref_prod": 0.093262,
+      "r22_rlinf_prod": 0.088684
+    },
+    {
+      "step": 49,
+      "ref_loader_loss": 0.051637,
+      "rlinf_loader_loss": 0.05166,
+      "r24_ref_prod": 0.090332,
+      "r22_rlinf_prod": 0.048096
+    }
+  ],
+  "verdict": "R30/R31 LOADER-COMPOSITION HYPOTHESIS REFUTED. At the production topology both loaders are rank-replicated (effective batch 32; docs/evidence/r32_loader_topology.json) and their rank-0 streams hold the SAME frames (image max|\u0394|=0.0, state max|\u0394|=5.69e-08, actions max|\u0394|=2.98e-08, prompt equal rate=0.9999969). So both loaders feed the SAME data, and the batch-32 replay of the two rank-0 streams gives a nearly identical trajectory (reference-loader last-10 0.0747 vs r24 0.1017; RLinf-loader 0.0748 vs r22 0.0729) that tracks r22 but lands below r24. The R30/R31 'RLinf loader feeds a different/faster batch' was a world_size=1 artifact and is REFUTED; the AC-11 loader plan-evolution proposal is WITHDRAWN. The r22-vs-r24 gap is re-opened (new leads: the reference production's actual effective batch / rank behavior, noise/time RNG, or a 50-step residual). task15 NOT met."
+}
