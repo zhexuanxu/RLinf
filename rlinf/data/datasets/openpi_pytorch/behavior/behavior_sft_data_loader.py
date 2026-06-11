@@ -331,6 +331,40 @@ def _worker_init_fn(worker_id: int) -> None:
     del worker_id
 
 
+def validate_behavior_data_config_migration(data_cfg) -> None:
+    """Reject ``data:`` keys left over from the removed weighted-skill recipe.
+
+    A config still carrying them would otherwise silently train on different
+    data than its author intended. ``use_skill`` / ``allow_left`` /
+    ``allow_right`` always fail loudly; ``skill_list`` survives only as its
+    no-op values — absent, ``None``, or ``["all"]`` — because weighted skill
+    sampling lost its label source when the orchestrator machinery was removed.
+
+    Args:
+        data_cfg: The experiment's ``data:`` config section.
+
+    Raises:
+        ValueError: When a removed key is present, or ``skill_list`` carries
+            anything but a no-op value.
+    """
+    for stale_key in ("use_skill", "allow_left", "allow_right"):
+        if stale_key in data_cfg:
+            raise ValueError(
+                f"data.{stale_key} was removed. Use data.fine_grained_level "
+                "(0 = main task only, 1 = main task + subtask response) with "
+                "data.enable_gap and actor.model.openpi.mode instead."
+            )
+    if "skill_list" in data_cfg:
+        skill_list = data_cfg.skill_list
+        if skill_list is not None and list(skill_list) != ["all"]:
+            raise ValueError(
+                "Weighted skill sampling was removed; data.skill_list supports "
+                f"only its no-op values (absent, null, or ['all']), got "
+                f"{skill_list!r}. Use data.fine_grained_level with "
+                "data.task_subtasks for subtask supervision instead."
+            )
+
+
 def create_behavior_sft_data_loader(
     *,
     behavior_dataset_root: str,
@@ -510,16 +544,7 @@ def build_behavior_sft_dataloader(
     model_cfg = cfg.actor.model
     data_cfg = cfg.data
 
-    # Stale keys from the removed weighted-skill recipe must fail loudly: a
-    # config still carrying them would otherwise silently train on different
-    # data than its author intended.
-    for stale_key in ("use_skill", "allow_left", "allow_right", "skill_list"):
-        if stale_key in data_cfg:
-            raise ValueError(
-                f"data.{stale_key} was removed. Use data.fine_grained_level "
-                "(0 = main task only, 1 = main task + subtask response) with "
-                "data.enable_gap and actor.model.openpi.mode instead."
-            )
+    validate_behavior_data_config_migration(data_cfg)
 
     # Norm stats + tokenizer resolve STRICTLY from YAML (no checkpoint-relative
     # fallback); load_norm_stats rejects a blank assets_dir/asset_id the same way
