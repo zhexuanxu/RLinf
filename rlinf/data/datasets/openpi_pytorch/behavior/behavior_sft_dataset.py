@@ -238,7 +238,7 @@ class PromptFromLeRobotItem(DataTransformFn):
 
 
 class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
-    """LeRobot metadata extended with BEHAVIOR task filtering and orchestrators."""
+    """LeRobot metadata extended with BEHAVIOR task filtering and skill annotations."""
 
     def __init__(
         self,

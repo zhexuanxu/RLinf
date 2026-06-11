@@ -510,6 +510,17 @@ def build_behavior_sft_dataloader(
     model_cfg = cfg.actor.model
     data_cfg = cfg.data
 
+    # Stale keys from the removed weighted-skill recipe must fail loudly: a
+    # config still carrying them would otherwise silently train on different
+    # data than its author intended.
+    for stale_key in ("use_skill", "allow_left", "allow_right", "skill_list"):
+        if stale_key in data_cfg:
+            raise ValueError(
+                f"data.{stale_key} was removed. Use data.fine_grained_level "
+                "(0 = main task only, 1 = main task + subtask response) with "
+                "data.enable_gap and actor.model.openpi.mode instead."
+            )
+
     # Norm stats + tokenizer resolve STRICTLY from YAML (no checkpoint-relative
     # fallback); load_norm_stats rejects a blank assets_dir/asset_id the same way
     # the eval model factory does, so neither path can silently load non-task-0000

@@ -395,6 +395,62 @@ class TestStopGradientRouting:
         assert self._has_nonzero_grad(self._expert_params(module, 0))
 
 
+class TestSuffixPositionParity:
+    """The action expert's RoPE position base must be identical between the
+    SFT forward (where the EOS is an input token) and the eval denoise (where
+    the EOS never enters the cache): KV-invisible tokens occupy no position
+    slot."""
+
+    def test_train_suffix_base_matches_eval_cache_base(self):
+        batch, num_images = 2, 5
+        prefix_text, response, eos, pad = 4, 3, 1, 2
+        text_len = prefix_text + response + eos + pad
+        prefix_len = num_images + text_len
+        suffix_len = 4
+
+        text_valid = torch.tensor(
+            [[True] * (prefix_text + response + eos) + [False] * pad] * batch
+        )
+        kv_mask = torch.tensor(
+            [[True] * (prefix_text + response) + [False] * (eos + pad)] * batch
+        )
+        input_mask = torch.cat(
+            [
+                torch.ones(batch, num_images, dtype=torch.bool),
+                text_valid,
+                torch.ones(batch, suffix_len, dtype=torch.bool),
+            ],
+            dim=1,
+        )
+
+        # The SFT formula: cumsum over the validity with KV-invisible text
+        # positions removed (mirrors Pi0.compute_loss in vlm_vla mode).
+        position_mask = input_mask.clone()
+        position_mask[:, prefix_len - text_len : prefix_len] &= kv_mask
+        train_positions = torch.cumsum(position_mask.int(), dim=1) - 1
+        train_suffix_base = train_positions[:, prefix_len]
+
+        # The eval formula: the denoise suffix continues from the number of
+        # KV-visible cache columns (mirrors Pi0._denoise_actions after
+        # generation, where the generated response has `response` tokens and
+        # no EOS column).
+        cache_valid = torch.cat(
+            [
+                torch.ones(batch, num_images, dtype=torch.bool),
+                torch.ones(batch, prefix_text, dtype=torch.bool),
+                torch.ones(batch, response, dtype=torch.bool),
+            ],
+            dim=1,
+        )
+        eval_suffix_base = (
+            cache_valid.sum(dim=-1)
+            + torch.cumsum(torch.ones(batch, suffix_len, dtype=torch.int), dim=-1)[:, 0]
+            - 1
+        )
+
+        assert torch.equal(train_suffix_base, eval_suffix_base)
+
+
 class TestLanguageLoss:
     def _stub(self, vocab=32, width=16):
         embedder = gemma.Embedder(vocab_size=vocab, embed_dim=width)

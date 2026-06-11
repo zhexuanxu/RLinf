@@ -482,7 +482,23 @@ class Pi0(model.BaseModel):
                 observation.token_kv_cache_mask,
                 prefix_len=prefix_mask.shape[1],
             )
-        positions = torch.cumsum(input_mask.int(), dim=1) - 1
+            # Position numbering also matches the generation-time view: tokens
+            # the action expert never sees (EOS) do not occupy a position slot,
+            # so the suffix RoPE base is identical between training and eval
+            # (where the EOS is never written into the cache). This is a
+            # deliberate divergence from the reference implementation, whose
+            # training positions count the EOS slot while its eval does not.
+            # The EOS key keeps a (duplicated) position, but only its own —
+            # unused — query ever attends it.
+            prefix_len = prefix_mask.shape[1]
+            text_len = observation.token_kv_cache_mask.shape[1]
+            position_mask = input_mask.clone()
+            position_mask[:, prefix_len - text_len : prefix_len] &= (
+                observation.token_kv_cache_mask
+            )
+            positions = torch.cumsum(position_mask.int(), dim=1) - 1
+        else:
+            positions = torch.cumsum(input_mask.int(), dim=1) - 1
 
         prefix_out, suffix_out = self.llm(
             [prefix_tokens, suffix_tokens],

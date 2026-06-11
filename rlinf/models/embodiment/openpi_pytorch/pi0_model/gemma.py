@@ -526,7 +526,7 @@ class Block(nn.Module):
     def forward(
         self,
         xs: list[torch.Tensor | None],
-        kv_cache: tuple[torch.Tensor, torch.Tensor] | None,
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | StaticLayerKV | None,
         positions: torch.Tensor,
         attn_mask: torch.Tensor,
         adarms_cond: list[torch.Tensor | None],
