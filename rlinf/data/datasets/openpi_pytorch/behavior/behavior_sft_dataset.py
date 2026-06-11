@@ -34,11 +34,9 @@ any scene/asset load.
 
 from __future__ import annotations
 
-import bisect
 import dataclasses
 import logging
 import os
-import random
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -76,6 +74,11 @@ from lerobot.common.datasets.video_utils import get_safe_default_codec
 from torch.utils.data import Dataset, get_worker_info
 
 # The vendored, self-contained transform base (replaces openpi.transforms.DataTransformFn).
+from rlinf.data.datasets.openpi_pytorch.behavior.skill_segments import (
+    SkillSegments,
+    build_skill_segments,
+    resolve_frame_subtask,
+)
 from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
     DataTransformFn,
 )
@@ -154,7 +157,6 @@ TASK_NAMES_TO_INDICES = {
 TASK_INDICES_TO_NAMES = {v: k for k, v in TASK_NAMES_TO_INDICES.items()}
 
 ANNOTATIONS_PATH = "annotations"
-ORCHESTRATORS_PATH = "orchestrators"
 
 
 # ---------------------------------------------------------------------------
@@ -231,93 +233,6 @@ class PromptFromLeRobotItem(DataTransformFn):
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator helpers
-# ---------------------------------------------------------------------------
-
-
-def load_orchestrators_data(episode_path_or_level_0_task, episode_len):
-    """Build the per-level (task, start_frame, end_frame) orchestrator table."""
-    output_data = defaultdict(list)
-    if type(episode_path_or_level_0_task) is str:
-        for i in range(4):
-            output_data[i] = [
-                {
-                    "task": episode_path_or_level_0_task,
-                    "start_frame": 0,
-                    "end_frame": episode_len - 1,
-                }
-            ]
-        return output_data
-    episode_path = episode_path_or_level_0_task
-    task_annotated_data = load_json(episode_path / "task_annotated.json")
-    level_0_task = task_annotated_data["cot_task_description"]
-    output_data[0].append(
-        {
-            "task": level_0_task,
-            "start_frame": 0,
-            "end_frame": episode_len - 1,
-        }
-    )
-    try:
-        num_level1_tasks = len(task_annotated_data["cot_subtask_description_list"])
-        for i in range(num_level1_tasks):
-            subtask_data = load_json(episode_path / f"subtask_{i}_annotated.json")
-            subtask = subtask_data["cot_subtask_description"]
-            start_frame, end_frame = (
-                subtask_data["start_frame"],
-                subtask_data["end_frame"] - 1,
-            )
-            skill = subtask_data["skill_description"]
-            output_data[1].append(
-                {"task": skill, "start_frame": start_frame, "end_frame": end_frame}
-            )
-            output_data[2].append(
-                {"task": subtask, "start_frame": start_frame, "end_frame": end_frame}
-            )
-            for event_data_path in sorted(
-                episode_path.glob(f"event_{i}_*_annotated.json")
-            ):
-                event_data = load_json(event_data_path)
-                event_task = event_data["subtask_answer_detailed"]
-                start_frame, end_frame = (
-                    event_data["start_frame"],
-                    event_data["end_frame"] - 1,
-                )
-                output_data[3].append(
-                    {
-                        "task": event_task,
-                        "start_frame": start_frame,
-                        "end_frame": end_frame,
-                    }
-                )
-    except Exception as e:
-        logger.warning(
-            "%s failed to load orchestrators data: %s, falling back to default task.",
-            episode_path,
-            e,
-        )
-        for i in range(len(output_data)):
-            output_data[i] = output_data[0]
-    return output_data
-
-
-def skill_weight(cur_skill, skill_list: list[str]) -> float:
-    """Return the sampling weight for ``cur_skill`` given a ``skill:weight`` list."""
-    if "all" in skill_list:
-        skill_list = [skill for skill in skill_list if skill != "all"]
-        for skill_item in skill_list:
-            skill, weight = skill_item.split(":")
-            if skill == cur_skill:
-                return float(weight)
-        return 1.0
-    for skill_item in skill_list:
-        skill, weight = skill_item.split(":")
-        if skill == cur_skill:
-            return float(weight)
-    return 0.0
-
-
-# ---------------------------------------------------------------------------
 # BehaviorSftDatasetMetadata
 # ---------------------------------------------------------------------------
 
@@ -363,7 +278,7 @@ class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
             self.load_metadata()
 
     def load_metadata(self):
-        """Load info, filtered tasks/episodes, annotations, orchestrators, stats."""
+        """Load info, filtered tasks/episodes, annotations, and stats."""
         self.info = load_info(self.root)
         check_version_compatibility(self.repo_id, self._version, CODEBASE_VERSION)
         self.tasks, self.task_to_task_index, self.task_names = self.load_tasks(
@@ -380,7 +295,6 @@ class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
 
         self.episodes = self.load_episodes(self.root)
         self.annotations = self.load_annotations(self.root)
-        self.orchestrators = self.load_orchestrators(self.root)
         import packaging.version
 
         if self._version < packaging.version.parse("v2.1"):
@@ -433,7 +347,7 @@ class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
         }
 
     def load_annotations(self, local_dir: Path):
-        """Load per-episode skill annotations (used by skill mode)."""
+        """Load per-episode skill annotations (the subtask label source)."""
         annotations_dir = local_dir / ANNOTATIONS_PATH
         if not annotations_dir.exists():
             return {}
@@ -446,30 +360,6 @@ class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
             if int(task_id.name[5:]) in self.tasks
             for episode in sorted(task_id.iterdir())
         }
-
-    def load_orchestrators(self, local_dir: Path):
-        """Load (or synthesize) per-episode fine-grained task orchestrators."""
-        orchestrators_path = local_dir / ORCHESTRATORS_PATH
-        orchestrators = {
-            episode_key: load_orchestrators_data(
-                episode_data["tasks"][0], episode_data["length"]
-            )
-            for episode_key, episode_data in sorted(self.episodes.items())
-        }
-        if orchestrators_path.exists():
-            for task in self.tasks:
-                task_dir = orchestrators_path / f"task-{task:04d}"
-                if task_dir.exists():
-                    orchestrators.update(
-                        {
-                            int(episode.stem[8:]): load_orchestrators_data(
-                                episode,
-                                self.episodes[int(episode.stem[8:])]["length"],
-                            )
-                            for episode in sorted(task_dir.iterdir())
-                        }
-                    )
-        return orchestrators
 
     def get_annotation_path(self, ep_index: int) -> Path:
         """Resolve the annotation file path for ``ep_index``."""
@@ -547,12 +437,18 @@ class BehaviorSftDataset(LeRobotDataset):
     loader workers (and, in this port, across distributed ranks) so that every
     consumer sees a disjoint stream — see :meth:`__getitem__`.
 
-    Direct-task mode (the default) sets the per-frame prompt to the fine-grained
-    task text. Skill mode (``skill_labels`` provided) additionally resolves each
-    frame to a skill-level label and skips gap frames; the skill-boundary logic
-    is carried over from the old pipeline via :meth:`_build_skill_boundaries` /
-    :meth:`_get_skill_label` and is intended to be aligned to the reference
-    ``openpi-comet`` semantics in a follow-up.
+    The text attached to each streamed frame is controlled by
+    ``fine_grained_level``:
+
+    * ``0`` — one text item: ``item["task"]`` is the episode's main-task text
+      (the model prompt). Every frame is used.
+    * ``1`` — two text items: ``item["task"]`` (still the main task, the model
+      prompt) plus ``item["response"]``, the subtask label supervising the VLM.
+      The label is resolved deterministically from the episode's
+      ``skill_annotation`` via :mod:`.skill_segments` and the configured
+      ``subtask_labels``; frames the resolver maps to no subtask (outside
+      ``valid_duration``, gaps with ``enable_gap=False``, trailing gaps) are
+      skipped by the streaming cursor.
     """
 
     def __init__(
@@ -581,18 +477,35 @@ class BehaviorSftDataset(LeRobotDataset):
         train_rgb_type: str = "regular",
         return_seg_instance: bool = False,
         skill_list: list[str] | None = None,
-        skill_labels: dict[int, str] | None = None,
-        use_skill: bool = False,
+        subtask_labels: dict[int, str] | None = None,
         enable_gap: bool = True,
-        allow_left: int = 0,
-        allow_right: int = 0,
         dist_rank: int | None = None,
         dist_world_size: int | None = None,
     ):
         import packaging.version
 
-        if skill_list is None:
-            skill_list = ["all"]
+        # Weighted skill sampling was removed together with the orchestrator
+        # machinery (its only label source); only the no-op values survive so
+        # stale configs fail loudly instead of silently changing the data mix.
+        if skill_list not in (None, ["all"]):
+            raise ValueError(
+                "BehaviorSftDataset no longer supports weighted skill sampling; "
+                f"skill_list must be None or ['all'], got {skill_list!r}."
+            )
+        if fine_grained_level not in (0, 1):
+            raise ValueError(
+                f"fine_grained_level must be 0 or 1, got {fine_grained_level!r}."
+            )
+        if fine_grained_level == 1 and not subtask_labels:
+            raise ValueError(
+                "fine_grained_level=1 requires subtask_labels (the per-task "
+                "subtask list from data.task_subtasks); none were supplied."
+            )
+        if fine_grained_level == 1 and not chunk_streaming_using_keyframe:
+            raise ValueError(
+                "fine_grained_level=1 skips unlabeled frames and therefore "
+                "requires chunk streaming (chunk_streaming_using_keyframe=True)."
+            )
 
         Dataset.__init__(self)
         self.repo_id = repo_id
@@ -609,21 +522,12 @@ class BehaviorSftDataset(LeRobotDataset):
         self.episodes_since_last_encoding = 0
         self.return_seg_instance = return_seg_instance
         self.train_rgb_type = train_rgb_type
-        self.skill_list = skill_list
-        self.skill_labels = skill_labels
-        # When `use_skill` is set, the training prompt is the per-frame SKILL text
-        # (resolved by the window logic) instead of the main-task text; explicit
-        # `skill_labels` are required in that case (the production builder sources
-        # them from config), otherwise the constructor raises below.
-        self.use_skill = use_skill
-        # Skill-mode windowing, aligned with the JAX openpi-comet semantics:
-        # `enable_gap` absorbs a true gap into both adjacent skills (so the gap
-        # region overlaps and is shared); `allow_left` / `allow_right` are frame
-        # counts that extend contiguous skill boundaries outward (also creating
-        # overlap). See `_build_skill_boundaries` / `_get_skill_label`.
+        self.fine_grained_level = int(fine_grained_level)
+        self.subtask_labels = subtask_labels
+        # Gap frames (between two skill windows) belong to the NEXT skill when
+        # `enable_gap` is set, and are skipped from training otherwise. See
+        # `skill_segments.resolve_frame_subtask` for the full edge rules.
         self.enable_gap = enable_gap
-        self.allow_left = allow_left
-        self.allow_right = allow_right
         # Explicit distributed identity captured in the MAIN process. The streaming
         # chunk partition is rank-aware, but DataLoader workers are SPAWNED (fresh
         # interpreters that do NOT inherit ``torch.distributed``), so reading
@@ -684,16 +588,15 @@ class BehaviorSftDataset(LeRobotDataset):
         self.episodes = sorted([ep for eps in epi_by_task.values() for ep in eps])
 
         self._chunk_streaming_using_keyframe = chunk_streaming_using_keyframe
+        self.shuffle = shuffle
         if self._chunk_streaming_using_keyframe:
             self.chunks = self._get_keyframe_chunk_indices()
-            if shuffle:
-                self.current_streaming_chunk_idx = None
-                self.current_streaming_frame_idx = None
-            else:
-                self.current_streaming_chunk_idx = 0
-                self.current_streaming_frame_idx = self.chunks[
-                    self.current_streaming_chunk_idx
-                ][0]
+            # The per-(rank, worker) chunk slice is resolved lazily on first
+            # access (inside the worker process) by `_select_streaming_chunk`;
+            # `shuffle` decides whether that slice is shuffled and entered at a
+            # random chunk, or walked in order from the first chunk.
+            self.current_streaming_chunk_idx = None
+            self.current_streaming_frame_idx = None
             self.obs_loaders = {}
             self._should_obs_loaders_reload = True
 
@@ -747,125 +650,26 @@ class BehaviorSftDataset(LeRobotDataset):
             check_delta_timestamps(self.delta_timestamps, self.fps, self.tolerance_s)
             self.delta_indices = get_delta_indices(self.delta_timestamps, self.fps)
 
-        self.prepare_task(fine_grained_level)
-
-        # Skill mode requires explicit REFERENCE skill_labels (sourced from config by
-        # the builder). Deriving them from this dataset's orchestrators is unsafe —
-        # the real 2025-challenge-demos collapses every orchestrator level to the full
-        # task text, so derived labels would equal the task prompt — hence fail loudly.
-        if self.use_skill and self.skill_labels is None:
-            raise ValueError(
-                "BehaviorSftDataset(use_skill=True) requires explicit skill_labels "
-                "(the reference per-task subtask labels); none were supplied. The "
-                "production builder sources them from data.task_subtasks."
-            )
-        if self.skill_labels is not None:
-            self._build_skill_boundaries()
+        # Subtask supervision resolves every frame through the deterministic
+        # skill-segment table; an episode without a (valid) skill annotation
+        # cannot be labeled, so it aborts construction instead of training on
+        # silently mislabeled frames.
+        self._skill_segments: dict[int, SkillSegments] = {}
+        if self.fine_grained_level == 1:
+            for ep_id in self.episodes:
+                annotation = self.meta.annotations.get(ep_id)
+                if annotation is None:
+                    raise ValueError(
+                        f"episode {ep_id}: fine_grained_level=1 requires a skill "
+                        "annotation under annotations/, but none was loaded."
+                    )
+                self._skill_segments[ep_id] = build_skill_segments(
+                    annotation, len(self.subtask_labels), episode_id=ep_id
+                )
 
         self.omnigibson_mapping = {
             ep_idx: defaultdict(dict) for ep_idx in self.episodes
         }
-
-    def prepare_task(self, fine_grained_level: int):
-        """Pre-compute cumulative subtask end-frames per episode for lookups."""
-        self.fine_grained_level = fine_grained_level
-        self.task_sizes = {}
-        try:
-            for ep_id, ep_orch in self.meta.orchestrators.items():
-                self.task_sizes[ep_id] = [
-                    task_info["end_frame"] for task_info in ep_orch[fine_grained_level]
-                ]
-        except Exception as e:
-            logger.warning(
-                "%s failed to calculate episode subtask cumulate: %s", self.repo_id, e
-            )
-
-    # --- Skill label support (for VLM SFT) ---------------------------------
-    # Ported from the old pipeline. The skill-boundary / gap structure is kept
-    # intact here so that a follow-up can align the precise gap-splitting and
-    # left/right inclusion semantics to the reference openpi-comet dataset.
-
-    def _build_skill_boundaries(self):
-        """Build per-episode *effective* skill windows, aligned with openpi-comet.
-
-        For each skill, the effective window extends a contiguous (no-gap)
-        boundary outward by ``allow_left`` / ``allow_right`` frames, and — when
-        ``enable_gap`` is set — absorbs a true gap into both adjacent skills so
-        the gap region overlaps and is shared. Windows are clamped to the
-        episode's valid duration. Frames inside more than one window are resolved
-        per-sample by a random choice in :meth:`_get_skill_label`.
-        """
-        self.skill_start_frames: dict[int, list[int]] = {}
-        self.skill_end_frames: dict[int, list[int]] = {}
-        for ep_id in self.episodes:
-            if ep_id not in self.meta.annotations:
-                continue
-            annotation = self.meta.annotations[ep_id]
-            skills = sorted(
-                annotation["skill_annotation"],
-                key=lambda s: s["skill_idx"],
-            )
-            starts = [s["frame_duration"][0] for s in skills]
-            ends = [s["frame_duration"][1] for s in skills]
-            valid = annotation["meta_data"]["valid_duration"]
-            valid_start, valid_end = valid[0], valid[1]
-            n = len(skills)
-            eff_s = list(starts)
-            eff_e = list(ends)
-            for i in range(n):
-                # Left boundary: absorb a true gap (enable_gap) or extend a
-                # contiguous boundary by allow_left frames.
-                if i > 0 and ends[i - 1] < starts[i]:
-                    if self.enable_gap:
-                        eff_s[i] = ends[i - 1]
-                else:
-                    eff_s[i] = starts[i] - self.allow_left
-                # Right boundary: symmetric.
-                if i < n - 1 and ends[i] < starts[i + 1]:
-                    if self.enable_gap:
-                        eff_e[i] = starts[i + 1]
-                else:
-                    eff_e[i] = ends[i] + self.allow_right
-                eff_s[i] = max(eff_s[i], valid_start)
-                eff_e[i] = min(eff_e[i], valid_end)
-            self.skill_start_frames[ep_id] = eff_s
-            self.skill_end_frames[ep_id] = eff_e
-
-    def _is_gap_frame(self, ep_idx: int, frame_index: int) -> bool:
-        """Return True if ``frame_index`` falls outside every effective window."""
-        start_frames = self.skill_start_frames.get(ep_idx)
-        end_frames = self.skill_end_frames.get(ep_idx)
-        if start_frames is None or end_frames is None:
-            return False
-        for start, end in zip(start_frames, end_frames):
-            if start <= frame_index < end:
-                return False
-        return True
-
-    def _get_skill_label(self, item: dict) -> str:
-        """Resolve a frame to a skill label, aligned with openpi-comet.
-
-        A frame may fall inside more than one skill's effective window (overlap
-        from gap absorption or boundary extension); in that case one candidate
-        is chosen at random per sample. A frame inside exactly one window takes
-        that skill; a frame outside all windows falls back to the nearest
-        preceding skill.
-        """
-        ep_idx = item["episode_index"].item()
-        frame_index = round(item["timestamp"].item() * self.fps)
-        start_frames = self.skill_start_frames[ep_idx]
-        end_frames = self.skill_end_frames[ep_idx]
-        candidates = [
-            i
-            for i in range(len(start_frames))
-            if start_frames[i] <= frame_index < end_frames[i]
-        ]
-        if len(candidates) == 1:
-            return self.skill_labels[candidates[0]]
-        if len(candidates) > 1:
-            return self.skill_labels[random.choice(candidates)]
-        skill_idx = bisect.bisect_right(start_frames, frame_index) - 1
-        return self.skill_labels[max(0, skill_idx)]
 
     # -------------------------------------------------------------------------
 
@@ -973,13 +777,17 @@ class BehaviorSftDataset(LeRobotDataset):
                 num_workers=num_workers,
             )
             worker_chunks = [self.chunks[i] for i in indices]
-            rng = np.random.default_rng(self.seed + global_worker_id)
-            rng.shuffle(worker_chunks)
+            if self.shuffle:
+                rng = np.random.default_rng(self.seed + global_worker_id)
+                rng.shuffle(worker_chunks)
             self._active_chunks = worker_chunks
-        rng = np.random.default_rng(self.seed + global_worker_id)
-        self.current_streaming_chunk_idx = rng.integers(
-            0, len(self._active_chunks)
-        ).item()
+        if self.shuffle:
+            rng = np.random.default_rng(self.seed + global_worker_id)
+            self.current_streaming_chunk_idx = rng.integers(
+                0, len(self._active_chunks)
+            ).item()
+        else:
+            self.current_streaming_chunk_idx = 0
         self.current_streaming_frame_idx = self._active_chunks[
             self.current_streaming_chunk_idx
         ][0]
@@ -998,146 +806,127 @@ class BehaviorSftDataset(LeRobotDataset):
         ``idx`` values, which are ignored). Folding the distributed rank into the
         chunk stride is therefore required to avoid every rank seeing identical
         data under ``torchrun``/DDP.
+
+        At ``fine_grained_level=1``, frames the segment resolver maps to no
+        subtask are skipped by advancing the cursor in a loop (gaps can span
+        hundreds of consecutive frames, so this must not recurse).
         """
         if not self._chunk_streaming_using_keyframe:
             item = super().__getitem__(idx)
-            self._set_prompt(item)
+            self._attach_text(item)
             return item
 
         # Streaming mode
         if self.current_streaming_chunk_idx is None:
             self._select_streaming_chunk()
 
-        if (
-            self.current_streaming_frame_idx
-            >= self._active_chunks[self.current_streaming_chunk_idx][1]
-        ):
-            self.current_streaming_chunk_idx += 1
-            if self.current_streaming_chunk_idx >= len(self._active_chunks):
-                self.current_streaming_chunk_idx = 0
-            self.current_streaming_frame_idx = self._active_chunks[
-                self.current_streaming_chunk_idx
-            ][0]
-            self._should_obs_loaders_reload = True
+        while True:
+            if (
+                self.current_streaming_frame_idx
+                >= self._active_chunks[self.current_streaming_chunk_idx][1]
+            ):
+                self.current_streaming_chunk_idx += 1
+                if self.current_streaming_chunk_idx >= len(self._active_chunks):
+                    self.current_streaming_chunk_idx = 0
+                self.current_streaming_frame_idx = self._active_chunks[
+                    self.current_streaming_chunk_idx
+                ][0]
+                self._should_obs_loaders_reload = True
 
-        item = self.hf_dataset[self.current_streaming_frame_idx]
-        if "observation.task_info" in item:
-            item.pop("observation.task_info")
-        ep_idx = item["episode_index"].item()
+            item = self.hf_dataset[self.current_streaming_frame_idx]
+            if "observation.task_info" in item:
+                item.pop("observation.task_info")
+            ep_idx = item["episode_index"].item()
 
-        if self._should_obs_loaders_reload:
-            for loader in self.obs_loaders.values():
-                loader.close()
-            self.obs_loaders = {}
-            self.current_streaming_episode_idx = ep_idx
-            for vid_key in self.meta.video_keys:
-                kwargs = {}
-                task_id = item["task_index"].item()
-                if "rgb" in vid_key:
-                    kwargs["train_rgb_type"] = self.train_rgb_type
-                loader_cls = self._obs_loader_map.get(vid_key.split(".")[2])
-                if loader_cls is None:
-                    continue
-                self.obs_loaders[vid_key] = iter(
-                    loader_cls(
-                        data_path=self.root,
-                        task_id=task_id,
-                        camera_id=vid_key.split(".")[-1],
-                        demo_id=f"{ep_idx:08d}",
-                        start_idx=self._active_chunks[self.current_streaming_chunk_idx][
-                            2
-                        ],
-                        start_idx_is_keyframe=False,
-                        batch_size=1,
-                        stride=1,
-                        **kwargs,
+            if self._should_obs_loaders_reload:
+                for loader in self.obs_loaders.values():
+                    loader.close()
+                self.obs_loaders = {}
+                self.current_streaming_episode_idx = ep_idx
+                for vid_key in self.meta.video_keys:
+                    kwargs = {}
+                    task_id = item["task_index"].item()
+                    if "rgb" in vid_key:
+                        kwargs["train_rgb_type"] = self.train_rgb_type
+                    loader_cls = self._obs_loader_map.get(vid_key.split(".")[2])
+                    if loader_cls is None:
+                        continue
+                    self.obs_loaders[vid_key] = iter(
+                        loader_cls(
+                            data_path=self.root,
+                            task_id=task_id,
+                            camera_id=vid_key.split(".")[-1],
+                            demo_id=f"{ep_idx:08d}",
+                            start_idx=self._active_chunks[
+                                self.current_streaming_chunk_idx
+                            ][2],
+                            start_idx_is_keyframe=False,
+                            batch_size=1,
+                            stride=1,
+                            **kwargs,
+                        )
                     )
+                self._should_obs_loaders_reload = False
+
+            # Subtask resolution decides whether this frame is used BEFORE any
+            # per-frame decode work; skipped frames still consume one frame from
+            # every video loader so the loaders stay in lockstep with the cursor.
+            subtask_index = None
+            if self.fine_grained_level == 1:
+                frame_index = round(item["timestamp"].item() * self.fps)
+                subtask_index = resolve_frame_subtask(
+                    self._skill_segments[ep_idx], frame_index, self.enable_gap
                 )
-            self._should_obs_loaders_reload = False
+                if subtask_index is None:
+                    self.current_streaming_frame_idx += 1
+                    for key in self.obs_loaders:
+                        next(self.obs_loaders[key])[0]
+                    continue
 
-        query_indices = None
-        if self.delta_indices is not None:
-            query_indices, padding = self._get_query_indices(
-                self.current_streaming_frame_idx, ep_idx
-            )
-            query_result = self._query_hf_dataset(query_indices)
-            item = {**item, **padding}
-            for key, val in query_result.items():
-                item[key] = val
+            if self.delta_indices is not None:
+                query_indices, padding = self._get_query_indices(
+                    self.current_streaming_frame_idx, ep_idx
+                )
+                query_result = self._query_hf_dataset(query_indices)
+                item = {**item, **padding}
+                for key, val in query_result.items():
+                    item[key] = val
 
-        task_skill = self._get_current_task_skill(item)
-        weight = skill_weight(task_skill, self.skill_list)
-        if not random.choices([True, False], weights=[weight, 1 - weight])[0]:
-            self.current_streaming_frame_idx += 1
             for key in self.obs_loaders:
-                next(self.obs_loaders[key])[0]
-            return self.__getitem__(idx)
+                item[key] = next(self.obs_loaders[key])[0]
 
-        # Skip frames that fall in gaps between skill ranges.
-        if self.skill_labels is not None and self.enable_gap:
-            ep_idx_val = item["episode_index"].item()
-            frame_index_val = round(item["timestamp"].item() * self.fps)
-            if self._is_gap_frame(ep_idx_val, frame_index_val):
-                self.current_streaming_frame_idx += 1
-                for key in self.obs_loaders:
-                    next(self.obs_loaders[key])[0]
-                return self.__getitem__(idx)
+            if self.image_transforms is not None:
+                image_keys = self.meta.camera_keys
+                for cam in image_keys:
+                    item[cam] = self.image_transforms(item[cam])
 
-        for key in self.obs_loaders:
-            item[key] = next(self.obs_loaders[key])[0]
+            self._attach_text(item, subtask_index)
+            self.current_streaming_frame_idx += 1
+            return item
 
-        if self.image_transforms is not None:
-            image_keys = self.meta.camera_keys
-            for cam in image_keys:
-                item[cam] = self.image_transforms(item[cam])
+    def _attach_text(self, item: dict, subtask_index: int | None = None) -> None:
+        """Attach the per-frame text fields to ``item``.
 
-        self._set_prompt(item)
-        self.current_streaming_frame_idx += 1
-        return item
-
-    def _get_current_task_skill(self, item: dict) -> str:
-        """Look up the level-1 (skill) task text for the current frame."""
-        ep_idx = item["episode_index"].item()
-        frame_index = round(item["timestamp"].item() * self.fps)
-        sub_idx = bisect.bisect_right(
-            self.task_sizes[ep_idx], frame_index, hi=len(self.task_sizes[ep_idx]) - 1
-        )
-        task_skill = self.meta.orchestrators[ep_idx][1][sub_idx]["task"]
-        return task_skill
-
-    def _get_fine_grained_task(self, item: dict) -> str:
-        """Look up the fine-grained task text (prompt) for the current frame."""
-        ep_idx = item["episode_index"].item()
-        task_idx = item["task_index"].item()
-        frame_index = round(item["timestamp"].item() * self.fps)
-        try:
-            sub_idx = bisect.bisect_right(
-                self.task_sizes[ep_idx],
-                frame_index,
-                hi=len(self.task_sizes[ep_idx]) - 1,
-            )
-            task_text = self.meta.orchestrators[ep_idx][self.fine_grained_level][
-                sub_idx
-            ]["task"]
-        except Exception as e:
-            logger.warning("%s failed to get subtask %s: %s", self.repo_id, item, e)
-            task_text = self.meta.tasks[task_idx]
-        return task_text
-
-    def _set_prompt(self, item: dict) -> None:
-        """Set the per-frame training-prompt fields on ``item``.
-
-        Always sets ``item["task"]`` (the fine-grained main-task text). In skill mode
-        it also resolves the per-frame skill text (``item["skill_label"]``) and, when
-        ``use_skill`` is on, makes that skill text the training prompt
-        (``item["prompt"]``, which the transform prefers over ``item["task"]``). With
-        ``use_skill`` off, no ``prompt`` key is set, so the prompt is the task text.
+        Always sets ``item["task"]``, the episode's main-task text (the model
+        prompt at every level). At ``fine_grained_level=1`` it additionally sets
+        ``item["response"]``, the subtask label supervising the VLM. The
+        non-streaming path passes ``subtask_index=None`` and resolves it here.
         """
-        item["task"] = self._get_fine_grained_task(item)
-        if self.skill_labels is not None:
-            item["skill_label"] = self._get_skill_label(item)
-            if self.use_skill:
-                item["prompt"] = item["skill_label"]
+        ep_idx = item["episode_index"].item()
+        item["task"] = self.meta.episodes[ep_idx]["tasks"][0]
+        if self.fine_grained_level != 1:
+            return
+        if subtask_index is None:
+            frame_index = round(item["timestamp"].item() * self.fps)
+            subtask_index = resolve_frame_subtask(
+                self._skill_segments[ep_idx], frame_index, self.enable_gap
+            )
+            if subtask_index is None:
+                raise ValueError(
+                    f"episode {ep_idx} frame {frame_index} has no subtask label; "
+                    "unlabeled frames are only skippable in streaming mode."
+                )
+        item["response"] = self.subtask_labels[subtask_index]
 
     def _get_query_indices(self, idx: int, ep_idx: int):
         """Compute action-horizon query indices and per-key padding masks."""

@@ -103,13 +103,16 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             loss = output["loss"]
 
         step_metrics = {"loss": loss.detach().item()}
-        if isinstance(output, dict) and output.get("dynamics_loss", None) is not None:
-            step_metrics.update(
-                {
-                    "dynamics_loss": output["dynamics_loss"].detach().item(),
-                    "action_loss": output["action_loss"].detach().item(),
-                }
-            )
+        if isinstance(output, dict):
+            # Log every scalar the model reports (e.g. per-component losses or
+            # accuracies) without hardcoding model-specific metric names.
+            for key, value in output.items():
+                if key == "loss" or value is None:
+                    continue
+                if isinstance(value, torch.Tensor) and value.numel() == 1:
+                    step_metrics[key] = value.detach().item()
+                elif isinstance(value, (int, float)):
+                    step_metrics[key] = float(value)
         return loss, step_metrics
 
     def save_checkpoint(self, save_path: str, step: int = 0) -> None:

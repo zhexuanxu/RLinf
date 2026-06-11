@@ -99,7 +99,15 @@ def resize_with_pad_torch(
 
 @dataclasses.dataclass
 class Observation:
-    """Holds observations, i.e., inputs to the model. PyTorch-compatible version."""
+    """Holds observations, i.e., inputs to the model. PyTorch-compatible version.
+
+    The three optional per-token masks (``token_ar_mask``, ``token_loss_mask``,
+    ``token_kv_cache_mask``) are per-batch ``[B, L]`` bool tensors aligned with
+    ``tokenized_prompt``. They carry the VLM token-output contract: which text
+    tokens attend causally, which positions the CE loss supervises, and which
+    tokens the action expert may attend to. They are ``None`` in action-only
+    mode.
+    """
 
     images: dict[str, torch.Tensor]
     image_masks: dict[str, torch.Tensor]
@@ -108,6 +116,7 @@ class Observation:
     tokenized_prompt_mask: torch.Tensor | None = None
     token_ar_mask: torch.Tensor | None = None
     token_loss_mask: torch.Tensor | None = None
+    token_kv_cache_mask: torch.Tensor | None = None
     pcd_xyz: torch.Tensor | None = None
 
     @classmethod
@@ -138,6 +147,7 @@ class Observation:
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            token_kv_cache_mask=data.get("token_kv_cache_mask"),
             pcd_xyz=data.get("pcd_xyz"),
         )
 
@@ -176,6 +186,7 @@ def _observation_to_dtype(obs: Observation, dtype: torch.dtype) -> Observation:
         tokenized_prompt_mask=_tensor_to_dtype(obs.tokenized_prompt_mask, dtype),
         token_ar_mask=_tensor_to_dtype(obs.token_ar_mask, dtype),
         token_loss_mask=_tensor_to_dtype(obs.token_loss_mask, dtype),
+        token_kv_cache_mask=_tensor_to_dtype(obs.token_kv_cache_mask, dtype),
         pcd_xyz=_tensor_to_dtype(obs.pcd_xyz, dtype),
     )
 
@@ -289,6 +300,7 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        token_kv_cache_mask=observation.token_kv_cache_mask,
         pcd_xyz=observation.pcd_xyz,
     )
 

@@ -90,13 +90,6 @@ BEHAVIOR 流式加载器直接从 ``data:`` 段读取其全部参数（没有隐
      fine_grained_level: 0
      tolerance_s: 1.0e-4
      tasks: ["turning_on_radio"]
-     use_skill: false
-     task_subtasks:
-       turning_on_radio:
-         - "move to radio"
-         - "pick up radio from coffee table"
-         - "press radio"
-         - "place radio on coffee table"
 
 关键数据字段：
 
@@ -105,12 +98,46 @@ BEHAVIOR 流式加载器直接从 ``data:`` 段读取其全部参数（没有隐
 - ``repo_id``：BEHAVIOR 示范数据 repo id（``behavior-1k/2025-challenge-demos``）。
 - ``modalities``：加载器消费的输入模态（例如 ``["rgb"]``）。
 - ``num_workers``：数据加载器的 worker 进程数。
-- ``fine_grained_level`` 与 ``tolerance_s``：流式读取的时间对齐控制参数。
+- ``fine_grained_level``：逐帧文本粒度。``0``（动作输出的 ``vla`` 训练）每帧
+  附带一条文本——主任务提示词；``1``（``vlm_vla`` 训练，见下文）额外附带由
+  该回合技能标注确定性解析出的子任务标签，作为 VLM 的监督回复。
+- ``tolerance_s``：流式读取的时间对齐控制参数。
 - ``tasks``：要训练的 BEHAVIOR 任务。
-- ``use_skill``：为 ``false`` 时在主任务文本上训练；为 ``true`` 时在从
-  ``task_subtasks`` 选取的逐帧 REFERENCE 技能文本上训练。
-- ``task_subtasks``：每个任务的有序技能标签，当 ``use_skill: true`` 时用于构建
-  下标到标签的映射。
+
+VLM 输出 token（``vlm_vla``）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``examples/sft/config/behavior_pi05_vlm_vla.yaml`` 训练 pi0.5 的 VLM 在动作
+专家去噪之前先输出子任务。它设置 ``actor.model.openpi.mode: vlm_vla``、
+``data.fine_grained_level: 1``，以及每个任务的子任务标签：
+
+.. code:: yaml
+
+   data:
+     fine_grained_level: 1
+     enable_gap: true
+     tasks: ["turning_on_radio"]
+     task_subtasks:
+       turning_on_radio:
+         - "move to radio"
+         - "pick up radio from coffee table"
+         - "press radio"
+         - "place radio on coffee table"
+
+- ``task_subtasks``：每个任务的有序子任务标签，由标注的 ``skill_idx`` 索引；
+  在 ``fine_grained_level: 1`` 下必须配置。
+- ``enable_gap``：两个技能窗口之间的间隙帧在为 ``true``（默认）时归属于
+  下一个技能；为 ``false`` 时不用于训练。位于标注 ``valid_duration`` 之外的
+  帧和末尾间隙永远不会被使用。
+
+SFT 损失变为 ``language_loss_weight * 子任务 CE + action_loss_weight *
+流匹配``（两个权重位于 ``actor.model.openpi`` 下）；训练日志会在 ``loss``
+之外记录 ``language_loss``、``action_loss`` 与 ``language_acc``。
+``stop_gradient_to_vlm: True`` 使流匹配梯度只进入动作专家（CE 损失仍训练
+完整的 VLM）。评估时模型先（贪心地，至多 ``max_new_tokens`` 个 token）生成
+子任务文本，再让动作专家在生成 token 上做注意力去噪——EOS token 对动作专家
+永远不可见。``mode: vla`` 搭配 ``fine_grained_level: 1``（或 ``mode:
+vlm_vla`` 搭配 level ``0``）会在启动时被拒绝。
 
 归一化统计与 tokenizer
 ~~~~~~~~~~~~~~~~~~~~~~~

@@ -88,10 +88,17 @@ def get_model(cfg, torch_dtype=None):
         pi05=True,
         action_horizon=int(cfg.num_action_chunks),
         action_dim=int(model_cfg.model_action_dim),
+        max_token_len=int(model_cfg.get("max_token_len", 200)),
         paligemma_variant=str(model_cfg.paligemma_variant),
         action_expert_variant=str(model_cfg.action_expert_variant),
         dtype="bfloat16",
         pcd=False,
+        mode=str(model_cfg.get("mode", "vla")),
+        language_loss_weight=float(model_cfg.get("language_loss_weight", 1.0)),
+        action_loss_weight=float(model_cfg.get("action_loss_weight", 1.0)),
+        stop_gradient_to_vlm=bool(model_cfg.get("stop_gradient_to_vlm", False)),
+        max_new_tokens=int(model_cfg.get("max_new_tokens", 24)),
+        language_temperature=float(model_cfg.get("language_temperature", 0.0)),
     )
     model = pi0_config.create()
     # Strict load enforces key/shape parity. Weights are materialized in fp32, so a
@@ -125,6 +132,7 @@ def get_model(cfg, torch_dtype=None):
         action_chunk=action_chunk,
         action_env_dim=action_env_dim,
         model_action_dim=pi0_config.action_dim,
+        vlm_vla=(pi0_config.mode == "vlm_vla"),
     )
 
     logger.info(

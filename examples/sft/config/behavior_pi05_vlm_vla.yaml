@@ -20,7 +20,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "sft_behavior_pi05_vla"
+    experiment_name: "sft_behavior_pi05_vlm_vla"
     logger_backends: ["tensorboard"]
 
   max_epochs: 20
@@ -37,12 +37,24 @@ data:
   repo_id: "behavior-1k/2025-challenge-demos"
   modalities: ["rgb"]
   num_workers: 8
-  # Action-only training reads main-task prompts (level 0). Subtask
-  # supervision (level 1) is the vlm_vla recipe — see behavior_pi05_vlm_vla.yaml.
-  fine_grained_level: 0
+  # Subtask supervision: each frame carries the main task as the prompt plus
+  # the subtask label (resolved from the episode's skill annotation) as the
+  # VLM response. Level 1 requires mode: vlm_vla below and task_subtasks.
+  fine_grained_level: 1
+  # Gap frames between two skill windows belong to the NEXT skill when true
+  # (the default); when false they are not used for training. Frames outside
+  # the annotation's valid_duration and trailing gaps are never used.
+  enable_gap: true
   tolerance_s: 1.0e-4
-  # BEHAVIOR task-0000.
+  # BEHAVIOR task-0000 with its four ordered subtask labels, indexed by the
+  # annotation's skill_idx.
   tasks: ["turning_on_radio"]
+  task_subtasks:
+    turning_on_radio:
+      - "move to radio"
+      - "pick up radio from coffee table"
+      - "press radio"
+      - "place radio on coffee table"
 
 algorithm:
   adv_type: gae
@@ -57,7 +69,7 @@ actor:
 
   # actor.model comes from `defaults: model/pi0_5_pytorch@actor.model` (the
   # path-free shape template). The experiment config supplies the filesystem
-  # paths so the model template stays reusable.
+  # paths and the vlm_vla mode knobs.
   model:
     # New-format fp32 base checkpoint (exactly what the reference trainer loads).
     model_path: /path/to/pi05_base_pytorch_new
@@ -70,6 +82,17 @@ actor:
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).
       paligemma_tokenizer: /path/to/paligemma_tokenizer/paligemma_tokenizer.model
+      # VLM token output: the SFT loss is
+      #   language_loss_weight * subtask CE + action_loss_weight * flow matching
+      # and eval generates the subtask (greedy, up to max_new_tokens) before
+      # denoising actions. stop_gradient_to_vlm keeps the flow gradient inside
+      # the action expert (the CE loss still trains the full VLM).
+      mode: vlm_vla
+      language_loss_weight: 1.0
+      action_loss_weight: 1.0
+      stop_gradient_to_vlm: False
+      max_new_tokens: 24
+      language_temperature: 0.0
 
   optim:
     lr: 2.5e-5

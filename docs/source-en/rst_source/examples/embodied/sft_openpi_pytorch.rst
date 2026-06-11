@@ -100,13 +100,6 @@ The BEHAVIOR streaming loader reads all of its parameters directly from the
      fine_grained_level: 0
      tolerance_s: 1.0e-4
      tasks: ["turning_on_radio"]
-     use_skill: false
-     task_subtasks:
-       turning_on_radio:
-         - "move to radio"
-         - "pick up radio from coffee table"
-         - "press radio"
-         - "place radio on coffee table"
 
 Key data fields:
 
@@ -116,13 +109,52 @@ Key data fields:
   (``behavior-1k/2025-challenge-demos``).
 - ``modalities``: input modalities consumed by the loader (e.g. ``["rgb"]``).
 - ``num_workers``: number of data-loader worker processes.
-- ``fine_grained_level`` and ``tolerance_s``: time-alignment controls for the
-  streaming reader.
+- ``fine_grained_level``: per-frame text granularity. ``0`` (action-only
+  ``vla`` training) attaches one text item per frame — the main-task prompt.
+  ``1`` (``vlm_vla`` training, see below) additionally attaches the subtask
+  label, resolved deterministically from the episode's skill annotation, as
+  the VLM response.
+- ``tolerance_s``: time-alignment control for the streaming reader.
 - ``tasks``: the BEHAVIOR task(s) to train on.
-- ``use_skill``: when ``false``, train on the main-task text; when ``true``,
-  train on the per-frame REFERENCE skill text selected from ``task_subtasks``.
-- ``task_subtasks``: per-task ordered skill labels used to build the
-  index-to-label mapping when ``use_skill: true``.
+
+VLM token output (``vlm_vla``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``examples/sft/config/behavior_pi05_vlm_vla.yaml`` trains the pi0.5 VLM to
+emit the subtask before the action expert denoises. It sets
+``actor.model.openpi.mode: vlm_vla`` plus ``data.fine_grained_level: 1`` and
+the per-task subtask labels:
+
+.. code:: yaml
+
+   data:
+     fine_grained_level: 1
+     enable_gap: true
+     tasks: ["turning_on_radio"]
+     task_subtasks:
+       turning_on_radio:
+         - "move to radio"
+         - "pick up radio from coffee table"
+         - "press radio"
+         - "place radio on coffee table"
+
+- ``task_subtasks``: per-task ordered subtask labels, indexed by the
+  annotation's ``skill_idx``; required at ``fine_grained_level: 1``.
+- ``enable_gap``: gap frames between two skill windows belong to the NEXT
+  skill when ``true`` (the default); when ``false`` they are not used for
+  training. Frames outside the annotation's ``valid_duration`` and trailing
+  gaps are never used.
+
+The SFT loss becomes ``language_loss_weight * subtask CE +
+action_loss_weight * flow matching`` (both weights under
+``actor.model.openpi``); training logs ``language_loss``, ``action_loss``,
+and ``language_acc`` alongside ``loss``. ``stop_gradient_to_vlm: True`` keeps
+the flow-matching gradient inside the action expert while the CE loss still
+trains the full VLM. At eval the model first generates the subtask text
+(greedily, up to ``max_new_tokens``) and then denoises actions attending to
+the generated tokens — the EOS token is never visible to the action expert.
+``mode: vla`` with ``fine_grained_level: 1`` (or ``mode: vlm_vla`` with level
+``0``) is rejected at startup.
 
 Norm stats and tokenizer
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

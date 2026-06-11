@@ -39,13 +39,6 @@ data:
   fine_grained_level: 0
   tolerance_s: 1.0e-4
   tasks: ["turning_on_radio"]
-  use_skill: false
-  task_subtasks:
-    turning_on_radio:
-      - "move to radio"
-      - "pick up radio from coffee table"
-      - "press radio"
-      - "place radio on coffee table"
 
 algorithm:
   adv_type: gae

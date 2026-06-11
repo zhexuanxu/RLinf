@@ -43,3 +43,16 @@ openpi:
   paligemma_variant: "gemma_2b"
   action_expert_variant: "gemma_300m"
   max_token_len: 200
+  # VLM token output. "vla" (default) is action-only; "vlm_vla" lets the
+  # PaliGemma backbone emit the subtask: SFT adds a CE loss over the subtask
+  # response + EOS (combined as language_loss_weight * ce + action_loss_weight
+  # * flow), and eval generates the subtask (greedy when language_temperature
+  # is 0, up to max_new_tokens) before the action expert denoises.
+  # stop_gradient_to_vlm keeps the flow-matching gradient out of the VLM
+  # (knowledge insulation) while the CE loss still trains it.
+  mode: vla
+  language_loss_weight: 1.0
+  action_loss_weight: 1.0
+  stop_gradient_to_vlm: False
+  max_new_tokens: 24
+  language_temperature: 0.0

@@ -89,9 +89,21 @@ class OpenPiPytorchActionModel(nn.Module):
                 "the current model was built for SFT training only."
             )
         observation = self.processor.build_observation(env_obs, self.device)
-        model_actions = self.model.sample_actions(
-            observation, num_steps=self.num_steps, noise=noise, rng=rng
-        )
+        generation = None
+        if getattr(self.model, "vlm_vla", False):
+            # Reasoning first: the VLM generates the subtask text, then the
+            # action expert denoises against the generation's KV cache.
+            model_actions, generation = self.model.reason_and_sample_actions(
+                observation,
+                eos_token_id=self.processor.tokenizer.eos_token_id,
+                num_steps=self.num_steps,
+                noise=noise,
+                rng=rng,
+            )
+        else:
+            model_actions = self.model.sample_actions(
+                observation, num_steps=self.num_steps, noise=noise, rng=rng
+            )
         actions = self.processor.postprocess_actions(model_actions).to(self.device)
 
         batch = actions.shape[0]
@@ -103,6 +115,16 @@ class OpenPiPytorchActionModel(nn.Module):
                 "model_action": model_actions.reshape(batch, -1).contiguous(),
             },
         }
+        if generation is not None:
+            tokens = generation["tokens"]
+            eos_steps = generation["eos_steps"]
+            texts = []
+            for row in range(batch):
+                row_ids = tokens[row, : int(eos_steps[row].item())]
+                texts.append(self.processor.tokenizer.decode(row_ids.tolist()))
+            result["generated_text"] = texts
+            result["generation_terminated"] = generation["terminated"].cpu()
+            result["forward_inputs"]["generated_token_ids"] = tokens.contiguous()
         return actions, result
 
     # --- SFT training (BEHAVIOR supervised fine-tuning) ---
@@ -119,20 +141,24 @@ class OpenPiPytorchActionModel(nn.Module):
             f"SFT (ForwardType.SFT); got forward_type={forward_type!r}."
         )
 
-    def sft_forward(self, data: Any) -> torch.Tensor:
-        """Compute the flow-matching SFT loss for one batch.
+    def sft_forward(self, data: Any) -> torch.Tensor | dict[str, torch.Tensor]:
+        """Compute the SFT loss for one batch.
 
         ``data`` is either a ``(observation, actions)`` tuple or a dict with
         ``observation`` and ``actions`` (the dataloader already normalizes and
-        pads actions to the model action dim). Returns the scalar mean of the
-        ``(B, action_horizon)`` per-timestep loss from :meth:`Pi0.compute_loss`
-        (which samples the flow-matching noise/time internally).
+        pads actions to the model action dim). In action-only mode this returns
+        the scalar mean of the ``(B, action_horizon)`` per-timestep
+        flow-matching loss; with VLM token output the model returns a dict
+        whose ``loss`` combines the flow and language CE terms (plus detached
+        per-component metrics), passed through to the SFT worker unchanged.
         """
         observation, actions = self._unpack_sft_batch(data)
         observation = self._observation_to_device(observation)
         actions = self._actions_to_device(actions)
-        per_timestep_loss = self.model.compute_loss(observation, actions, train=True)
-        return per_timestep_loss.mean()
+        output = self.model.compute_loss(observation, actions, train=True)
+        if isinstance(output, dict):
+            return output
+        return output.mean()
 
     def compute_loss(self, data: Any) -> torch.Tensor:
         """Alias kept for interface parity with the old action model."""
@@ -181,6 +207,7 @@ class OpenPiPytorchActionModel(nn.Module):
             tokenized_prompt_mask=_move(observation.tokenized_prompt_mask),
             token_ar_mask=_move(observation.token_ar_mask),
             token_loss_mask=_move(observation.token_loss_mask),
+            token_kv_cache_mask=_move(observation.token_kv_cache_mask),
             pcd_xyz=_move(observation.pcd_xyz),
         )
 

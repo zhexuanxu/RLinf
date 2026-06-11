@@ -24,8 +24,7 @@ The streaming dataset partitions its keyframe chunks per ``(rank, worker)``
 internally (see :meth:`BehaviorSftDataset.__getitem__`), so a
 ``DistributedSampler`` is intentionally *not* used: a sampler only reorders the
 ignored ``idx`` values and would otherwise give every distributed rank identical
-data. Every loader parameter is read directly from YAML; only the fixed BEHAVIOR
-task-0000 skill-window recipe is hardcoded.
+data. Every loader parameter is read directly from YAML.
 """
 
 from __future__ import annotations
@@ -115,6 +114,10 @@ def _repack(frame: dict) -> dict:
     if not isinstance(prompt, str):
         prompt = prompt.item() if hasattr(prompt, "item") else str(prompt)
     data["prompt"] = prompt
+
+    response = frame.get("response")
+    if response is not None:
+        data["response"] = response if isinstance(response, str) else str(response)
     return data
 
 
@@ -134,6 +137,10 @@ class BehaviorSftTransform:
         action_dim: Model action dimension to pad the state and actions to.
         max_token_len: Maximum tokenized-prompt length.
         image_size: Target square image resolution.
+        vlm_vla: Tokenize with the subtask-supervision template (prompt prefix +
+            subtask response + EOS, with per-token attention/loss/KV-cache
+            masks) instead of the action-only prompt. Frames must carry a
+            ``response`` text in this mode.
         tokenizer: Optional pre-built tokenizer. A new
             :class:`PaligemmaTokenizer` is created lazily per worker when ``None``
             so the (non-picklable) SentencePiece processor is not shared across
@@ -145,6 +152,7 @@ class BehaviorSftTransform:
     action_dim: int = 32
     max_token_len: int = 200
     image_size: int = _IMAGE_SIZE
+    vlm_vla: bool = False
     tokenizer: PaligemmaTokenizer | None = None
 
     def __post_init__(self):
@@ -165,6 +173,7 @@ class BehaviorSftTransform:
         # Repack LeRobot keys -> BehaviorInputs keys (+ prompt), then run
         # BehaviorInputs (23-dim state extraction, image-key mapping, masks).
         repacked = _repack(frame)
+        response = repacked.pop("response", None)
         inputs = self._behavior_inputs(repacked)
 
         # Resize each camera image to image_size x image_size (uint8 in/out).
@@ -184,7 +193,27 @@ class BehaviorSftTransform:
         actions = normalize_quantile(actions, self.norm_stats["actions"]).astype(
             np.float32
         )
-        tokens, token_masks = self._get_tokenizer().tokenize(inputs["prompt"], state)
+        token_extras = {}
+        if self.vlm_vla:
+            if response is None:
+                raise ValueError(
+                    "vlm_vla SFT requires a per-frame subtask response, but the "
+                    "streaming dataset yielded a frame without one."
+                )
+            tokens, token_masks, ar_mask, loss_mask, kv_cache_mask = (
+                self._get_tokenizer().tokenize_with_subtask(
+                    inputs["prompt"], state, response
+                )
+            )
+            token_extras = {
+                "token_ar_mask": np.asarray(ar_mask),
+                "token_loss_mask": np.asarray(loss_mask),
+                "token_kv_cache_mask": np.asarray(kv_cache_mask),
+            }
+        else:
+            tokens, token_masks = self._get_tokenizer().tokenize(
+                inputs["prompt"], state
+            )
         state = _pad_to_dim(state, self.action_dim).astype(np.float32)
         actions = _pad_to_dim(actions, self.action_dim).astype(np.float32)
 
@@ -197,6 +226,7 @@ class BehaviorSftTransform:
             "actions": actions,
             "tokenized_prompt": np.asarray(tokens),
             "tokenized_prompt_mask": np.asarray(token_masks),
+            **token_extras,
         }
 
 
@@ -284,6 +314,12 @@ def collate_behavior_sft_items(
             )
         ),
     }
+    # Per-token attention/loss/KV-cache masks (subtask-supervision mode only).
+    for mask_key in ("token_ar_mask", "token_loss_mask", "token_kv_cache_mask"):
+        if mask_key in items[0]:
+            batch[mask_key] = torch.from_numpy(
+                np.stack([np.asarray(item[mask_key], dtype=np.bool_) for item in items])
+            )
     actions = torch.from_numpy(
         np.stack([np.asarray(item["actions"], dtype=np.float32) for item in items])
     )
@@ -313,11 +349,9 @@ def create_behavior_sft_data_loader(
     tolerance_s: float,
     shuffle: bool,
     seed: int,
-    skill_labels: dict[int, str] | None,
-    use_skill: bool,
+    subtask_labels: dict[int, str] | None,
     enable_gap: bool,
-    allow_left: int,
-    allow_right: int,
+    vlm_vla: bool,
     dist_rank: int,
     dist_world_size: int,
 ) -> "BehaviorSftDataLoader":
@@ -337,16 +371,17 @@ def create_behavior_sft_data_loader(
         max_token_len: Maximum tokenized-prompt length.
         batch_size: Per-rank batch size.
         num_workers: Number of ``DataLoader`` workers (``> 0`` uses ``spawn``).
-        fine_grained_level: Orchestrator level for the prompt task text.
+        fine_grained_level: Per-frame text granularity (``0`` = main task only;
+            ``1`` = main task + subtask response).
         tolerance_s: Frame-timestamp sync tolerance.
         shuffle: Whether the streaming dataset shuffles its chunk order.
         seed: Base seed for the streaming chunk partition.
-        skill_labels: Optional per-skill labels enabling skill mode.
-        use_skill: Train on per-frame SKILL text (window-resolved) instead of the
-            main-task text; requires explicit ``skill_labels``.
-        enable_gap: Skill mode — absorb a true gap into both adjacent skills.
-        allow_left: Skill mode — frames to extend a contiguous skill start left.
-        allow_right: Skill mode — frames to extend a contiguous skill end right.
+        subtask_labels: Per-task subtask labels keyed by ``skill_idx`` (required
+            at ``fine_grained_level=1``).
+        enable_gap: Assign gap frames to the next skill window (True) or skip
+            them (False); only consulted at ``fine_grained_level=1``.
+        vlm_vla: Tokenize with the subtask-supervision template (per-token
+            masks for the VLM CE loss) instead of the action-only prompt.
         dist_rank: This rank's id, threaded into the per-rank chunk partition.
         dist_world_size: Total ranks, threaded into the per-rank chunk partition.
 
@@ -368,11 +403,8 @@ def create_behavior_sft_data_loader(
         shuffle=shuffle,
         seed=seed,
         fine_grained_level=fine_grained_level,
-        skill_labels=skill_labels,
-        use_skill=use_skill,
+        subtask_labels=subtask_labels,
         enable_gap=enable_gap,
-        allow_left=allow_left,
-        allow_right=allow_right,
         dist_rank=dist_rank,
         dist_world_size=dist_world_size,
     )
@@ -382,6 +414,7 @@ def create_behavior_sft_data_loader(
         tokenizer_path=tokenizer_path,
         action_dim=action_dim,
         max_token_len=max_token_len,
+        vlm_vla=vlm_vla,
     )
     source = _TransformedStreamingDataset(dataset, transform)
 
@@ -485,33 +518,51 @@ def build_behavior_sft_dataloader(
     asset_id = model_cfg.openpi.asset_id
     tokenizer_path = model_cfg.openpi.paligemma_tokenizer
 
-    # `cfg.data` is the production source of truth for the BEHAVIOR task set and the
-    # prompt-source flag. `use_skill: true` trains on the per-frame REFERENCE skill
-    # text; `false` trains on the main-task text.
-    use_skill = bool(data_cfg.use_skill)
+    # The model mode and the data granularity are one decision: action-only
+    # training (`vla`) reads main-task prompts (level 0), while VLM subtask
+    # supervision (`vlm_vla`) requires the subtask response labels (level 1).
+    # Any other combination is a configuration error, rejected here at build.
+    mode = str(model_cfg.openpi.get("mode", "vla"))
+    if mode not in ("vla", "vlm_vla"):
+        raise ValueError(
+            f"actor.model.openpi.mode must be 'vla' or 'vlm_vla', got {mode!r}."
+        )
+    fine_grained_level = int(data_cfg.fine_grained_level)
+    if fine_grained_level not in (0, 1):
+        raise ValueError(
+            f"data.fine_grained_level must be 0 or 1, got {fine_grained_level!r}."
+        )
+    if mode == "vla" and fine_grained_level != 0:
+        raise ValueError(
+            "Subtask supervision (data.fine_grained_level=1) is only allowed with "
+            "actor.model.openpi.mode=vlm_vla; vla mode trains on level 0."
+        )
+    if mode == "vlm_vla" and fine_grained_level != 1:
+        raise ValueError(
+            "actor.model.openpi.mode=vlm_vla requires data.fine_grained_level=1 "
+            "(the VLM CE loss needs a subtask response to supervise)."
+        )
+    enable_gap = bool(data_cfg.get("enable_gap", True))
+
     tasks = list(data_cfg.tasks)
-    skill_labels, enable_gap, allow_left, allow_right = None, True, 0, 0
-    if use_skill:
-        # The skill labels are the REFERENCE per-task subtask list from config (NOT
-        # the dataset's collapsed orchestrators, which equal the full task text). The
-        # task-0000 local-skill recipe is exactly one task with a configured subtask
-        # list and the fixed window recipe below.
+    subtask_labels = None
+    if fine_grained_level == 1:
+        # The subtask labels are the per-task list from config, indexed by the
+        # annotation's skill_idx. The task-0000 recipe is exactly one task.
         if len(tasks) != 1:
             raise ValueError(
-                "openpi_pytorch BEHAVIOR SFT use_skill:true supports exactly one task "
-                f"(the task-0000 skill recipe); got data.tasks={tasks}."
+                "openpi_pytorch BEHAVIOR SFT at fine_grained_level=1 supports "
+                f"exactly one task; got data.tasks={tasks}."
             )
-        subtask_labels = data_cfg.task_subtasks
-        labels = subtask_labels.get(tasks[0]) if subtask_labels else None
+        task_subtasks = data_cfg.get("task_subtasks", None)
+        labels = task_subtasks.get(tasks[0]) if task_subtasks else None
         if not labels:
             raise ValueError(
-                "openpi_pytorch BEHAVIOR SFT use_skill:true requires the reference "
-                f"skill labels at data.task_subtasks.{tasks[0]}; none was configured."
+                "openpi_pytorch BEHAVIOR SFT at fine_grained_level=1 requires the "
+                f"subtask labels at data.task_subtasks.{tasks[0]}; none was "
+                "configured."
             )
-        skill_labels = {i: str(label) for i, label in enumerate(labels)}
-        # Fixed reference skill-window recipe (pi05_b1k-task0000_sft_local_skill);
-        # intentionally hardcoded so the reference recipe cannot drift via config.
-        enable_gap, allow_left, allow_right = True, 100, 100
+        subtask_labels = {i: str(label) for i, label in enumerate(labels)}
 
     loader = create_behavior_sft_data_loader(
         behavior_dataset_root=str(data_cfg.behavior_dataset_root),
@@ -528,15 +579,13 @@ def build_behavior_sft_dataloader(
         if eval_dataset
         else int(cfg.actor.micro_batch_size),
         num_workers=int(data_cfg.num_workers),
-        fine_grained_level=int(data_cfg.fine_grained_level),
+        fine_grained_level=fine_grained_level,
         tolerance_s=float(data_cfg.tolerance_s),
         shuffle=not eval_dataset,
         seed=int(cfg.actor.seed),
-        skill_labels=skill_labels,
-        use_skill=use_skill,
+        subtask_labels=subtask_labels,
         enable_gap=enable_gap,
-        allow_left=allow_left,
-        allow_right=allow_right,
+        vlm_vla=(mode == "vlm_vla"),
         dist_rank=rank,
         dist_world_size=world_size,
     )

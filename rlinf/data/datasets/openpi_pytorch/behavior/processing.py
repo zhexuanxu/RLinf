@@ -81,6 +81,7 @@ class BehaviorEvalProcessor(EvalProcessor):
         action_env_dim: int = 23,
         model_action_dim: int = 32,
         image_resolution: tuple[int, int] = (224, 224),
+        vlm_vla: bool = False,
     ):
         if "state" not in norm_stats or "actions" not in norm_stats:
             raise ValueError("norm_stats must contain 'state' and 'actions'.")
@@ -91,6 +92,10 @@ class BehaviorEvalProcessor(EvalProcessor):
         self.action_env_dim = action_env_dim
         self.model_action_dim = model_action_dim
         self.image_resolution = image_resolution
+        # Tokenize the subtask-generation prefix (with per-token masks) instead
+        # of the action-only prompt, so the VLM can emit the subtask before the
+        # action expert denoises.
+        self.vlm_vla = vlm_vla
         self._inputs = BehaviorInputs(
             extract_state_from_proprio=True, use_all_wrist_images=True
         )
@@ -116,6 +121,7 @@ class BehaviorEvalProcessor(EvalProcessor):
         images = {k: [] for k in _IMAGE_KEYS}
         image_masks = {k: [] for k in _IMAGE_KEYS}
         states, tokens, token_masks = [], [], []
+        ar_masks, loss_masks, kv_cache_masks = [], [], []
 
         for i in range(batch_size):
             sample = {k: v[i] for k, v in np_proc.items()}
@@ -125,7 +131,17 @@ class BehaviorEvalProcessor(EvalProcessor):
             norm_state = normalize_quantile(
                 np.asarray(inputs["state"], dtype=np.float32), self.state_stats
             )
-            tok, tmask = self.tokenizer.tokenize(inputs["prompt"], norm_state)
+            if self.vlm_vla:
+                # Generation prefix only (no response/EOS): the VLM produces the
+                # subtask autoregressively at eval time.
+                tok, tmask, ar, loss, kv = self.tokenizer.tokenize_with_subtask(
+                    inputs["prompt"], norm_state, response=None
+                )
+                ar_masks.append(ar)
+                loss_masks.append(loss)
+                kv_cache_masks.append(kv)
+            else:
+                tok, tmask = self.tokenizer.tokenize(inputs["prompt"], norm_state)
             state_padded = _pad_to_dim(norm_state, self.model_action_dim)
 
             for key in _IMAGE_KEYS:
@@ -150,6 +166,16 @@ class BehaviorEvalProcessor(EvalProcessor):
                 np.stack(token_masks).astype(bool)
             ).to(device),
         }
+        if self.vlm_vla:
+            data["token_ar_mask"] = torch.from_numpy(
+                np.stack(ar_masks).astype(bool)
+            ).to(device)
+            data["token_loss_mask"] = torch.from_numpy(
+                np.stack(loss_masks).astype(bool)
+            ).to(device)
+            data["token_kv_cache_mask"] = torch.from_numpy(
+                np.stack(kv_cache_masks).astype(bool)
+            ).to(device)
         return Observation.from_dict(data)
 
     def postprocess_actions(self, model_actions: torch.Tensor) -> torch.Tensor:

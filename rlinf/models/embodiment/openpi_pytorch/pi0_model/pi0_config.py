@@ -38,11 +38,31 @@ class Pi0Config(model.BaseModelConfig):
     discrete_state_input: bool | None = None
     pcd: bool = False
 
+    # VLM token output. "vla" is the action-only behavior; "vlm_vla" lets the
+    # PaliGemma backbone emit subtask tokens: SFT adds a CE loss over the
+    # response + EOS, and eval generates the subtask before denoising actions.
+    mode: str = "vla"
+    # SFT loss combination: total = language_loss_weight * ce_loss
+    #                             + action_loss_weight * flow_loss.
+    language_loss_weight: float = 1.0
+    action_loss_weight: float = 1.0
+    # Detach the prefix K/V seen by the action expert so the flow-matching
+    # gradient reaches only the action expert while the CE loss still trains
+    # the full VLM (knowledge insulation).
+    stop_gradient_to_vlm: bool = False
+    # Subtask generation budget and sampling temperature (0 = greedy).
+    max_new_tokens: int = 24
+    language_temperature: float = 0.0
+
     def __post_init__(self):
         if self.pi05 and self.max_token_len == 48:
             object.__setattr__(self, "max_token_len", 200)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.mode not in ("vla", "vlm_vla"):
+            raise ValueError(f"mode must be 'vla' or 'vlm_vla', got {self.mode!r}")
+        if self.mode == "vlm_vla" and not self.pi05:
+            raise ValueError("vlm_vla mode requires the pi05 configuration")
 
     def create(self, **kwargs) -> model.BaseModel:
         from .pi0 import Pi0
