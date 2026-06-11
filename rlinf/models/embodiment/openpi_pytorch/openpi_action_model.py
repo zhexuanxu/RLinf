@@ -26,6 +26,7 @@ rollout worker can call it unchanged via the OpenPI dispatch path:
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 import numpy as np
@@ -39,6 +40,12 @@ from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0 import Pi0
 from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
     normalize_quantile,
 )
+
+logger = logging.getLogger(__name__)
+
+# How many batches log their generated subtask text before going quiet: enough
+# to see the reasoning-then-acting flow in eval logs without flooding them.
+_GENERATION_LOG_BATCHES = 3
 
 
 class OpenPiPytorchActionModel(nn.Module):
@@ -59,6 +66,7 @@ class OpenPiPytorchActionModel(nn.Module):
         self.num_steps = num_steps
         self.action_chunk = action_chunk
         self.action_env_dim = action_env_dim
+        self._generation_batches_logged = 0
 
     @property
     def device(self) -> torch.device:
@@ -125,6 +133,17 @@ class OpenPiPytorchActionModel(nn.Module):
             result["generated_text"] = texts
             result["generation_terminated"] = generation["terminated"].cpu()
             result["forward_inputs"]["generated_token_ids"] = tokens.contiguous()
+            if self._generation_batches_logged < _GENERATION_LOG_BATCHES:
+                self._generation_batches_logged += 1
+                logger.info(
+                    "vlm_vla subtask generation before denoise (batch %d): %s",
+                    batch,
+                    [
+                        f"{text[:60]!r}"
+                        f"{' [EOS]' if bool(generation['terminated'][row]) else ' [no EOS]'}"
+                        for row, text in enumerate(texts)
+                    ],
+                )
         return actions, result
 
     # --- SFT training (BEHAVIOR supervised fine-tuning) ---
