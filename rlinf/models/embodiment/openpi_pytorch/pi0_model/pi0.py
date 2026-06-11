@@ -222,17 +222,20 @@ class Pi0(model.BaseModel):
             tokens: (B, S, emb_dim) embedded tokens
             input_mask: (B, S) mask of valid tokens
             ar_mask: (S,) autoregressive mask, all False — or (B, S) when the
-                observation carries a per-token ``token_ar_mask`` (VLM token
-                output: image tokens stay bidirectional, text tokens follow the
-                per-token mask so the response/EOS region is causal)
+                model runs in VLM token-output mode and the observation carries
+                a per-token ``token_ar_mask`` (image tokens stay bidirectional,
+                text tokens follow the per-token mask so the response/EOS
+                region is causal). An action-only model always returns the 1D
+                mask, ignoring any per-token mask fields on the observation.
         """
         tokens = []
         input_mask = []
         ar_mask = []
-        # Per-batch causal structure is only needed when the text tokens carry
-        # their own autoregressive mask; the action-only path keeps the original
-        # shared 1D all-False mask.
-        per_batch_ar = obs.token_ar_mask is not None
+        # Per-batch causal structure exists only for VLM token output; an
+        # action-only model keeps the original shared 1D all-False mask even
+        # when an observation happens to carry the per-token mask fields, so
+        # the new fields cannot influence the action-only path.
+        per_batch_ar = self.vlm_vla and obs.token_ar_mask is not None
         ar_chunks = []
 
         # Embed images through SigLIP

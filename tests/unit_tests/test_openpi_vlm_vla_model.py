@@ -395,6 +395,156 @@ class TestStopGradientRouting:
         assert self._has_nonzero_grad(self._expert_params(module, 0))
 
 
+def _observation_stub(batch=2, text_len=6, with_token_masks=False):
+    from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
+
+    token_masks = {}
+    if with_token_masks:
+        ar = torch.zeros(batch, text_len, dtype=torch.bool)
+        ar[:, text_len // 2 :] = True  # hostile: marks half the text causal
+        token_masks = {
+            "token_ar_mask": ar,
+            "token_loss_mask": torch.ones(batch, text_len, dtype=torch.bool),
+            "token_kv_cache_mask": torch.zeros(batch, text_len, dtype=torch.bool),
+        }
+    return Observation(
+        images={"cam": torch.zeros(batch, 4, 4, 3)},
+        image_masks={"cam": torch.ones(batch, dtype=torch.bool)},
+        state=torch.zeros(batch, 8),
+        tokenized_prompt=torch.zeros(batch, text_len, dtype=torch.long),
+        tokenized_prompt_mask=torch.ones(batch, text_len, dtype=torch.bool),
+        **token_masks,
+    )
+
+
+def _pi0_stub(vlm_vla, width=8, num_patches=4):
+    """The minimal ``self`` surface ``Pi0.embed_prefix`` reads (no SigLIP)."""
+
+    def fake_img(images):
+        return torch.zeros(images.shape[0], num_patches, width), None
+
+    return types.SimpleNamespace(
+        vlm_vla=vlm_vla,
+        pcd=False,
+        img=fake_img,
+        llm=types.SimpleNamespace(
+            embed=lambda tokens: torch.zeros(*tokens.shape, width)
+        ),
+    )
+
+
+class TestActionOnlyModeInsulation:
+    """An action-only (vla) model must ignore the VLM token-output fields and
+    never touch the static KV cache, even when an observation carries them."""
+
+    def test_embed_prefix_ignores_hostile_mask_fields_in_vla_mode(self):
+        from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0 import Pi0
+
+        stub = _pi0_stub(vlm_vla=False)
+        _, _, ar_plain = Pi0.embed_prefix(stub, _observation_stub())
+        _, _, ar_hostile = Pi0.embed_prefix(
+            stub, _observation_stub(with_token_masks=True)
+        )
+        assert ar_plain.dim() == 1, "vla prefix AR mask must stay 1D"
+        assert torch.equal(ar_hostile, ar_plain), (
+            "vla mode must return the identical AR mask whether or not the "
+            "observation carries per-token mask fields"
+        )
+        assert not ar_hostile.any(), "vla prefix is fully bidirectional"
+
+    def test_embed_prefix_uses_per_token_masks_only_in_vlm_vla_mode(self):
+        from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0 import Pi0
+
+        observation = _observation_stub(with_token_masks=True)
+        _, _, ar_mask = Pi0.embed_prefix(_pi0_stub(vlm_vla=True), observation)
+        assert ar_mask.dim() == 2, "vlm_vla builds a per-batch AR mask"
+        text = ar_mask[:, -observation.token_ar_mask.shape[1] :]
+        assert torch.equal(text, observation.token_ar_mask)
+
+    def test_vla_mode_refuses_generation_and_never_builds_static_cache(
+        self, monkeypatch
+    ):
+        from rlinf.models.embodiment.openpi_pytorch.pi0_model import pi0 as pi0_module
+
+        def _forbidden(*args, **kwargs):
+            raise AssertionError("StaticKVCache must not be built in vla mode")
+
+        monkeypatch.setattr(pi0_module, "StaticKVCache", _forbidden)
+        stub = _pi0_stub(vlm_vla=False)
+        with pytest.raises(RuntimeError, match="vlm_vla"):
+            pi0_module.Pi0.generate_language(
+                stub, _observation_stub(with_token_masks=True), eos_token_id=1
+            )
+
+    def test_vla_sampling_flow_never_instantiates_static_cache(self, monkeypatch):
+        """Run the real ``sample_actions``/``_denoise_actions`` flow on a stub
+        with the static cache patched to a tripwire: the action-only sampling
+        path must complete using tuple caches only — even when the observation
+        carries hostile per-token mask fields."""
+        from rlinf.models.embodiment.openpi_pytorch.pi0_model import pi0 as pi0_module
+        from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import (
+            IMAGE_KEYS,
+            Observation,
+        )
+
+        def _forbidden(*args, **kwargs):
+            raise AssertionError("StaticKVCache must not be built in vla mode")
+
+        monkeypatch.setattr(pi0_module, "StaticKVCache", _forbidden)
+
+        batch, width, horizon, action_dim, text_len = 2, 8, 3, 4, 6
+
+        class FakeLLM:
+            """Callable Module stand-in: zero hidden states, tuple KV cache."""
+
+            def __call__(
+                self, embedded, positions, mask, adarms_cond=None, *, kv_cache=None
+            ):
+                outputs = [
+                    None if x is None else torch.zeros(x.shape[0], x.shape[1], width)
+                    for x in embedded
+                ]
+                return outputs, (torch.zeros(1), torch.zeros(1))
+
+            @staticmethod
+            def embed(tokens):
+                return torch.zeros(*tokens.shape, width)
+
+        def fake_embed_suffix(observation, noisy_actions, timestep):
+            return (
+                torch.zeros(batch, horizon, width),
+                torch.ones(batch, horizon, dtype=torch.bool),
+                torch.tensor([True] + [False] * (horizon - 1)),
+                None,
+            )
+
+        stub = _pi0_stub(vlm_vla=False, width=width)
+        stub.llm = FakeLLM()
+        stub.embed_prefix = types.MethodType(pi0_module.Pi0.embed_prefix, stub)
+        stub.embed_suffix = fake_embed_suffix
+        stub.action_out_proj = torch.nn.Linear(width, action_dim)
+        stub.action_horizon = horizon
+        stub.action_dim = action_dim
+        stub._denoise_actions = types.MethodType(pi0_module.Pi0._denoise_actions, stub)
+
+        hostile_ar = torch.zeros(batch, text_len, dtype=torch.bool)
+        hostile_ar[:, text_len // 2 :] = True
+        observation = Observation(
+            images={key: torch.zeros(batch, 224, 224, 3) for key in IMAGE_KEYS},
+            image_masks={
+                key: torch.ones(batch, dtype=torch.bool) for key in IMAGE_KEYS
+            },
+            state=torch.zeros(batch, 8),
+            tokenized_prompt=torch.zeros(batch, text_len, dtype=torch.long),
+            tokenized_prompt_mask=torch.ones(batch, text_len, dtype=torch.bool),
+            token_ar_mask=hostile_ar,
+            token_loss_mask=torch.ones(batch, text_len, dtype=torch.bool),
+            token_kv_cache_mask=torch.zeros(batch, text_len, dtype=torch.bool),
+        )
+        actions = pi0_module.Pi0.sample_actions(stub, observation, num_steps=2)
+        assert actions.shape == (batch, horizon, action_dim)
+
+
 class TestSuffixPositionParity:
     """The action expert's RoPE position base must be identical between the
     SFT forward (where the EOS is an input token) and the eval denoise (where
