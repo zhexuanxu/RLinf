@@ -22,4 +22,3 @@ PKG-INFO
 *.egg-info/
 .claude/settings.json
 .humanize
-pi05_vlm_vla_migration_report.md

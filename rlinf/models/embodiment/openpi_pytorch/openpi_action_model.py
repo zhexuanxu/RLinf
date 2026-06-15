@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 # How many batches log their generated subtask text before going quiet: enough
 # to see the reasoning-then-acting flow in eval logs without flooding them.
-_GENERATION_LOG_BATCHES = 3
+_GENERATION_LOG_BATCHES = 1000000000
 
 
 class OpenPiPytorchActionModel(nn.Module):

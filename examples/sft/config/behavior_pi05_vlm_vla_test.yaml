@@ -51,10 +51,10 @@ data:
   tasks: ["turning_on_radio"]
   task_subtasks:
     turning_on_radio:
-      - "move to radio"
-      - "pick up radio from coffee table"
-      - "press radio"
-      - "place radio on coffee table"
+      - "turning on radio"
+      - "turning on radio"
+      - "turning on radio"
+      - "turning on radio"
 
 algorithm:
   adv_type: gae

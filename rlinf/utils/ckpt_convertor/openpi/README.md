@@ -96,10 +96,10 @@ RLinf SFT-trained checkpoint -> new bare `Pi0` layout.
 
 ```bash
 python -m rlinf.utils.ckpt_convertor.openpi.convert --mode sft2new \
-    --ckpt              /path/to/logs/.../checkpoints/global_step_30000 \
-    --input-norm-stats  /path/to/norm_stats.json \
-    --output-model      /path/to/pi05_sft_pytorch_new \
-    --output-norm-stats /path/to/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json
+    --ckpt              /mnt/public/xzxuan/repos/RLinf/logs/20260613-05:42:48-behavior_pi05_vlm_vla_test/sft_behavior_pi05_vlm_vla/checkpoints/global_step_30000 \
+    --input-norm-stats  /mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json \
+    --output-model      /mnt/public/xzxuan/repos/RLinf/logs/20260613-05:42:48-behavior_pi05_vlm_vla_test/sft_behavior_pi05_vlm_vla/pi05_sft_pytorch_new \
+    --output-norm-stats /mnt/public/xzxuan/repos/RLinf/logs/20260613-05:42:48-behavior_pi05_vlm_vla_test/sft_behavior_pi05_vlm_vla/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json
 ```
 
 ---
