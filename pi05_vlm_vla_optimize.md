@@ -22,7 +22,7 @@ Compared with VLM_VLA training, the difference is that the latter:
 
 ### The problem (VLM_VLA — broken)
 
-The model obtained from SFT training in **VLM_VLA mode** evals very poorly.
+The model obtained from SFT training in **VLM_VLA mode** evals very poorly. The config is `examples/sft/config/behavior_pi05_vlm_vla.yaml`.
 
 - My SFT training log: `/mnt/public/xzxuan/repos/RLinf/logs/20260611-13:45:13-behavior_pi05_vlm_vla`
 - My eval log: `/mnt/public/xzxuan/repos/RLinf/logs/20260616-15:54:57-behavior_ppo_openpi_pi05_pytorch_vlm_vla_eval`
@@ -34,7 +34,7 @@ Observed behavior:
 
 ### Control experiment
 
-I also trained a **control experiment**: `/mnt/public/xzxuan/repos/RLinf/logs/20260613-05:42:48-behavior_pi05_vlm_vla_test`
+I also trained a **control experiment**: `/mnt/public/xzxuan/repos/RLinf/logs/20260613-05:42:48-behavior_pi05_vlm_vla_test`. The config is `examples/sft/config/behavior_pi05_vlm_vla_test.yaml`
 
 - The **only** modification is using `examples/sft/config/behavior_pi05_vlm_vla_test.yaml` (the run above used `examples/sft/config/behavior_pi05_vla.yaml`). The only difference is that in the `test` yaml, **`task_subtasks` is entirely changed to output `"turning on radio"`** instead of the normal four subtasks.
 - Eval log for this control: `/mnt/public/xzxuan/repos/RLinf/logs/20260616-16:15:06-behavior_ppo_openpi_pi05_pytorch_vlm_vla_eval`
@@ -72,6 +72,7 @@ You must carefully study the ideas in these papers (they are official OpenPI pap
    ssh -p 40431 root@183.233.148.6
    ```
    The two machines have **identical configurations** and **share storage**, so you effectively have **16 GPUs** and can run two sets of experiments in parallel. Use the same code, environment, and data on both machines — I've already verified it runs. First validate that you can: log in, load the environment, see the GPUs, and execute scripts — make sure you can fully control all 16 GPUs.
+7. Refer to `docs/plan-phase8-vlm-vla-mode.md` and `.humanize/rlcr/2026-06-11_10-03-58` for last rlcr loop, where we achieve the full vlm_vla mode code(reference to /mnt/public/xzxuan/repos/vla_lib)
 
 ## Acceptance Criterion
 
