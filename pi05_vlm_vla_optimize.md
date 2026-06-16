@@ -73,6 +73,7 @@ You must carefully study the ideas in these papers (they are official OpenPI pap
    ```
    The two machines have **identical configurations** and **share storage**, so you effectively have **16 GPUs** and can run two sets of experiments in parallel. Use the same code, environment, and data on both machines — I've already verified it runs. First validate that you can: log in, load the environment, see the GPUs, and execute scripts — make sure you can fully control all 16 GPUs.
 7. Refer to `docs/plan-phase8-vlm-vla-mode.md` and `.humanize/rlcr/2026-06-11_10-03-58` for last rlcr loop, where we achieve the full vlm_vla mode code(reference to /mnt/public/xzxuan/repos/vla_lib)
+8. Using the current branch for coding.
 
 ## Acceptance Criterion
 
