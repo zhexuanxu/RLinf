@@ -19,12 +19,17 @@
 # them, then runs the env eval. Each path is explicit; nothing is guessed.
 #
 # Usage:
-#   train_convert_eval.sh <train_config> <eval_config> <input_norm_stats> [--dry-run] [extra hydra overrides...]
+#   train_convert_eval.sh <train_config> <eval_config> <input_norm_stats> [--dry-run] [--final-256] [extra eval hydra overrides...]
 #
-# Example:
+# Iteration gate (64 trajectories for the current 8-env eval config):
 #   toolkits/vlm_vla_diagnostics/train_convert_eval.sh \
 #     behavior_pi05_vlm_vla behavior_ppo_openpi_pi05_pytorch_vlm_vla_eval \
 #     /mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json
+#
+# Final confirmation gate (256 trajectories):
+#   toolkits/vlm_vla_diagnostics/train_convert_eval.sh \
+#     behavior_pi05_vlm_vla behavior_ppo_openpi_pi05_pytorch_vlm_vla_eval \
+#     /path/to/norm_stats.json --final-256
 set -euo pipefail
 
 REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -32,17 +37,33 @@ PYBIN="${PYBIN:-/mnt/public/xzxuan/.venv_pi/bin/python}"
 ASSET_ID="${ASSET_ID:-physical-intelligence/behavior}"
 
 if [[ $# -lt 3 ]]; then
-    echo "usage: $0 <train_config> <eval_config> <input_norm_stats> [--dry-run] [hydra overrides...]" >&2
+    echo "usage: $0 <train_config> <eval_config> <input_norm_stats> [--dry-run] [--final-256] [eval hydra overrides...]" >&2
     exit 2
 fi
 TRAIN_CONFIG="$1"; EVAL_CONFIG="$2"; INPUT_NORM_STATS="$3"; shift 3
 DRY_RUN=0
+FINAL_256=0
 EXTRA_OVERRIDES=()
 for arg in "$@"; do
-    if [[ "$arg" == "--dry-run" ]]; then DRY_RUN=1; else EXTRA_OVERRIDES+=("$arg"); fi
+    case "$arg" in
+        --dry-run)
+            DRY_RUN=1
+            ;;
+        --final-256)
+            FINAL_256=1
+            ;;
+        *)
+            EXTRA_OVERRIDES+=("$arg")
+            ;;
+    esac
 done
 
-run() { echo "+ $*"; if [[ "$DRY_RUN" -eq 0 ]]; then "$@"; fi; }
+run() {
+    printf "+ "
+    printf "%q " "$@"
+    printf "\n"
+    if [[ "$DRY_RUN" -eq 0 ]]; then "$@"; fi
+}
 
 # 1) Train. run_vla_sft.sh creates logs/<timestamp>-<config>/ and trains there.
 echo "=== [1/3] SFT training: ${TRAIN_CONFIG} ==="
@@ -74,10 +95,17 @@ run "${PYBIN}" -m rlinf.utils.ckpt_convertor.openpi.convert --mode sft2new \
 # 3) Eval the converted checkpoint. Point model_path + assets at the converted
 #    dir so eval resolves {assets_dir}/{asset_id}/norm_stats.json under it.
 echo "=== [3/3] Eval: ${EVAL_CONFIG} ==="
-run bash "${REPO_PATH}/examples/embodiment/eval_embodiment.sh" "${EVAL_CONFIG}" \
-    "rollout.model.model_path=${CONVERTED_DIR}" \
-    "actor.model.openpi.assets_dir=${CONVERTED_DIR}" \
-    "actor.model.openpi.asset_id=${ASSET_ID}" \
+EVAL_OVERRIDES=(
+    "rollout.model.model_path=${CONVERTED_DIR}"
+    "actor.model.openpi.assets_dir=${CONVERTED_DIR}"
+    "actor.model.openpi.asset_id=${ASSET_ID}"
     "${EXTRA_OVERRIDES[@]}"
+)
+if [[ "$FINAL_256" -eq 1 ]]; then
+    # Current config uses 8 eval envs; 32 rollout epochs gives 256 trajectories.
+    EVAL_OVERRIDES+=("algorithm.eval_rollout_epoch=32")
+fi
+run bash "${REPO_PATH}/examples/embodiment/eval_embodiment.sh" "${EVAL_CONFIG}" \
+    "${EVAL_OVERRIDES[@]}"
 
 echo "=== done: train -> convert -> eval complete (converted: ${CONVERTED_DIR}) ==="

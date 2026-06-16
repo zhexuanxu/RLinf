@@ -14,18 +14,16 @@
 
 """Gradient-norm audit for the vlm_vla SFT loss (tests H1a / H1b / H2).
 
-Loads a bare new-format Pi0 checkpoint, builds one synthetic vlm_vla batch
-(real PaliGemma tokenizer + the three token masks; random images/state/actions),
-and measures, on the SAME batch with fixed noise/time, the global pre-clip
-gradient L2 norm for three loss isolations — CE-only, flow-only, combined — and
-for ``stop_gradient_to_vlm`` both False and True. It then reports the clip
-coefficient each combined norm would get under ``clip_grad=1.0`` and the
-resulting attenuation of the action-expert (flow) update relative to a
-flow-only step.
+Loads a bare new-format Pi0 checkpoint and measures, on the same fixed batch
+with fixed noise/time, the gradient L2 norm for three loss isolations:
+CE-only, flow-only, and combined. It reports global, VLM, action-expert, and
+other bucket norms before and after the configured global clip for
+``stop_gradient_to_vlm`` both False and True.
 
-Decisive read (no bucketing needed): if CE-only norm >> flow-only norm, then the
-single global clip is dominated by CE and shrinks the action-expert gradient by
-~flow/combined — the coupling H1a predicts. Run:
+By default the batch is synthetic but uses the real PaliGemma tokenizer masks.
+For the mandatory fixed-real-batch gate, pass ``--batch-path`` pointing at a
+``torch.save`` payload containing either ``(observation, actions)`` or a dict
+with ``observation``/``actions`` keys. Run:
 
     /mnt/public/xzxuan/.venv_pi/bin/python \
         toolkits/vlm_vla_diagnostics/grad_norm_audit.py \
@@ -38,13 +36,25 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
+import sys
 
 import numpy as np
 import torch
 
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
-from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import Pi0Config
-from rlinf.models.embodiment.openpi_pytorch.utils.tokenizer import PaligemmaTokenizer
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import (  # noqa: E402
+    Observation,
+)
+from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import (  # noqa: E402
+    Pi0Config,
+)
+from rlinf.models.embodiment.openpi_pytorch.utils.tokenizer import (  # noqa: E402
+    PaligemmaTokenizer,
+)
 
 SUBTASKS = [
     "move to radio",
@@ -104,24 +114,124 @@ def _build_batch(tokenizer, cfg, batch_size, device):
     return observation, actions
 
 
-def _grad_norm(model: torch.nn.Module) -> float:
-    sq = 0.0
-    for p in model.parameters():
-        if p.grad is not None:
-            sq += float(p.grad.detach().float().pow(2).sum())
-    return sq**0.5
+def _move_tensor(value, device):
+    if isinstance(value, torch.Tensor):
+        return value.to(device)
+    return value
 
 
-def _run_once(model, observation, actions, lw, aw, device):
+def _move_observation(observation: Observation, device: torch.device) -> Observation:
+    """Move a serialized or dataloader observation to the audit device."""
+    return Observation(
+        images={k: v.to(device) for k, v in observation.images.items()},
+        image_masks={k: v.to(device) for k, v in observation.image_masks.items()},
+        state=observation.state.to(device),
+        tokenized_prompt=_move_tensor(observation.tokenized_prompt, device),
+        tokenized_prompt_mask=_move_tensor(observation.tokenized_prompt_mask, device),
+        token_ar_mask=_move_tensor(observation.token_ar_mask, device),
+        token_loss_mask=_move_tensor(observation.token_loss_mask, device),
+        token_kv_cache_mask=_move_tensor(observation.token_kv_cache_mask, device),
+        pcd_xyz=_move_tensor(observation.pcd_xyz, device),
+    )
+
+
+def _load_batch(batch_path: pathlib.Path, device: torch.device):
+    """Load a fixed batch saved by a dataloader/control script."""
+    payload = torch.load(batch_path, map_location="cpu")
+    if isinstance(payload, dict):
+        observation = payload.get("observation")
+        actions = payload.get("actions")
+    elif isinstance(payload, (tuple, list)) and len(payload) == 2:
+        observation, actions = payload
+    else:
+        raise ValueError(
+            "--batch-path must contain (observation, actions) or "
+            "{'observation': ..., 'actions': ...}."
+        )
+    if isinstance(observation, dict):
+        observation = Observation.from_dict(observation)
+    if not isinstance(observation, Observation):
+        raise TypeError(f"Unsupported observation payload: {type(observation)!r}")
+    if not isinstance(actions, torch.Tensor):
+        actions = torch.as_tensor(actions)
+    return _move_observation(observation, device), actions.to(device)
+
+
+_ACTION_EXPERT_RE = re.compile(
+    r"^llm\.layers\.\d+\.(attn\.(q_proj|k_proj|v_proj|o_proj)\.1|"
+    r"pre_attention_norms\.1|pre_ffw_norms\.1|mlps\.1)\."
+)
+_VLM_EXPERT_RE = re.compile(
+    r"^llm\.layers\.\d+\.(attn\.(q_proj|k_proj|v_proj|o_proj)\.0|"
+    r"pre_attention_norms\.0|pre_ffw_norms\.0|mlps\.0)\."
+)
+
+
+def _bucket_for_name(name: str) -> str:
+    """Classify Pi0 parameters into the buckets used by the audit."""
+    action_prefixes = (
+        "action_in_proj.",
+        "action_out_proj.",
+        "state_proj.",
+        "time_mlp_in.",
+        "time_mlp_out.",
+        "action_time_mlp_in.",
+        "action_time_mlp_out.",
+        "llm.final_norms.1.",
+    )
+    vlm_prefixes = ("img.", "llm.embedder.", "llm.final_norms.0.")
+    if name.startswith(action_prefixes) or _ACTION_EXPERT_RE.match(name):
+        return "action_expert"
+    if name.startswith(vlm_prefixes) or _VLM_EXPERT_RE.match(name):
+        return "vlm"
+    return "other"
+
+
+def _collect_grad_stats(model: torch.nn.Module, clip_grad: float) -> dict:
+    """Collect global and bucketed pre/post clip norms without mutating grads."""
+    bucket_squares = {"vlm": 0.0, "action_expert": 0.0, "other": 0.0}
+    bucket_params = {"vlm": 0, "action_expert": 0, "other": 0}
+    total_sq = 0.0
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            continue
+        sq = float(param.grad.detach().float().pow(2).sum())
+        bucket = _bucket_for_name(name)
+        bucket_squares[bucket] += sq
+        bucket_params[bucket] += param.numel()
+        total_sq += sq
+    pre_global = total_sq**0.5
+    clip_coef = min(1.0, clip_grad / pre_global) if pre_global > 0 else 1.0
+    buckets = {}
+    for bucket, sq in bucket_squares.items():
+        pre = sq**0.5
+        buckets[bucket] = {
+            "pre": pre,
+            "post": pre * clip_coef,
+            "num_params_with_grad": bucket_params[bucket],
+        }
+    return {
+        "global_pre": pre_global,
+        "global_post": pre_global * clip_coef,
+        "clip_coef": clip_coef,
+        "buckets": buckets,
+    }
+
+
+def _run_once(model, observation, actions, noise, time, lw, aw, clip_grad):
     model.zero_grad(set_to_none=True)
     model.language_loss_weight = lw
     model.action_loss_weight = aw
-    # Seed the global RNG (not a passed generator) so the model's CPU image-crop
-    # randint and its CUDA flow noise both reproduce identically across the three
-    # loss isolations — making CE/flow/combined norms directly comparable.
+    # Seed the augmentation RNG so the three loss isolations are comparable.
     torch.manual_seed(1234)
     torch.cuda.manual_seed_all(1234)
-    out = model.compute_loss(observation, actions, train=True)
+    out = model.compute_loss(
+        observation,
+        actions,
+        train=True,
+        noise=noise,
+        time=time,
+    )
     loss = out["loss"] if isinstance(out, dict) else out
     loss.backward()
     comps = {}
@@ -129,13 +239,22 @@ def _run_once(model, observation, actions, lw, aw, device):
         for k in ("language_loss", "action_loss", "language_acc"):
             if k in out and out[k] is not None:
                 comps[k] = float(out[k])
-    return _grad_norm(model), comps
+    return _collect_grad_stats(model, clip_grad), comps
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt", required=True, help="dir containing model.safetensors")
     ap.add_argument("--tokenizer", required=True)
+    ap.add_argument(
+        "--batch-path",
+        type=pathlib.Path,
+        default=None,
+        help=(
+            "Optional torch.save payload with a fixed real batch: either "
+            "(observation, actions) or {'observation': ..., 'actions': ...}."
+        ),
+    )
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--clip-grad", type=float, default=1.0)
     ap.add_argument("--device", default="cuda:0")
@@ -163,31 +282,69 @@ def main() -> None:
     model = model.float().to(device)
 
     tokenizer = PaligemmaTokenizer(args.tokenizer, max_len=cfg.max_token_len)
-    observation, actions = _build_batch(tokenizer, cfg, args.batch_size, device)
+    if args.batch_path is not None:
+        observation, actions = _load_batch(args.batch_path, device)
+        batch_source = str(args.batch_path)
+    else:
+        observation, actions = _build_batch(tokenizer, cfg, args.batch_size, device)
+        batch_source = "synthetic-tokenized"
+
+    gen = torch.Generator(device=device).manual_seed(1234)
+    noise = torch.randn(actions.shape, device=device, dtype=actions.dtype, generator=gen)
+    time = (
+        torch.distributions.Beta(torch.tensor(1.5), torch.tensor(1.0))
+        .sample((actions.shape[0],))
+        .to(device=device, dtype=actions.dtype)
+    )
+    time = time * 0.999 + 0.001
 
     print(f"=== vlm_vla gradient-norm audit ({ckpt_dir.name}) ===")
-    print(f"batch_size={args.batch_size} clip_grad={args.clip_grad} device={device}\n")
+    print(
+        f"batch_source={batch_source} batch_size={actions.shape[0]} "
+        f"clip_grad={args.clip_grad} device={device}\n"
+    )
+
+    def _print_stats(label: str, stats: dict) -> None:
+        print(
+            f"  {label:<9} global pre={stats['global_pre']:.3f} "
+            f"post={stats['global_post']:.3f} coef={stats['clip_coef']:.4f}"
+        )
+        for bucket in ("vlm", "action_expert", "other"):
+            bucket_stats = stats["buckets"][bucket]
+            print(
+                f"    {bucket:<13} pre={bucket_stats['pre']:.3f} "
+                f"post={bucket_stats['post']:.3f} "
+                f"params_with_grad={bucket_stats['num_params_with_grad']}"
+            )
 
     for sg in (False, True):
         model.stop_gradient_to_vlm = sg
         n_layers = _set_detach_prefix_kv(model, sg)
-        n_ce, c_ce = _run_once(model, observation, actions, 1.0, 0.0, device)
-        n_flow, c_flow = _run_once(model, observation, actions, 0.0, 1.0, device)
-        n_comb, c_comb = _run_once(model, observation, actions, 1.0, 1.0, device)
-        clip_comb = min(1.0, args.clip_grad / n_comb) if n_comb > 0 else 1.0
-        clip_flow = min(1.0, args.clip_grad / n_flow) if n_flow > 0 else 1.0
+        s_ce, _ = _run_once(
+            model, observation, actions, noise, time, 1.0, 0.0, args.clip_grad
+        )
+        s_flow, _ = _run_once(
+            model, observation, actions, noise, time, 0.0, 1.0, args.clip_grad
+        )
+        s_comb, c_comb = _run_once(
+            model, observation, actions, noise, time, 1.0, 1.0, args.clip_grad
+        )
         # The action-expert update comes only from the flow term; under the single
         # global clip it is scaled by clip_comb instead of clip_flow.
-        atten = clip_comb / clip_flow if clip_flow > 0 else float("nan")
+        atten = (
+            s_comb["clip_coef"] / s_flow["clip_coef"]
+            if s_flow["clip_coef"] > 0
+            else float("nan")
+        )
         print(f"--- stop_gradient_to_vlm={sg} (detach layers set: {n_layers}) ---")
         print(f"  losses: language={c_comb.get('language_loss'):.4f} "
               f"action={c_comb.get('action_loss'):.4f} "
               f"language_acc={c_comb.get('language_acc', float('nan')):.4f}")
-        print(f"  pre-clip grad norm  CE-only   : {n_ce:.3f}")
-        print(f"  pre-clip grad norm  flow-only : {n_flow:.3f}")
-        print(f"  pre-clip grad norm  combined  : {n_comb:.3f}")
-        print(f"  clip coef @ {args.clip_grad}: combined={clip_comb:.4f} "
-              f"flow-only={clip_flow:.4f}")
+        _print_stats("CE-only", s_ce)
+        _print_stats("flow-only", s_flow)
+        _print_stats("combined", s_comb)
+        print(f"  clip coef @ {args.clip_grad}: combined={s_comb['clip_coef']:.4f} "
+              f"flow-only={s_flow['clip_coef']:.4f}")
         print(f"  => action-expert update attenuation vs flow-only step: {atten:.4f} "
               f"(1.0 = no coupling; <1 = CE shrinks the action update)\n")
 

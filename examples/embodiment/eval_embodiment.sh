@@ -32,10 +32,25 @@ if [ -z "$1" ]; then
     CONFIG_NAME="maniskill_ppo_openvlaoft"
 else
     CONFIG_NAME=$1
+    shift
 fi
 
-# NOTE: Set the active robot platform (required for correct action dimension and normalization), supported platforms are LIBERO, ALOHA, BRIDGE, default is LIBERO
-ROBOT_PLATFORM=${2:-${ROBOT_PLATFORM:-"LIBERO"}}
+is_hydra_override() {
+    local arg="$1"
+    [[ "$arg" == *=* || "$arg" == +* || "$arg" == ~* ]]
+}
+
+# NOTE: Set the active robot platform (required for correct action dimension and
+# normalization), supported platforms are LIBERO, ALOHA, BRIDGE, default is LIBERO.
+# The legacy second positional argument is only consumed when it is not a Hydra
+# override. This keeps calls like `eval_embodiment.sh cfg ALOHA` working while
+# allowing `eval_embodiment.sh cfg rollout.model.model_path=...`.
+ROBOT_PLATFORM=${ROBOT_PLATFORM:-"LIBERO"}
+if [ "$#" -gt 0 ] && ! is_hydra_override "$1"; then
+    ROBOT_PLATFORM="$1"
+    shift
+fi
+HYDRA_OVERRIDES=("$@")
 
 export ROBOT_PLATFORM
 
@@ -56,8 +71,17 @@ echo "Using ROBOT_PLATFORM=$ROBOT_PLATFORM"
 LOG_DIR="${REPO_PATH}/logs/$(date +'%Y%m%d-%H:%M:%S')-${CONFIG_NAME}" #/$(date +'%Y%m%d-%H:%M:%S')"
 MEGA_LOG_FILE="${LOG_DIR}/eval_embodiment.log"
 mkdir -p "${LOG_DIR}"
-# Extra args after the config name are forwarded verbatim as Hydra overrides
-# (e.g. rollout.model.model_path=...); with no extra args behavior is unchanged.
-CMD="python ${SRC_FILE} --config-path ${EMBODIED_PATH}/config/ --config-name ${CONFIG_NAME} runner.logger.log_path=${LOG_DIR} ${@:2}"
-echo ${CMD}
-${CMD} 2>&1 | tee ${MEGA_LOG_FILE}
+# Remaining args are forwarded verbatim as Hydra overrides.
+CMD=(
+    python "${SRC_FILE}"
+    --config-path "${EMBODIED_PATH}/config/"
+    --config-name "${CONFIG_NAME}"
+    "runner.logger.log_path=${LOG_DIR}"
+    "${HYDRA_OVERRIDES[@]}"
+)
+printf "%q " "${CMD[@]}"
+printf "\n"
+if [ "${RLINF_EVAL_DRY_RUN:-0}" = "1" ]; then
+    exit 0
+fi
+"${CMD[@]}" 2>&1 | tee "${MEGA_LOG_FILE}"
