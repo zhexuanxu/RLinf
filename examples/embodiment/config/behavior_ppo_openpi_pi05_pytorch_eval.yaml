@@ -106,7 +106,7 @@ rollout:
   model:
     # NEW-format checkpoint produced by ckpt_convertor.openpi (old2new / sft2new).
     # Set this to your local new-format eval checkpoint directory.
-    model_path: /path/to/pi05_sft_pytorch_new
+    model_path: /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new
     precision: ${actor.model.precision}
 
 actor:
@@ -129,11 +129,11 @@ actor:
       # Canonical BEHAVIOR task-0000 norm stats — the SAME assets the SFT path
       # resolves, so eval and SFT share one norm-stats distribution. Norm stats
       # live at {assets_dir}/{asset_id}/norm_stats.json.
-      assets_dir: /path/to/pi05_sft_pytorch_new
+      assets_dir: /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new
       asset_id: physical-intelligence/behavior
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).
-      paligemma_tokenizer: /path/to/paligemma_tokenizer/paligemma_tokenizer.model
+      paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
 
   optim:
     lr: 1.0e-4
