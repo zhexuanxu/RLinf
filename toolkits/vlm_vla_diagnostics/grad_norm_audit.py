@@ -137,7 +137,7 @@ def _move_observation(observation: Observation, device: torch.device) -> Observa
 
 def _load_batch(batch_path: pathlib.Path, device: torch.device):
     """Load a fixed batch saved by a dataloader/control script."""
-    payload = torch.load(batch_path, map_location="cpu")
+    payload = torch.load(batch_path, map_location="cpu", weights_only=True)
     if isinstance(payload, dict):
         observation = payload.get("observation")
         actions = payload.get("actions")
@@ -257,6 +257,17 @@ def main() -> None:
     )
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--clip-grad", type=float, default=1.0)
+    ap.add_argument(
+        "--preview-lw",
+        type=float,
+        default=None,
+        help=(
+            "If set, also run a fix-preview combined step at this "
+            "language_loss_weight (action weight 1.0) and report its action-expert "
+            "update attenuation — verifies a CE down-weight relieves the coupling "
+            "with no training."
+        ),
+    )
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
@@ -346,7 +357,22 @@ def main() -> None:
         print(f"  clip coef @ {args.clip_grad}: combined={s_comb['clip_coef']:.4f} "
               f"flow-only={s_flow['clip_coef']:.4f}")
         print(f"  => action-expert update attenuation vs flow-only step: {atten:.4f} "
-              f"(1.0 = no coupling; <1 = CE shrinks the action update)\n")
+              f"(1.0 = no coupling; <1 = CE shrinks the action update)")
+        if args.preview_lw is not None:
+            s_fix, _ = _run_once(
+                model, observation, actions, noise, time,
+                args.preview_lw, 1.0, args.clip_grad,
+            )
+            atten_fix = (
+                s_fix["clip_coef"] / s_flow["clip_coef"]
+                if s_flow["clip_coef"] > 0
+                else float("nan")
+            )
+            print(f"  FIX-PREVIEW language_loss_weight={args.preview_lw}: "
+                  f"combined global={s_fix['global_pre']:.3f} "
+                  f"clip_coef={s_fix['clip_coef']:.4f} "
+                  f"=> attenuation={atten_fix:.4f}")
+        print()
 
 
 if __name__ == "__main__":
