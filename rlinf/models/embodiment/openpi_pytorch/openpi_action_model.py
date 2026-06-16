@@ -43,9 +43,15 @@ from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
 
 logger = logging.getLogger(__name__)
 
-# How many batches log their generated subtask text before going quiet: enough
-# to see the reasoning-then-acting flow in eval logs without flooding them.
-_GENERATION_LOG_BATCHES = 1000000000
+# The first few eval batches log their full generated subtask text (to eyeball
+# the reasoning-then-acting flow); after that, a compact structured summary
+# (EOS rate, token-length stats, and the most common generated strings) is
+# logged every _GENERATION_SUMMARY_INTERVAL batches instead of flooding the log
+# with per-batch text. All summary bookkeeping is best-effort and never affects
+# the returned actions.
+_GENERATION_LOG_BATCHES = 3
+_GENERATION_SUMMARY_INTERVAL = 20
+_INT_MAX = 2**63 - 1
 
 
 class OpenPiPytorchActionModel(nn.Module):
@@ -133,18 +139,65 @@ class OpenPiPytorchActionModel(nn.Module):
             result["generated_text"] = texts
             result["generation_terminated"] = generation["terminated"].cpu()
             result["forward_inputs"]["generated_token_ids"] = tokens.contiguous()
-            if self._generation_batches_logged < _GENERATION_LOG_BATCHES:
-                self._generation_batches_logged += 1
-                logger.info(
-                    "vlm_vla subtask generation before denoise (batch %d): %s",
-                    batch,
-                    [
-                        f"{text[:60]!r}"
-                        f"{' [EOS]' if bool(generation['terminated'][row]) else ' [no EOS]'}"
-                        for row, text in enumerate(texts)
-                    ],
-                )
+            # Best-effort logging only: wrapped so a logging/stat bug can never
+            # disturb the returned actions or the eval metric.
+            try:
+                self._log_generation(texts, eos_steps, generation["terminated"])
+            except Exception:  # noqa: BLE001 - diagnostics must never break eval
+                logger.debug("vlm_vla generation logging skipped", exc_info=True)
         return actions, result
+
+    def _log_generation(self, texts, eos_steps, terminated) -> None:
+        """Accumulate generation stats and log verbose text then summaries.
+
+        The first few batches log full generated text; afterwards a compact
+        summary (EOS rate, token-length min/mean/max, top generated strings) is
+        logged periodically so the eval log shows whether the VLM produces
+        varied, terminating subtasks without per-batch flooding.
+        """
+        if not hasattr(self, "_generation_stats"):
+            self._generation_stats = {
+                "rows": 0, "eos": 0, "len_sum": 0,
+                "len_min": _INT_MAX, "len_max": 0, "texts": {},
+            }
+        if not hasattr(self, "_generation_batches_logged"):
+            self._generation_batches_logged = 0
+        stats = self._generation_stats
+        for row, text in enumerate(texts):
+            stats["rows"] += 1
+            if bool(terminated[row]):
+                stats["eos"] += 1
+            length = int(eos_steps[row].item())
+            stats["len_sum"] += length
+            stats["len_min"] = min(stats["len_min"], length)
+            stats["len_max"] = max(stats["len_max"], length)
+            stats["texts"][text] = stats["texts"].get(text, 0) + 1
+
+        n = self._generation_batches_logged
+        self._generation_batches_logged += 1
+        if n < _GENERATION_LOG_BATCHES:
+            logger.info(
+                "vlm_vla subtask generation before denoise (batch of %d): %s",
+                len(texts),
+                [
+                    f"{text[:60]!r}{' [EOS]' if bool(terminated[row]) else ' [no EOS]'}"
+                    for row, text in enumerate(texts)
+                ],
+            )
+        elif (n + 1) % _GENERATION_SUMMARY_INTERVAL == 0:
+            rows = max(stats["rows"], 1)
+            top = sorted(stats["texts"].items(), key=lambda kv: -kv[1])[:5]
+            logger.info(
+                "vlm_vla generation summary over %d samples: eos_rate=%.3f, "
+                "token_len[min/mean/max]=%d/%.1f/%d, %d unique strings; top: %s",
+                stats["rows"],
+                stats["eos"] / rows,
+                stats["len_min"] if stats["len_min"] != _INT_MAX else 0,
+                stats["len_sum"] / rows,
+                stats["len_max"],
+                len(stats["texts"]),
+                [f"{t[:40]!r}x{c}" for t, c in top],
+            )
 
     # --- SFT training (BEHAVIOR supervised fine-tuning) ---
     def forward(self, forward_type: ForwardType = ForwardType.SFT, **kwargs):
