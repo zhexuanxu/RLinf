@@ -23,6 +23,8 @@ the VLA side uses the action-only prompt variant from the same raw frames.
 from __future__ import annotations
 
 import argparse
+import gc
+import hashlib
 import json
 import pathlib
 import sys
@@ -40,6 +42,35 @@ from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import (  # noqa: E4
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0_config import (  # noqa: E402
     Pi0Config,
 )
+
+
+def _update_hash_from_tensor(h: "hashlib._Hash", tensor: torch.Tensor) -> None:
+    array = tensor.detach().cpu().contiguous().numpy()
+    h.update(str(array.shape).encode("utf-8"))
+    h.update(str(array.dtype).encode("utf-8"))
+    h.update(array.tobytes())
+
+
+def _tensor_fingerprint(tensor: torch.Tensor) -> str:
+    h = hashlib.sha256()
+    _update_hash_from_tensor(h, tensor)
+    return h.hexdigest()
+
+
+def _sample_flow_inputs(
+    shape: torch.Size,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    seed: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    gen = torch.Generator(device=device).manual_seed(seed)
+    noise = torch.randn(shape, device=device, dtype=dtype, generator=gen)
+    # The training loss samples Beta(1.5, 1.0). For beta=1 the inverse CDF is
+    # u ** (1 / alpha), so this is generator-controlled and distribution-matched.
+    u = torch.rand(shape[0], device=device, dtype=dtype, generator=gen)
+    time = u.pow(1.0 / 1.5) * 0.999 + 0.001
+    return noise, time
 
 
 def _move_tensor(value, device):
@@ -94,7 +125,13 @@ def _load_variant(
     )
 
 
-def _load_pi0(ckpt: pathlib.Path, mode: str, device: torch.device):
+def _load_pi0(
+    ckpt: pathlib.Path,
+    mode: str,
+    device: torch.device,
+    dtype: torch.dtype,
+    dtype_name: str,
+):
     import safetensors.torch
 
     with open(ckpt / "config.json", encoding="utf-8") as f:
@@ -106,14 +143,14 @@ def _load_pi0(ckpt: pathlib.Path, mode: str, device: torch.device):
         max_token_len=int(shape.get("max_token_len", 200)),
         paligemma_variant=str(shape["paligemma_variant"]),
         action_expert_variant=str(shape["action_expert_variant"]),
-        dtype="float32",
+        dtype=dtype_name,
         pcd=bool(shape.get("pcd", False)),
         mode=mode,
     )
     model = cfg.create()
     state_dict = safetensors.torch.load_file(str(ckpt / "model.safetensors"))
     model.load_state_dict(state_dict, strict=True)
-    return model.float().to(device).eval()
+    return model.to(dtype=dtype, device=device).eval()
 
 
 @torch.no_grad()
@@ -147,12 +184,19 @@ def main() -> None:
     parser.add_argument("--baseline-variant", default="vla")
     parser.add_argument("--broken-variant", default="vlm_vla")
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--dtype",
+        default="float32",
+        choices=("float32", "bfloat16"),
+        help="Weight/compute dtype for the diagnostic forward.",
+    )
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--threshold-ratio", type=float, default=1.5)
     parser.add_argument("--output", type=pathlib.Path, default=None)
     args = parser.parse_args()
 
     device = torch.device(args.device)
+    dtype = torch.float32 if args.dtype == "float32" else torch.bfloat16
     base_obs, base_actions, metadata, base_fp = _load_variant(
         args.batch_path, args.baseline_variant, device
     )
@@ -169,29 +213,42 @@ def main() -> None:
             f"Action shape mismatch: {base_actions.shape} vs {broken_actions.shape}."
         )
 
-    gen = torch.Generator(device=device).manual_seed(args.seed)
-    noise = torch.randn(
+    noise, time = _sample_flow_inputs(
         base_actions.shape,
         device=device,
         dtype=base_actions.dtype,
-        generator=gen,
+        seed=args.seed,
     )
-    time = (
-        torch.distributions.Beta(torch.tensor(1.5), torch.tensor(1.0))
-        .sample((base_actions.shape[0],))
-        .to(device=device, dtype=base_actions.dtype)
+
+    baseline = _load_pi0(
+        args.baseline_ckpt,
+        args.baseline_mode,
+        device,
+        dtype,
+        args.dtype,
     )
-    time = time * 0.999 + 0.001
-
-    baseline = _load_pi0(args.baseline_ckpt, args.baseline_mode, device)
-    broken = _load_pi0(args.broken_ckpt, args.broken_mode, device)
-
     baseline_mse = _action_mse(
         baseline, base_obs, base_actions, noise=noise, time=time
+    )
+    del baseline
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    broken = _load_pi0(
+        args.broken_ckpt,
+        args.broken_mode,
+        device,
+        dtype,
+        args.dtype,
     )
     broken_mse = _action_mse(
         broken, broken_obs, broken_actions, noise=noise, time=time
     )
+    del broken
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
     ratio = broken_mse / baseline_mse if baseline_mse > 0 else float("inf")
     passes_gate = ratio <= args.threshold_ratio
 
@@ -206,6 +263,9 @@ def main() -> None:
         "baseline_variant": args.baseline_variant,
         "broken_variant": args.broken_variant,
         "seed": args.seed,
+        "dtype": args.dtype,
+        "noise_fingerprint": _tensor_fingerprint(noise),
+        "time_fingerprint": _tensor_fingerprint(time),
         "threshold_ratio": args.threshold_ratio,
         "M_base": baseline_mse,
         "M_broken": broken_mse,

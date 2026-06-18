@@ -63,7 +63,24 @@ def _resolve_config(config_name: str, overrides: list[str]):
     return cfg
 
 
-def _build_level1_dataset(cfg, *, shuffle: bool, seed: int, rank: int, world_size: int):
+def _parse_episode_indices(value: str | None) -> list[int] | None:
+    if value is None or value == "":
+        return None
+    indices = [int(part) for part in value.split(",") if part.strip()]
+    if not indices:
+        return None
+    return indices
+
+
+def _build_level1_dataset(
+    cfg,
+    *,
+    shuffle: bool,
+    seed: int,
+    rank: int,
+    world_size: int,
+    episode_indices: list[int] | None,
+):
     data_cfg = cfg.data
     model_cfg = cfg.actor.model
     validate_behavior_data_config_migration(data_cfg)
@@ -83,6 +100,7 @@ def _build_level1_dataset(cfg, *, shuffle: bool, seed: int, rank: int, world_siz
     return BehaviorSftDataset(
         repo_id=str(data_cfg.repo_id),
         root=str(data_cfg.behavior_dataset_root),
+        episodes=episode_indices,
         tolerance_s=float(data_cfg.tolerance_s),
         tasks=tasks,
         modalities=list(data_cfg.modalities),
@@ -178,6 +196,25 @@ def main() -> None:
     )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--episode-indices",
+        default=None,
+        help=(
+            "Comma-separated per-task episode indices to restrict capture to "
+            "(for example, '180,181'). When omitted, all configured task episodes "
+            "are eligible."
+        ),
+    )
+    parser.add_argument(
+        "--skip-frames",
+        type=int,
+        default=256,
+        help=(
+            "Advance this many transformed raw frames before capture. The "
+            "nonzero default avoids using the first streamed training frames "
+            "as the diagnostic control batch."
+        ),
+    )
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--world-size", type=int, default=1)
     parser.add_argument(
@@ -191,18 +228,24 @@ def main() -> None:
         help="Hydra overrides applied while composing the SFT config.",
     )
     args = parser.parse_args()
+    if args.skip_frames < 0:
+        raise ValueError("--skip-frames must be non-negative.")
 
     cfg = _resolve_config(args.config_name, args.overrides)
+    episode_indices = _parse_episode_indices(args.episode_indices)
     dataset = _build_level1_dataset(
         cfg,
         shuffle=args.shuffle,
         seed=args.seed,
         rank=args.rank,
         world_size=args.world_size,
+        episode_indices=episode_indices,
     )
     vla_transform = _build_transform(cfg, vlm_vla=False)
     vlm_vla_transform = _build_transform(cfg, vlm_vla=True)
 
+    for _ in range(args.skip_frames):
+        dataset[0]
     raw_frames = [dataset[i] for i in range(args.batch_size)]
     vla_items = [vla_transform(frame) for frame in raw_frames]
     vlm_vla_items = [vlm_vla_transform(frame) for frame in raw_frames]
@@ -219,6 +262,9 @@ def main() -> None:
         "overrides": args.overrides,
         "batch_size": args.batch_size,
         "seed": args.seed,
+        "selection_policy": "streaming_skip_then_take",
+        "episode_indices": episode_indices,
+        "skip_frames": args.skip_frames,
         "shuffle": args.shuffle,
         "rank": args.rank,
         "world_size": args.world_size,

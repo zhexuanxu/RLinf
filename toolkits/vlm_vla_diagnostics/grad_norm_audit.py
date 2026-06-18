@@ -34,6 +34,7 @@ with ``observation``/``actions`` keys. Run:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -63,6 +64,33 @@ SUBTASKS = [
     "place radio on coffee table",
 ]
 TASK = "Turn on the radio receiver that's on the table in the living room."
+
+
+def _update_hash_from_tensor(h: "hashlib._Hash", tensor: torch.Tensor) -> None:
+    array = tensor.detach().cpu().contiguous().numpy()
+    h.update(str(array.shape).encode("utf-8"))
+    h.update(str(array.dtype).encode("utf-8"))
+    h.update(array.tobytes())
+
+
+def _tensor_fingerprint(tensor: torch.Tensor) -> str:
+    h = hashlib.sha256()
+    _update_hash_from_tensor(h, tensor)
+    return h.hexdigest()
+
+
+def _sample_flow_inputs(
+    shape: torch.Size,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    seed: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    gen = torch.Generator(device=device).manual_seed(seed)
+    noise = torch.randn(shape, device=device, dtype=dtype, generator=gen)
+    u = torch.rand(shape[0], device=device, dtype=dtype, generator=gen)
+    time = u.pow(1.0 / 1.5) * 0.999 + 0.001
+    return noise, time
 
 
 def _set_detach_prefix_kv(model: torch.nn.Module, value: bool) -> int:
@@ -257,6 +285,7 @@ def main() -> None:
     )
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--clip-grad", type=float, default=1.0)
+    ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument(
         "--preview-lw",
         type=float,
@@ -300,20 +329,20 @@ def main() -> None:
         observation, actions = _build_batch(tokenizer, cfg, args.batch_size, device)
         batch_source = "synthetic-tokenized"
 
-    gen = torch.Generator(device=device).manual_seed(1234)
-    noise = torch.randn(actions.shape, device=device, dtype=actions.dtype, generator=gen)
-    time = (
-        torch.distributions.Beta(torch.tensor(1.5), torch.tensor(1.0))
-        .sample((actions.shape[0],))
-        .to(device=device, dtype=actions.dtype)
+    noise, time = _sample_flow_inputs(
+        actions.shape,
+        device=device,
+        dtype=actions.dtype,
+        seed=args.seed,
     )
-    time = time * 0.999 + 0.001
 
     print(f"=== vlm_vla gradient-norm audit ({ckpt_dir.name}) ===")
     print(
         f"batch_source={batch_source} batch_size={actions.shape[0]} "
-        f"clip_grad={args.clip_grad} device={device}\n"
+        f"clip_grad={args.clip_grad} device={device} seed={args.seed}"
     )
+    print(f"noise_fingerprint={_tensor_fingerprint(noise)}")
+    print(f"time_fingerprint={_tensor_fingerprint(time)}\n")
 
     def _print_stats(label: str, stats: dict) -> None:
         print(

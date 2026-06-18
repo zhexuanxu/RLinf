@@ -66,11 +66,34 @@ The fix configs are new `vlm_vla`-only files. The pure-`vla` tokenizer string an
 loss are unchanged; `test_action_only_format_unchanged` (vla tokenizer guard) and the
 attention/cache equivalence tests pass. Conclusion: no `vla`-mode numerics changed.
 
-## Validation status (pending)
-Two corrected runs are training on 16 GPUs, each auto-converting (`sft2new`) and
-auto-evaluating (64 trajectories) at the end:
-- LOCAL `behavior_pi05_vlm_vla_fix` (lw=0.1+sg=True): `logs/20260616-20:40:36-behavior_pi05_vlm_vla_fix/`.
-- REMOTE `behavior_pi05_vlm_vla_fix_lw03` (lw=0.3+sg=True): `logs/20260616-21:13:53-behavior_pi05_vlm_vla_fix_lw03/`.
+## Validation status — FIX FAILED; root cause REOPENED (2026-06-18)
 
-AC-1 is met when a run's `eval/success_once` ≥ 0.25 (64 traj), confirmed at 256 traj.
-**This section will record the final numbers once the ~35h runs complete.**
+The CE-down-weight fix did **not** work. `eval/success_once` for the lw=0.1 run = **0.0**
+(64 traj) — worse than the broken baseline (0.0156). The grad-clip coupling was a
+**real mechanism but not the cause of the eval failure**: relieving it did not recover
+success, and down-weighting CE additionally **collapsed the eval-time subtask
+prediction** (generation summary: `"move to radio."` ~75%, `"press radio."` 7/1020).
+
+Corrected reading of the evidence:
+- The constant-subtask **control** (trivial, correct-by-construction subtask) already
+  scored 0.0156 → the **action expert produces bad actions independent of subtask
+  prediction**. This points at the vlm_vla **action path**, NOT the gradient-clip
+  coupling, and NOT (only) subtask prediction.
+- The two diagnostics I wrongly substituted away are now the priority: (task4)
+  **real-model** train-vs-eval action parity (the unit tests only cover tiny synthetic
+  models — a real-model eval-denoise mismatch would explain "trains fine, evals ~0"),
+  and (task5) **teacher-forced offline action-MSE** comparing baseline-VLA vs broken
+  vlm_vla given the correct subtask.
+
+Reopened hypotheses (action path): H3 prompt/template shift (the action expert now
+conditions on `Subtask: <text>` + subtask tokens in the KV instead of the baseline
+`Action:` prompt); H4-real (eval static-cache denoise diverges from the training
+forward on the REAL model/inputs, undetected by the tiny-model unit tests). Decisive
+next test: real-model teacher-forced parity (training forward vs eval denoise, same
+noise) — parity FAIL ⇒ eval-path bug; parity PASS ⇒ the action expert is trained-bad
+(prompt/training). Checkpoints available: baseline `…/RLinf_pi05/…-behavior_pi05_vla/pi05_sft_pytorch_new`,
+broken `…/20260611-…-behavior_pi05_vlm_vla/…/pi05_sft_pytorch_new`, lw=0.1 fixed run.
+
+Lesson: do NOT substitute a mechanism proxy (grad-norm) for the direct outcome gate
+(teacher-forced action-MSE) before committing GPU-days. The action-MSE control would
+have caught this cheaply.
