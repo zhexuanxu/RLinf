@@ -134,6 +134,9 @@ class Pi0(model.BaseModel):
         self.stop_gradient_to_vlm = config.stop_gradient_to_vlm and self.vlm_vla
         self.max_new_tokens = config.max_new_tokens
         self.language_temperature = config.language_temperature
+        # When False, the action expert does not attend the subtask response
+        # tokens (only image+task+state); the VLM still generates the subtask.
+        self.action_attends_subtask = getattr(config, "action_attends_subtask", True)
 
         paligemma_config = gemma.get_config(config.paligemma_variant)
         action_expert_config = gemma.get_config(config.action_expert_variant)
@@ -480,9 +483,17 @@ class Pi0(model.BaseModel):
         if self.vlm_vla:
             # The action expert must not attend KV-excluded text tokens (EOS),
             # matching the generation-time view where they never enter the cache.
+            # When action_attends_subtask is False, also exclude the subtask
+            # RESPONSE tokens from the action expert: the response is exactly the
+            # text positions with token_ar_mask=True (causal), so the effective
+            # KV view (kv & ~ar) keeps only the bidirectional prefix-text (and
+            # images) — i.e. image+task+state conditioning like the vla baseline.
+            effective_kv_mask = observation.token_kv_cache_mask
+            if not self.action_attends_subtask:
+                effective_kv_mask = effective_kv_mask & (~observation.token_ar_mask)
             attn_mask = block_suffix_from_excluded_prefix(
                 attn_mask,
-                observation.token_kv_cache_mask,
+                effective_kv_mask,
                 prefix_len=prefix_mask.shape[1],
             )
             # Position numbering also matches the generation-time view: tokens
@@ -496,9 +507,7 @@ class Pi0(model.BaseModel):
             prefix_len = prefix_mask.shape[1]
             text_len = observation.token_kv_cache_mask.shape[1]
             position_mask = input_mask.clone()
-            position_mask[:, prefix_len - text_len : prefix_len] &= (
-                observation.token_kv_cache_mask
-            )
+            position_mask[:, prefix_len - text_len : prefix_len] &= effective_kv_mask
             positions = torch.cumsum(position_mask.int(), dim=1) - 1
         else:
             positions = torch.cumsum(input_mask.int(), dim=1) - 1
@@ -845,10 +854,18 @@ class Pi0(model.BaseModel):
             max_new_tokens=max_new_tokens,
             temperature=temperature,
         )
+        cache_valid_mask = generation["cache_valid_mask"]
+        if not self.action_attends_subtask:
+            # Match training: the action expert attends only image+task+state,
+            # not the generated subtask. cache_valid_mask = [prefix | generated];
+            # the generated columns are the trailing tokens. Exclude them all.
+            n_generated = generation["tokens"].shape[1]
+            cache_valid_mask = cache_valid_mask.clone()
+            cache_valid_mask[:, -n_generated:] = False
         actions = self._denoise_actions(
             generation["observation"],
             generation["kv_cache"],
-            generation["cache_valid_mask"],
+            cache_valid_mask,
             num_steps=num_steps,
             noise=noise,
             rng=rng,

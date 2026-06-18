@@ -91,6 +91,12 @@ def get_model(cfg, torch_dtype=None):
         max_token_len=int(model_cfg.get("max_token_len", 200)),
         paligemma_variant=str(model_cfg.paligemma_variant),
         action_expert_variant=str(model_cfg.action_expert_variant),
+        # Compute dtype is bf16 (the FSDP MixedPrecision compute dtype). The
+        # `precision` knob controls the MASTER weight dtype (fp32 master + bf16
+        # compute under FSDP), NOT the compute dtype — so this must stay bf16 or
+        # training hits a Float-vs-BFloat16 mismatch. (A one-off fully-fp32 eval
+        # for the bf16-vs-fp32 diagnostic was done separately and showed no
+        # difference, so honoring precision here is unnecessary and unsafe.)
         dtype="bfloat16",
         pcd=False,
         mode=str(model_cfg.get("mode", "vla")),
@@ -99,6 +105,7 @@ def get_model(cfg, torch_dtype=None):
         stop_gradient_to_vlm=bool(model_cfg.get("stop_gradient_to_vlm", False)),
         max_new_tokens=int(model_cfg.get("max_new_tokens", 24)),
         language_temperature=float(model_cfg.get("language_temperature", 0.0)),
+        action_attends_subtask=bool(model_cfg.get("action_attends_subtask", True)),
     )
     model = pi0_config.create()
     # Strict load enforces key/shape parity. Weights are materialized in fp32, so a
