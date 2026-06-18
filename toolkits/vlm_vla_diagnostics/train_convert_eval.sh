@@ -36,6 +36,12 @@ REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PYBIN="${PYBIN:-/mnt/public/xzxuan/.venv_pi/bin/python}"
 ASSET_ID="${ASSET_ID:-physical-intelligence/behavior}"
 
+# Run from the repo root and put it on PYTHONPATH so `python -m rlinf...` (the
+# converter) resolves regardless of the caller's cwd (e.g. an ssh session that
+# lands in /root). Without this the convert step fails with ModuleNotFoundError.
+cd "${REPO_PATH}"
+export PYTHONPATH="${REPO_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
+
 if [[ $# -lt 3 ]]; then
     echo "usage: $0 <train_config> <eval_config> <input_norm_stats> [--dry-run] [--final-256] [eval hydra overrides...]" >&2
     exit 2
@@ -80,8 +86,15 @@ echo "log dir: ${LOG_DIR}"
 EXP_DIR="$(find "${LOG_DIR}" -maxdepth 1 -mindepth 1 -type d ! -name tensorboard 2>/dev/null | sort | tail -1 || true)"
 [[ -n "${EXP_DIR}" || "$DRY_RUN" -eq 1 ]] || { echo "ERROR: no experiment dir under ${LOG_DIR}" >&2; exit 1; }
 EXP_DIR="${EXP_DIR:-${LOG_DIR}/<experiment>}"
-FINAL_CKPT="$(find "${EXP_DIR}/checkpoints" -maxdepth 1 -type d -name 'global_step_*' 2>/dev/null | sort -t_ -k3 -n | tail -1 || true)"
-FINAL_CKPT="${FINAL_CKPT:-${EXP_DIR}/checkpoints/global_step_<N>}"
+# Resolve the HIGHEST global_step by extracting the integer step (the full path
+# has many underscores, so `sort -t_ -k3` sorted on the wrong field and picked an
+# early checkpoint). Take the basename, strip the prefix, numeric-sort, rebuild.
+_FINAL_STEP="$(find "${EXP_DIR}/checkpoints" -maxdepth 1 -type d -name 'global_step_*' -printf '%f\n' 2>/dev/null | sed 's/^global_step_//' | sort -n | tail -1 || true)"
+if [[ -n "${_FINAL_STEP}" ]]; then
+    FINAL_CKPT="${EXP_DIR}/checkpoints/global_step_${_FINAL_STEP}"
+else
+    FINAL_CKPT="${EXP_DIR}/checkpoints/global_step_<N>"
+fi
 CONVERTED_DIR="${EXP_DIR}/pi05_sft_pytorch_new"
 OUTPUT_NORM_STATS="${CONVERTED_DIR}/${ASSET_ID}/norm_stats.json"
 

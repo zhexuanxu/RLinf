@@ -1,8 +1,8 @@
 # VLM_VLA SFT failure — root cause, fix, and review
 
-Companion to `docs/plan-phase8-optimize.md`. Records the confirmed root cause, the
-applied fix, and the vla-regression review. The final `success_once` numbers are
-appended when the corrected runs finish (see "Validation status").
+Companion to `docs/plan-phase8-optimize.md`. Records root-cause hypotheses,
+diagnostic evidence, failed probes, and the vla-regression review. The final
+`success_once` numbers are appended when a corrected run succeeds.
 
 ## Symptom
 Four-subtask `vlm_vla` SFT trained cleanly (loss down, `language_acc` high, correct
@@ -11,7 +11,7 @@ subtask emitted at eval, posture learned) yet evaluated at ~0 `success_once`
 0.25. A constant-subtask control (perfect language) also failed (0.0156), isolating
 the failure to the **action path**, not subtask-language difficulty.
 
-## Root cause (confirmed): global gradient-clip coupling
+## Former lead hypothesis: global gradient-clip coupling
 `vlm_vla` SFT optimizes `total = language_loss_weight*CE + action_loss_weight*flow`
 (both 1.0) under ONE optimizer and ONE global `clip_grad_norm_` at `clip_grad=1.0`
 over all parameters. The subtask CE loss back-propagates only into the large shared
@@ -36,11 +36,15 @@ level-0 frames, balanced); train/eval position & KV parity (already fixed + pinn
 `tests/unit_tests/test_openpi_vlm_vla_model.py::TestSuffixPositionParity`; 21/21
 vlm_vla unit tests pass).
 
-## Fix: relieve the coupling by down-weighting CE (+ knowledge insulation)
+This was a real mechanism in the earlier audit, but the later lw=0.1
+free-generation run failed and the fixed-real-batch audit below shows no active
+clip coupling once the subtask CE is saturated. Treat this as an observed training
+mechanism, not the root cause.
+
+## Failed probe: down-weight CE (+ knowledge insulation)
 `examples/sft/config/behavior_pi05_vlm_vla_fix.yaml`: `language_loss_weight=0.1`,
-`stop_gradient_to_vlm=True` (hedge `…_fix_lw03.yaml` uses 0.3). Down-weighting CE
-means it no longer dominates the global clip norm, so the action expert trains at
-(near) full strength.
+`stop_gradient_to_vlm=True` (hedge `…_fix_lw03.yaml` uses 0.3). This relieved the
+clip-coupling mechanism in the proxy, but it did **not** recover eval success.
 
 Verified before committing GPU-days:
 - Grad-audit fix-preview (`--preview-lw 0.1`): action-expert attenuation **0.18 → 0.84**;
@@ -48,9 +52,9 @@ Verified before committing GPU-days:
 - 500-step real-data probe: `action_loss` 0.27→**0.025**, `language_acc`→**0.99**,
   `grad_norm`=**0.215** (< clip → no throttling; coupling relieved in practice).
 
-If lw down-weight underperforms on the full run, the principled alternative is a
-**per-expert gradient clip** (clip VLM and action-expert separately, each at 1.0;
-keeps `language_loss_weight=1.0`), or the DEC-7 level-0 action-frame mixture.
+The lw=0.1 run scored `eval/success_once=0.0` over 64 trajectories, worse than the
+broken 0.0156 baseline. Do not treat this config as a fix candidate without new
+evidence from the direct action-path diagnostics.
 
 ## vla-regression review (AC-4 / DEC-3): PASS at code level
 Changes to existing shared code are limited to:
@@ -97,3 +101,27 @@ broken `…/20260611-…-behavior_pi05_vlm_vla/…/pi05_sft_pytorch_new`, lw=0.1
 Lesson: do NOT substitute a mechanism proxy (grad-norm) for the direct outcome gate
 (teacher-forced action-MSE) before committing GPU-days. The action-MSE control would
 have caught this cheaply.
+
+### Re-diagnosis results (2026-06-18)
+- **Fixed-real-batch grad audit:** `/mnt/public/xzxuan/tmp/grad_norm_audit_real_batch_broken.txt`
+  shows `language_loss=0.0000`, `language_acc=1.0000`, `action_loss=0.0128`, no global
+  clipping, and action-expert update attenuation `1.0000` for both
+  `stop_gradient_to_vlm=False` and `True`. On this batch, CE/clip coupling is not an
+  active failure mode.
+- **Teacher-forced action-MSE control:** `/mnt/public/xzxuan/tmp/action_mse_base_vs_broken.txt`
+  gives `M_base=0.0115228426`, `M_broken=0.0131088737`, ratio `1.1376`, passing the
+  `<=1.5x` proxy gate. The broken checkpoint is close to baseline under the offline
+  one-step teacher-forced flow-MSE proxy.
+- **Real-model train/eval velocity parity:** `/mnt/public/xzxuan/tmp/offline_velocity_parity.txt`
+  runs the broken checkpoint with teacher-forced non-EOS subtask tokens in a
+  `StaticKVCache`. The required bf16 check fails the strict `1e-3` tolerance
+  (`max_abs_velocity_diff=0.0234375`), while the same harness in float32 passes
+  (`/mnt/public/xzxuan/tmp/offline_velocity_parity_fp32.txt`,
+  `max_abs_velocity_diff=1.19e-6`). This points to bf16 cached-eval numerical/order
+  sensitivity rather than a gross mask/context mismatch.
+
+**Current status:** root cause remains open. The direct diagnostics now rule out
+active CE/clip coupling on the fixed batch and show offline teacher-forced MSE near
+baseline, but the bf16 static-cache parity gate fails. Next required step is task8/task9
+synthesis, plus the still-missing teacher-forced env eval, before any further full
+training run.
