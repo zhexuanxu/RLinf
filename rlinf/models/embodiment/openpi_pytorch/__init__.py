@@ -105,7 +105,6 @@ def get_model(cfg, torch_dtype=None):
         stop_gradient_to_vlm=bool(model_cfg.get("stop_gradient_to_vlm", False)),
         max_new_tokens=int(model_cfg.get("max_new_tokens", 24)),
         language_temperature=float(model_cfg.get("language_temperature", 0.0)),
-        action_attends_subtask=bool(model_cfg.get("action_attends_subtask", True)),
     )
     model = pi0_config.create()
     # Strict load enforces key/shape parity. Weights are materialized in fp32, so a

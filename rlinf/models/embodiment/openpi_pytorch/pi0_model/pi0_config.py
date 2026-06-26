@@ -53,12 +53,6 @@ class Pi0Config(model.BaseModelConfig):
     # Subtask generation budget and sampling temperature (0 = greedy).
     max_new_tokens: int = 24
     language_temperature: float = 0.0
-    # When False, the action expert attends ONLY image+task+state (the subtask
-    # response tokens are excluded from its KV view), while the VLM still
-    # generates the subtask for the CE loss. Diagnostic/fix for the finding that
-    # conditioning the action expert on the subtask degrades its action fit ~3x;
-    # default True preserves the original vlm_vla semantics (and vla is unaffected).
-    action_attends_subtask: bool = True
 
     def __post_init__(self):
         if self.pi05 and self.max_token_len == 48:

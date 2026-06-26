@@ -10,6 +10,10 @@ hydra:
   searchpath:
     - file://${oc.env:EMBODIED_PATH}/config/
 
+# 8-GPU / single-node default (global_batch_size 256 = 8 ranks x micro_batch 32).
+# To run on 2 nodes / 16 GPUs at the SAME global batch, override at launch:
+#   cluster.num_nodes=2 actor.micro_batch_size=16
+# (16 ranks x 16 = 256; verified mathematically equivalent, ~2x faster).
 cluster:
   num_nodes: 1
   component_placement:
@@ -20,13 +24,19 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "sft_behavior_pi05_vlm_vla_noattend"
+    experiment_name: "behavior_pi05_vlm_vla_sg_false_50k"
     logger_backends: ["tensorboard"]
 
   max_epochs: 20
-  max_steps: 30000
+  # 50k-step run. max_steps and optim.total_training_steps MUST match so the
+  # cosine LR schedule decays to min_lr exactly at the final step (a shorter
+  # total_training_steps drives the LR to 0 before training ends).
+  max_steps: 50000
   val_check_interval: -1
-  save_interval: 1000
+  # The final step-50000 checkpoint is always written (check_progress saves on
+  # is_train_end regardless of interval); 10000 keeps a few safety checkpoints
+  # without flooding the shared filesystem.
+  save_interval: 10000
 
 data:
   # Set this to your local BEHAVIOR streaming dataset folder (the
@@ -62,6 +72,11 @@ algorithm:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
+  # Per-GPU (per-rank) batch size. global_batch_size is fixed at 256:
+  #   8 GPUs  -> micro_batch_size 32 (8 x 32 = 256)
+  #   16 GPUs -> micro_batch_size 16 (16 x 16 = 256, set via launch override)
+  # gradient_accumulation = global_batch_size // micro_batch_size // world_size
+  # is 1 in both cases, so each optimizer step consumes exactly one global batch.
   micro_batch_size: 32
   eval_batch_size: 1
   global_batch_size: 256
@@ -89,13 +104,15 @@ actor:
       # the action expert (the CE loss still trains the full VLM).
       mode: vlm_vla
       language_loss_weight: 1.0
-      action_loss_weight: 1.0
+      # sg=false: with the flow gradient flowing into the VLM (no knowledge
+      # insulation), the action loss is up-weighted 10x so the shared backbone
+      # is not dominated by the language CE term.
+      action_loss_weight: 10
+      # sg=false: the flow-matching gradient flows back into the VLM (no
+      # knowledge insulation); the action expert attends the generated subtask.
       stop_gradient_to_vlm: False
       max_new_tokens: 24
       language_temperature: 0.0
-      # Fix (b): action expert conditions on image+task+state only (ignores the
-      # subtask tokens); the VLM still generates the subtask via the CE loss.
-      action_attends_subtask: False
 
   optim:
     lr: 2.5e-5
@@ -104,7 +121,10 @@ actor:
     adam_eps: 1.0e-08
     weight_decay: 1e-10
     clip_grad: 1.0
-    total_training_steps: 30000
+    # MUST equal runner.max_steps so the cosine LR reaches min_lr exactly at the
+    # last training step. (Previously 30000 while training 50000 -> LR hit 0 at
+    # step 30000 and the final 20000 steps trained at LR=0.)
+    total_training_steps: 50000
     lr_warmup_steps: 1000
     # Reference-exact warmup+cosine: warmup starts at peak/(warmup+1) and cosine
     # decays to min_lr over total_training_steps (matches openpi-comet-pytorch-mixed).

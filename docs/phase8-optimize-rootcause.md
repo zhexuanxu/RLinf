@@ -120,8 +120,29 @@ have caught this cheaply.
   `max_abs_velocity_diff=1.19e-6`). This points to bf16 cached-eval numerical/order
   sensitivity rather than a gross mask/context mismatch.
 
-**Current status:** root cause remains open. The direct diagnostics now rule out
-active CE/clip coupling on the fixed batch and show offline teacher-forced MSE near
-baseline, but the bf16 static-cache parity gate fails. Next required step is task8/task9
+### PROXIMATE CAUSE FOUND (2026-06-18): action expert fits ~3x worse in vlm_vla
+- Full closed-loop evals on the CORRECT step-30000 checkpoints (correct env): broken@bf16=0.0156,
+  broken@fp32=0.0, lw=0.1@30000=0.0, lw=0.1@fp32=0.0, lw=0.3@30000=0.0. So: CE weight ratio,
+  and bf16-vs-fp32 eval precision, are BOTH ruled out as fixes.
+- `toolkits/vlm_vla_diagnostics/full_denoise_mse.py` (FULL Euler denoise vs GT actions on the saved
+  real batch, normalized): baseline-VLA MSE 0.00072, broken-VLM-VLA 0.0025 — **~3x worse**, at every
+  num_steps (5/10/20/40 → ratio 3.5/3.2/3.0/2.9). The one-step flow-MSE proxy (1.14x) UNDER-stated
+  this; the systematic fixed-point error of the velocity field is ~3x. This ~3x action-fit gap (≈2x
+  per-step RMS) is the proximate cause of the closed-loop collapse (0.0156 vs baseline 0.25).
+- It is NOT gradient magnitude (lw=0.1 gave full action gradient + relieved clip, still 0.0/3x), NOT
+  frame count (level-1 keeps 94%), NOT num_steps, NOT bf16. The remaining difference from the working
+  baseline is the **joint subtask-CE training**: training the VLM to generate subtasks reshapes the
+  prefix representations the action expert reads (and/or the action expert attending the subtask
+  tokens), degrading the action fit even with stop_gradient_to_vlm=True (CE still trains the VLM).
+- OPEN sub-hypotheses for the fix (each needs a ~30h train): (a) VLM subtask-shaping degrades the
+  action-relevant prefix features (KI not fully achieved); (b) the action expert attending the subtask
+  response tokens degrades its fit (test: block suffix from response, action expert conditions on
+  images+task+state only like baseline, while the VLM still generates the subtask for CE). Candidate
+  recipes: action-expert-only warmup then enable CE; a stronger knowledge-insulation scheme; or (b).
+  DEC-7 (level-0 action frames) is DEPROVED as a fix (94% already used).
+
+**Current status:** proximate cause = ~3x action-fit gap from joint subtask-CE training; exact
+mechanism (a vs b) and fix need a training experiment. Earlier note: direct diagnostics ruled out
+active CE/clip coupling on the fixed batch and bf16 eval precision. Next step is task8/task9
 synthesis, plus the still-missing teacher-forced env eval, before any further full
 training run.

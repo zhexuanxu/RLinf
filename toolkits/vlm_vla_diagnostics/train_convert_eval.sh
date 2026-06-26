@@ -41,6 +41,13 @@ ASSET_ID="${ASSET_ID:-physical-intelligence/behavior}"
 # lands in /root). Without this the convert step fails with ModuleNotFoundError.
 cd "${REPO_PATH}"
 export PYTHONPATH="${REPO_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
+# BEHAVIOR eval needs Isaac Sim + OmniGibson data; a non-interactive ssh does not
+# source the login profile, so default these (override via env). Without them the
+# eval crashes with ModuleNotFoundError: No module named 'isaacsim.simulation_app'.
+export ISAAC_PATH="${ISAAC_PATH:-/mnt/public/xzxuan/issac_sim}"
+export OMNIGIBSON_DATA_PATH="${OMNIGIBSON_DATA_PATH:-/mnt/public/xzxuan/data/BEHAVIOR-1K-datasets_372}"
+export MUJOCO_GL="${MUJOCO_GL:-egl}"
+export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 
 if [[ $# -lt 3 ]]; then
     echo "usage: $0 <train_config> <eval_config> <input_norm_stats> [--dry-run] [--final-256] [eval hydra overrides...]" >&2
