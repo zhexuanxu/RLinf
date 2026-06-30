@@ -82,6 +82,7 @@ class BehaviorEvalProcessor(EvalProcessor):
         model_action_dim: int = 32,
         image_resolution: tuple[int, int] = (224, 224),
         vlm_vla: bool = False,
+        discrete_state_input: bool = True,
     ):
         if "state" not in norm_stats or "actions" not in norm_stats:
             raise ValueError("norm_stats must contain 'state' and 'actions'.")
@@ -96,6 +97,7 @@ class BehaviorEvalProcessor(EvalProcessor):
         # of the action-only prompt, so the VLM can emit the subtask before the
         # action expert denoises.
         self.vlm_vla = vlm_vla
+        self.discrete_state_input = discrete_state_input
         self._inputs = BehaviorInputs(
             extract_state_from_proprio=True, use_all_wrist_images=True
         )
@@ -131,17 +133,18 @@ class BehaviorEvalProcessor(EvalProcessor):
             norm_state = normalize_quantile(
                 np.asarray(inputs["state"], dtype=np.float32), self.state_stats
             )
+            prompt_state = norm_state if self.discrete_state_input else None
             if self.vlm_vla:
                 # Generation prefix only (no response/EOS): the VLM produces the
                 # subtask autoregressively at eval time.
                 tok, tmask, ar, loss, kv = self.tokenizer.tokenize_with_subtask(
-                    inputs["prompt"], norm_state, response=None
+                    inputs["prompt"], prompt_state, response=None
                 )
                 ar_masks.append(ar)
                 loss_masks.append(loss)
                 kv_cache_masks.append(kv)
             else:
-                tok, tmask = self.tokenizer.tokenize(inputs["prompt"], norm_state)
+                tok, tmask = self.tokenizer.tokenize(inputs["prompt"], prompt_state)
             state_padded = _pad_to_dim(norm_state, self.model_action_dim)
 
             for key in _IMAGE_KEYS:

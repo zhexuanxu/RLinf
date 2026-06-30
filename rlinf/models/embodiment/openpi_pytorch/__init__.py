@@ -39,6 +39,16 @@ from rlinf.config import torch_dtype_from_precision
 logger = logging.getLogger(__name__)
 
 
+def _get_discrete_state_input(model_cfg) -> bool:
+    """Read the pi05 language-state switch from YAML."""
+    value = model_cfg.get("discrete_state_input", True)
+    if not isinstance(value, bool):
+        raise TypeError(
+            f"actor.model.openpi.discrete_state_input must be a boolean, got {value!r}."
+        )
+    return value
+
+
 def get_model(cfg, torch_dtype=None):
     """Build the BEHAVIOR pi05 model from a model config (factory entry).
 
@@ -84,8 +94,10 @@ def get_model(cfg, torch_dtype=None):
     if not weights_path.exists():
         raise FileNotFoundError(f"openpi_pytorch checkpoint not found: {weights_path}")
 
+    discrete_state_input = _get_discrete_state_input(model_cfg)
     pi0_config = Pi0Config(
         pi05=True,
+        discrete_state_input=discrete_state_input,
         action_horizon=int(cfg.num_action_chunks),
         action_dim=int(model_cfg.model_action_dim),
         max_token_len=int(model_cfg.get("max_token_len", 200)),
@@ -139,16 +151,18 @@ def get_model(cfg, torch_dtype=None):
         action_env_dim=action_env_dim,
         model_action_dim=pi0_config.action_dim,
         vlm_vla=(pi0_config.mode == "vlm_vla"),
+        discrete_state_input=discrete_state_input,
     )
 
     logger.info(
         "openpi_pytorch: loaded %s (%.2fB params) strict from %s precision=%s "
-        "num_steps=%s",
+        "num_steps=%s discrete_state_input=%s",
         pi0_config,
         n_params / 1e9,
         weights_path,
         cfg.precision,
         num_steps,
+        discrete_state_input,
     )
     return OpenPiPytorchActionModel(
         model,

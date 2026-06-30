@@ -53,6 +53,7 @@ def get_eval_processer(
     model_action_dim=32,
     image_resolution=(224, 224),
     vlm_vla=False,
+    discrete_state_input=True,
 ) -> EvalProcessor:
     """Build the eval processor registered for ``env_type``.
 
@@ -77,6 +78,7 @@ def get_eval_processer(
         model_action_dim=model_action_dim,
         image_resolution=image_resolution,
         vlm_vla=vlm_vla,
+        discrete_state_input=discrete_state_input,
     )
 
 

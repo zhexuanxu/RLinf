@@ -16,9 +16,7 @@
 
 Vendored re-implementation of ``openpi.models.tokenizer.PaligemmaTokenizer``,
 loading a bundled copy of the SentencePiece model so the package does not depend
-on the installed ``openpi`` distribution or its network download machinery. The
-``tokenize`` logic is byte-identical to upstream (verified by a cross-check test
-against the installed ``openpi`` tokenizer).
+on the installed ``openpi`` distribution or its network download machinery.
 """
 
 from __future__ import annotations
@@ -54,7 +52,7 @@ class PaligemmaTokenizer:
     def tokenize(
         self, prompt: str, state: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Tokenize ``prompt`` (+ discretized ``state`` for pi05) to ids + mask."""
+        """Tokenize ``prompt`` (+ optional discretized ``state``) to ids + mask."""
         cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
         if state is not None:
             # Pi05 format: the state is part of the discrete language input.
@@ -112,16 +110,17 @@ class PaligemmaTokenizer:
     def tokenize_with_subtask(
         self,
         prompt: str,
-        state: np.ndarray,
+        state: np.ndarray | None,
         response: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Tokenize the subtask-supervision template with per-token masks.
 
-        Template: ``Task: {prompt}. Subtask: [{response}.][EOS]`` (the reference
-        pi05 VLM-VLA format: the subtask is generated from a STATE-FREE prompt;
-        the discrete state must NOT precede ``Subtask:`` or it garbles the base
-        VLM language head — see the implementation comment). The per-token masks
-        encode the attention/loss/KV-cache contract:
+        Template without state: ``Task: {prompt}. Subtask:
+        [{response}.][EOS]``.
+        Template with pi05 discrete state: ``Task: {prompt}. State:
+        {state};\nSubtask: [{response}.][EOS]``. The caller controls this by
+        passing ``state`` only when ``discrete_state_input`` is enabled in
+        config. The per-token masks encode the attention/loss/KV-cache contract:
 
         * prefix (everything through ``Subtask: ``): bidirectional
           (``ar=False``), no CE loss, visible to the action expert (``kv=True``);
@@ -132,9 +131,8 @@ class PaligemmaTokenizer:
 
         Args:
             prompt: The main-task text (the model input at every level).
-            state: Unused (accepted for call-site compatibility). The subtask is
-                generated from a state-free prompt, so the discrete state is no
-                longer placed in the language prompt.
+            state: Normalized policy state to discretize into pi05 language
+                tokens. ``None`` emits the state-free prompt.
             response: The subtask label to supervise (SFT); ``None`` emits the
                 generation prefix only (eval).
 
@@ -147,17 +145,14 @@ class PaligemmaTokenizer:
                 truncation would silently drop response/EOS supervision.
         """
         task_text = self._clean_subtask_text(prompt)
-        # State-FREE language prompt (reference-aligned). The discrete robot
-        # state is intentionally NOT placed before "Subtask:": a long run of
-        # discrete state integers saturates the base PaliGemma language head into
-        # garbled rare-Unicode output and a near-random initial CE loss. The
-        # reference pi0.5 generates the subtask from a state-free prompt
-        # (discrete_state_input disabled for every reasoning config) and its
-        # action expert likewise conditions on image+task+subtask only (pi0.5 has
-        # no continuous suffix state token). The action expert attends this
-        # state-free prefix's KV (image + task + the generated subtask).
-        del state  # accepted for call-site compatibility; excluded from the prompt
-        prefix_text = f"Task: {task_text}. Subtask: "
+        if state is not None:
+            discretized_state = (
+                np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            )
+            state_str = " ".join(map(str, discretized_state))
+            prefix_text = f"Task: {task_text}. State: {state_str};\nSubtask: "
+        else:
+            prefix_text = f"Task: {task_text}. Subtask: "
 
         tokens = self._tokenizer.encode(prefix_text, add_bos=True)
         ar_mask = [False] * len(tokens)

@@ -112,6 +112,24 @@ class TestSubtaskTokenizer:
         assert kv[:n_valid].all() and not kv[n_valid:].any()
         assert tokenizer.eos_token_id not in tokens[:n_valid]
 
+    def test_subtask_prompt_can_omit_state(self, tokenizer):
+        tokens, valid, ar, loss, kv = tokenizer.tokenize_with_subtask(
+            "Turn on the radio.", None, "press radio"
+        )
+        supervised = np.flatnonzero(loss)
+        prefix_len = int(supervised[0])
+        eos_pos = int(supervised[-1])
+        decoded_prefix = tokenizer.decode(tokens[:prefix_len])
+
+        assert "State:" not in decoded_prefix
+        assert decoded_prefix.startswith("Task: turn on the radio.")
+        assert decoded_prefix.rstrip().endswith("Subtask:")
+        assert not ar[:prefix_len].any()
+        assert kv[:prefix_len].all()
+        assert kv[prefix_len:eos_pos].all()
+        assert not kv[eos_pos]
+        assert not kv[int(valid.sum()) :].any()
+
     def test_overlong_sequence_rejected_not_truncated(self, tokenizer, state):
         with pytest.raises(ValueError, match="max_token_len"):
             tokenizer.tokenize_with_subtask("word " * 200, state, "press radio")

@@ -141,6 +141,8 @@ class BehaviorSftTransform:
             subtask response + EOS, with per-token attention/loss/KV-cache
             masks) instead of the action-only prompt. Frames must carry a
             ``response`` text in this mode.
+        discrete_state_input: Whether to discretize normalized state into the
+            language prompt before ``Action:`` / ``Subtask:``.
         tokenizer: Optional pre-built tokenizer. A new
             :class:`PaligemmaTokenizer` is created lazily per worker when ``None``
             so the (non-picklable) SentencePiece processor is not shared across
@@ -153,6 +155,7 @@ class BehaviorSftTransform:
     max_token_len: int = 200
     image_size: int = _IMAGE_SIZE
     vlm_vla: bool = False
+    discrete_state_input: bool = True
     tokenizer: PaligemmaTokenizer | None = None
 
     def __post_init__(self):
@@ -184,9 +187,9 @@ class BehaviorSftTransform:
             for key in _IMAGE_KEYS
         }
 
-        # Quantile-normalize the (still 23-dim) state and actions to [-1, 1] BEFORE
-        # padding, tokenize the pi05 discrete-state prompt on the normalized state,
-        # then zero-pad the state and actions to the model action dimension.
+        # Quantile-normalize the (still 23-dim) state and actions to [-1, 1]
+        # before padding. When configured, the normalized state is also
+        # discretized into the pi05 language prompt.
         state = np.asarray(inputs["state"], dtype=np.float32)
         state = normalize_quantile(state, self.norm_stats["state"]).astype(np.float32)
         actions = np.asarray(inputs["actions"], dtype=np.float32)
@@ -194,6 +197,7 @@ class BehaviorSftTransform:
             np.float32
         )
         token_extras = {}
+        prompt_state = state if self.discrete_state_input else None
         if self.vlm_vla:
             if response is None:
                 raise ValueError(
@@ -202,7 +206,7 @@ class BehaviorSftTransform:
                 )
             tokens, token_masks, ar_mask, loss_mask, kv_cache_mask = (
                 self._get_tokenizer().tokenize_with_subtask(
-                    inputs["prompt"], state, response
+                    inputs["prompt"], prompt_state, response
                 )
             )
             token_extras = {
@@ -212,7 +216,7 @@ class BehaviorSftTransform:
             }
         else:
             tokens, token_masks = self._get_tokenizer().tokenize(
-                inputs["prompt"], state
+                inputs["prompt"], prompt_state
             )
         state = _pad_to_dim(state, self.action_dim).astype(np.float32)
         actions = _pad_to_dim(actions, self.action_dim).astype(np.float32)
@@ -386,6 +390,7 @@ def create_behavior_sft_data_loader(
     subtask_labels: dict[int, str] | None,
     enable_gap: bool,
     vlm_vla: bool,
+    discrete_state_input: bool,
     dist_rank: int,
     dist_world_size: int,
 ) -> "BehaviorSftDataLoader":
@@ -416,6 +421,8 @@ def create_behavior_sft_data_loader(
             them (False); only consulted at ``fine_grained_level=1``.
         vlm_vla: Tokenize with the subtask-supervision template (per-token
             masks for the VLM CE loss) instead of the action-only prompt.
+        discrete_state_input: Whether to inject normalized state as pi05
+            discrete language tokens.
         dist_rank: This rank's id, threaded into the per-rank chunk partition.
         dist_world_size: Total ranks, threaded into the per-rank chunk partition.
 
@@ -449,6 +456,7 @@ def create_behavior_sft_data_loader(
         action_dim=action_dim,
         max_token_len=max_token_len,
         vlm_vla=vlm_vla,
+        discrete_state_input=discrete_state_input,
     )
     source = _TransformedStreamingDataset(dataset, transform)
 
@@ -563,6 +571,12 @@ def build_behavior_sft_dataloader(
         raise ValueError(
             f"actor.model.openpi.mode must be 'vla' or 'vlm_vla', got {mode!r}."
         )
+    discrete_state_input = model_cfg.openpi.get("discrete_state_input", True)
+    if not isinstance(discrete_state_input, bool):
+        raise TypeError(
+            "actor.model.openpi.discrete_state_input must be a boolean, got "
+            f"{discrete_state_input!r}."
+        )
     fine_grained_level = int(data_cfg.fine_grained_level)
     if fine_grained_level not in (0, 1):
         raise ValueError(
@@ -622,6 +636,7 @@ def build_behavior_sft_dataloader(
         subtask_labels=subtask_labels,
         enable_gap=enable_gap,
         vlm_vla=(mode == "vlm_vla"),
+        discrete_state_input=discrete_state_input,
         dist_rank=rank,
         dist_world_size=world_size,
     )

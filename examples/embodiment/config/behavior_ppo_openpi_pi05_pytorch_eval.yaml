@@ -134,6 +134,9 @@ actor:
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
+      # pi05 state injection: true puts normalized state into language tokens;
+      # false removes state from the language prompt.
+      discrete_state_input: true
 
   optim:
     lr: 1.0e-4
