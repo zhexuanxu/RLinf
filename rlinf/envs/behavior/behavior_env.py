@@ -64,6 +64,8 @@ class BehaviorProcess:
         cfg: DictConfig,
         num_envs: int,
         pipeline_stage_num: int,
+        seed_offset: int = 0,
+        total_num_workers: int = 1,
     ):
         _preload_numba_llvmlite()
         from omnigibson.envs import VectorEnvironment
@@ -71,7 +73,11 @@ class BehaviorProcess:
         self.logger = get_logger()
         self.pipeline_stage_num = pipeline_stage_num
         omni_cfg = setup_omni_cfg(cfg)
-        self.instance_loader = ActivityInstanceLoader.from_omni_cfg(omni_cfg)
+        self.instance_loader = ActivityInstanceLoader.from_omni_cfg(
+            omni_cfg,
+            seed_offset=seed_offset,
+            total_num_workers=total_num_workers,
+        )
 
         # create env and apply env wrapper if enabled
         omni_cfg_dict = OmegaConf.to_container(
@@ -244,6 +250,8 @@ class BehaviorProcessPool:
         worker_info,
         pipeline_stage_num: int,
         num_envs: int,
+        seed_offset: int,
+        total_num_processes: int,
     ) -> tuple["BehaviorProcessPool", int]:
         """Attach to the shared pool and return ``(pool, pool_offset)``."""
         if cls._shared_pool is None:  # pool init
@@ -257,6 +265,8 @@ class BehaviorProcessPool:
                 total_envs_per_worker,
                 num_env_subprocess,
                 pipeline_stage_num,
+                seed_offset,
+                total_num_processes,
             )
 
         idx = cls._pipeline_next_idx
@@ -290,6 +300,8 @@ class BehaviorProcessPool:
         total_num_envs: int,
         num_env_subprocess: int,
         pipeline_stage_num: int,
+        seed_offset: int,
+        total_num_processes: int,
     ):
         if total_num_envs % num_env_subprocess != 0:
             raise ValueError(
@@ -301,6 +313,8 @@ class BehaviorProcessPool:
         self.total_num_envs = total_num_envs
         self.num_env_subprocess = num_env_subprocess
         self.num_env_shard = total_num_envs // num_env_subprocess
+        self.worker_seed_offset = seed_offset // pipeline_stage_num
+        self.total_worker_processes = total_num_processes // pipeline_stage_num
         self.skip_intermediate_obs_in_chunk = bool(
             OmegaConf.select(cfg, "skip_intermediate_obs_in_chunk", default=False)
         )
@@ -325,8 +339,12 @@ class BehaviorProcessPool:
                         self.cfg,
                         self.num_env_shard,
                         pipeline_stage_num,
+                        seed_offset=(self.worker_seed_offset * num_env_subprocess + s),
+                        total_num_workers=(
+                            self.total_worker_processes * num_env_subprocess
+                        ),
                     )
-                    for _ in range(self.num_env_subprocess)
+                    for s in range(self.num_env_subprocess)
                 ]
 
                 # Wait for all instances to initialize and fetch their activity name
@@ -543,6 +561,8 @@ class BehaviorEnv(gym.Env):
                 self.worker_info,
                 self.pipeline_stage_num,
                 self.num_envs,
+                self.seed_offset,
+                self.total_num_processes,
             )
 
     def _load_tasks_cfg(self, activity_name: str):
