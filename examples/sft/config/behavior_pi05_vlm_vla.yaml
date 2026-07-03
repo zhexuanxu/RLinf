@@ -85,6 +85,9 @@ actor:
       # pi05 state injection: true puts normalized state into language tokens
       # before Subtask; false removes state from the language prompt.
       discrete_state_input: true
+      # Reference (comet) state order — matches the pi05_b1k-task0000 norm stats
+      # this config points at (both grippers at the tail).
+      state_order: comet
       # VLM token output: the SFT loss is
       #   language_loss_weight * subtask CE + action_loss_weight * flow matching
       # and eval generates the subtask (greedy, up to max_new_tokens) before

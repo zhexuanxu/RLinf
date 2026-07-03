@@ -1,0 +1,244 @@
+# Copyright 2026 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Compute BEHAVIOR-1K state/action normalization statistics for the pi05 path.
+
+This produces the ``norm_stats.json`` that the openpi_pytorch BEHAVIOR pipeline
+consumes at both SFT time (``behavior_sft_data_loader``) and eval time
+(``processing.BehaviorEvalProcessor``), via
+:func:`rlinf.models.embodiment.openpi_pytorch.utils.normalize.load_norm_stats`.
+
+How it works
+------------
+The BEHAVIOR-1K LeRobot dataset ships precomputed *per-episode* statistics in
+``meta/episodes_stats.jsonl`` (``mean``/``std``/``q01``/``q99`` for the 256-dim
+``observation.state`` and the 23-dim ``action``). Rather than iterating raw
+frames, this script:
+
+1. loads and count-aggregates those per-episode stats via
+   :class:`~rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_dataset.BehaviorSftDatasetMetadata`
+   (which internally uses OmniGibson's ``aggregate_stats``);
+2. maps the 256-dim ``observation.state`` stats down to the 23-dim policy state
+   with the same
+   :func:`~rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy.extract_state_from_proprio`
+   used at train/eval time — so the stats are, by construction, in the exact
+   channel order the model sees. ``--state-order`` selects that ordering:
+   ``comet`` (reference / pretrained-checkpoint order, both grippers at the
+   tail) or ``align`` (action-aligned, left gripper at index 14). The two
+   orderings are NOT interchangeable, so ``--state-order`` here MUST match
+   ``actor.model.openpi.state_order`` in the training/eval config;
+3. zero-pads both the 23-dim state and the 23-dim action stats to ``--action-dim``
+   (the model action dim, e.g. 32) and writes them as ``norm_stats.json``.
+
+.. note::
+   Applying ``extract_state_from_proprio`` to *statistics* is exact for the
+   index-selected channels (base/trunk/arms) and for each gripper **mean**
+   (the mean of a sum equals the sum of the means), but only approximate for the
+   gripper ``std``/``q01``/``q99`` (the two finger channels are summed). This is
+   the same trade-off the upstream openpi producer accepts to build the canonical
+   asset.
+
+Environment
+-----------
+Run inside the BEHAVIOR venv (e.g. ``/mnt/public/xzxuan/.venv_pi``): building the
+metadata triggers a lazy OmniGibson import for ``aggregate_stats``. Only the
+dataset ``meta/**`` is read — no scene/asset load and no GPU are required.
+
+Output layout
+-------------
+The file is written to ``<output-dir>/norm_stats.json``. The loader reads it from
+``{assets_dir}/{asset_id}/norm_stats.json``, so point ``--output-dir`` at that
+same directory, i.e. ``--output-dir <assets_dir>/<asset_id>``.
+
+Examples
+--------
+Single task, action-aligned order, pad to the pi05 model action dim (32),
+written where the loader expects ``asset_id = turn_on_radio_reorder``::
+
+    python rlinf/data/datasets/openpi_pytorch/behavior/compute_norm_stats.py \\
+        --dataset-root /mnt/public/xzxuan/data/2025-challenge-demos \\
+        --repo-id behavior-1k/2025-challenge-demos \\
+        --tasks turning_on_radio \\
+        --action-dim 32 \\
+        --state-order align \\
+        --output-dir /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats/turn_on_radio_reorder
+
+All tasks in the dataset, reference (comet) order — omit ``--tasks`` and
+``--state-order`` (comet is the default)::
+
+    python rlinf/data/datasets/openpi_pytorch/behavior/compute_norm_stats.py \\
+        --dataset-root /mnt/public/xzxuan/data/2025-challenge-demos \\
+        --output-dir /path/to/assets/behavior-1k/2025-challenge-demos
+
+Restrict aggregation to an explicit episode subset::
+
+    python rlinf/data/datasets/openpi_pytorch/behavior/compute_norm_stats.py \\
+        --dataset-root /mnt/public/xzxuan/ci_behavior/dataset \\
+        --tasks turning_on_radio \\
+        --episodes 10 11 12 13 \\
+        --output-dir /tmp/behavior_norm_stats_check
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+
+import numpy as np
+
+from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_data_loader import (
+    _pad_to_dim,
+)
+from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_dataset import (
+    BehaviorSftDatasetMetadata,
+    _omnigibson_utils,
+)
+from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+    extract_state_from_proprio,
+)
+
+# LeRobot stats key -> norm_stats.json key. State is reordered/sliced by
+# extract_state_from_proprio; action passes through (already 23-dim, env order).
+_STATE_SRC_KEY = "observation.state"
+_ACTION_SRC_KEY = "action"
+_STAT_KEYS = ("mean", "std", "q01", "q99")
+
+
+def compute_norm_stats(
+    *,
+    dataset_root: str,
+    repo_id: str,
+    tasks: list[str] | None,
+    episodes: list[int] | None,
+    action_dim: int,
+    state_order: str = "comet",
+) -> dict[str, dict[str, list[float]]]:
+    """Aggregate per-episode LeRobot stats into padded state/action norm stats.
+
+    Returns the ``norm_stats`` payload (without the top-level ``"norm_stats"``
+    wrapper): ``{"state": {mean/std/q01/q99}, "actions": {mean/std/q01/q99}}``,
+    each value a list of length ``action_dim``. ``state_order`` selects the
+    proprio->state channel ordering (``"comet"`` or ``"align"``) and MUST match
+    the ordering used at train/eval time (``actor.model.openpi.state_order``).
+    """
+    meta = BehaviorSftDatasetMetadata(
+        repo_id=repo_id,
+        root=dataset_root,
+        tasks=tasks,
+        modalities=[],
+        cameras=[],
+    )
+
+    if episodes:
+        # Aggregate over an explicit episode subset (mirrors BehaviorSftDataset's
+        # per-episode-subset aggregation) rather than all selected-task episodes.
+        _, aggregate_stats, _, _ = _omnigibson_utils()
+        try:
+            subset = [meta.episodes_stats[ep] for ep in episodes]
+        except KeyError as exc:
+            raise KeyError(
+                f"episode {exc} is not among the selected tasks' episodes; "
+                f"check --tasks and --episodes."
+            ) from exc
+        stats = aggregate_stats(subset)
+    else:
+        stats = meta.stats
+
+    norm_stats: dict[str, dict[str, list[float]]] = {"state": {}, "actions": {}}
+    for key in _STAT_KEYS:
+        state_vec = extract_state_from_proprio(
+            np.asarray(stats[_STATE_SRC_KEY][key]), state_order
+        )
+        action_vec = np.asarray(stats[_ACTION_SRC_KEY][key])
+        norm_stats["state"][key] = _pad_to_dim(state_vec, action_dim).tolist()
+        norm_stats["actions"][key] = _pad_to_dim(action_vec, action_dim).tolist()
+    return norm_stats
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compute BEHAVIOR-1K state/action norm stats (norm_stats.json) for "
+            "the openpi_pytorch pi05 path."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--dataset-root",
+        required=True,
+        help="LeRobot dataset root (the behavior_dataset_root), e.g. "
+        "/mnt/public/xzxuan/data/2025-challenge-demos.",
+    )
+    parser.add_argument(
+        "--repo-id",
+        default="behavior-1k/2025-challenge-demos",
+        help="LeRobot repo id.",
+    )
+    parser.add_argument(
+        "--tasks",
+        nargs="*",
+        default=None,
+        help="Task name(s) to include, e.g. turning_on_radio. Omit for all tasks.",
+    )
+    parser.add_argument(
+        "--episodes",
+        nargs="*",
+        type=int,
+        default=None,
+        help="Optional explicit episode indices to aggregate over. Omit to use "
+        "all episodes of the selected tasks.",
+    )
+    parser.add_argument(
+        "--action-dim",
+        type=int,
+        default=32,
+        help="Pad target (= model action dim); state and actions are zero-padded "
+        "to this length.",
+    )
+    parser.add_argument(
+        "--state-order",
+        choices=("comet", "align"),
+        default="comet",
+        help="Proprio->state channel ordering. 'comet' = reference/checkpoint "
+        "order (both grippers at the tail); 'align' = action-aligned order "
+        "(left gripper at index 14). MUST match actor.model.openpi.state_order.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory to write into; norm_stats.json is created inside it. "
+        "Point this at {assets_dir}/{asset_id} so load_norm_stats finds it.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    norm_stats = compute_norm_stats(
+        dataset_root=args.dataset_root,
+        repo_id=args.repo_id,
+        tasks=args.tasks,
+        episodes=args.episodes,
+        action_dim=args.action_dim,
+        state_order=args.state_order,
+    )
+    out_path = pathlib.Path(args.output_dir).expanduser() / "norm_stats.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps({"norm_stats": norm_stats}, indent=2))
+    print(f"Wrote norm stats to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()

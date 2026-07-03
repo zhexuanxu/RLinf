@@ -45,6 +45,7 @@ from rlinf.data.lerobot_paths import (
 )
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+    STATE_ORDERS,
     BehaviorInputs,
 )
 from rlinf.models.embodiment.openpi_pytorch.utils.image_tools import resize_with_pad
@@ -143,6 +144,10 @@ class BehaviorSftTransform:
             ``response`` text in this mode.
         discrete_state_input: Whether to discretize normalized state into the
             language prompt before ``Action:`` / ``Subtask:``.
+        state_order: Proprio->state channel ordering passed to
+            :func:`extract_state_from_proprio` (``"comet"`` reference order or
+            ``"align"`` action-aligned). Must match the ``state_order`` used to
+            generate ``norm_stats.json``.
         tokenizer: Optional pre-built tokenizer. A new
             :class:`PaligemmaTokenizer` is created lazily per worker when ``None``
             so the (non-picklable) SentencePiece processor is not shared across
@@ -156,12 +161,14 @@ class BehaviorSftTransform:
     image_size: int = _IMAGE_SIZE
     vlm_vla: bool = False
     discrete_state_input: bool = True
+    state_order: str = "comet"
     tokenizer: PaligemmaTokenizer | None = None
 
     def __post_init__(self):
         self._behavior_inputs = BehaviorInputs(
             extract_state_from_proprio=True,
             use_all_wrist_images=True,
+            state_order=self.state_order,
         )
 
     def _get_tokenizer(self) -> PaligemmaTokenizer:
@@ -391,6 +398,7 @@ def create_behavior_sft_data_loader(
     enable_gap: bool,
     vlm_vla: bool,
     discrete_state_input: bool,
+    state_order: str,
     dist_rank: int,
     dist_world_size: int,
 ) -> "BehaviorSftDataLoader":
@@ -423,6 +431,8 @@ def create_behavior_sft_data_loader(
             masks for the VLM CE loss) instead of the action-only prompt.
         discrete_state_input: Whether to inject normalized state as pi05
             discrete language tokens.
+        state_order: Proprio->state channel ordering (``"comet"`` or
+            ``"align"``); must match the ordering used to generate the norm stats.
         dist_rank: This rank's id, threaded into the per-rank chunk partition.
         dist_world_size: Total ranks, threaded into the per-rank chunk partition.
 
@@ -457,6 +467,7 @@ def create_behavior_sft_data_loader(
         max_token_len=max_token_len,
         vlm_vla=vlm_vla,
         discrete_state_input=discrete_state_input,
+        state_order=state_order,
     )
     source = _TransformedStreamingDataset(dataset, transform)
 
@@ -577,6 +588,12 @@ def build_behavior_sft_dataloader(
             "actor.model.openpi.discrete_state_input must be a boolean, got "
             f"{discrete_state_input!r}."
         )
+    state_order = str(model_cfg.openpi.get("state_order", "comet"))
+    if state_order not in STATE_ORDERS:
+        raise ValueError(
+            f"actor.model.openpi.state_order must be one of {STATE_ORDERS}, got "
+            f"{state_order!r}."
+        )
     fine_grained_level = int(data_cfg.fine_grained_level)
     if fine_grained_level not in (0, 1):
         raise ValueError(
@@ -637,6 +654,7 @@ def build_behavior_sft_dataloader(
         enable_gap=enable_gap,
         vlm_vla=(mode == "vlm_vla"),
         discrete_state_input=discrete_state_input,
+        state_order=state_order,
         dist_rank=rank,
         dist_world_size=world_size,
     )

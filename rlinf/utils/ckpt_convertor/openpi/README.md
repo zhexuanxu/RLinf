@@ -96,10 +96,10 @@ RLinf SFT-trained checkpoint -> new bare `Pi0` layout.
 
 ```bash
 python -m rlinf.utils.ckpt_convertor.openpi.convert --mode sft2new \
-    --ckpt              /mnt/public/xzxuan/repos/RLinf/logs/20260625-02:35:10-behavior_pi05_vlm_vla_sg_true_50k_continue/behavior_pi05_vlm_vla_sg_true_50k_con/checkpoints/global_step_10000 \
-    --input-norm-stats  /mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed/behavior-1k/2025-challenge-demos/norm_stats.json \
-    --output-model      /mnt/public/xzxuan/repos/RLinf/logs/20260625-02:35:10-behavior_pi05_vlm_vla_sg_true_50k_continue/behavior_pi05_vlm_vla_sg_true_50k_con/pi05_sft_pytorch_new \
-    --output-norm-stats /mnt/public/xzxuan/repos/RLinf/logs/20260625-02:35:10-behavior_pi05_vlm_vla_sg_true_50k_continue/behavior_pi05_vlm_vla_sg_true_50k_con/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json
+    --ckpt              /mnt/public/xzxuan/repos/RLinf/logs/20260701-10:58:36-behavior_pi05_vlm_vla_sg_true_30k/behavior_pi05_vlm_vla_sg_true_30k_nogap_new_state_order/checkpoints/global_step_30000 \
+    --input-norm-stats  /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats/turn_on_radio_reorder/norm_stats.json \
+    --output-model      /mnt/public/xzxuan/repos/RLinf/logs/20260701-10:58:36-behavior_pi05_vlm_vla_sg_true_30k/pi05_sft_pytorch_new \
+    --output-norm-stats /mnt/public/xzxuan/repos/RLinf/logs/20260701-10:58:36-behavior_pi05_vlm_vla_sg_true_30k/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json
 ```
 
 ---

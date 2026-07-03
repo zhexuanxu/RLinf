@@ -49,6 +49,21 @@ def _get_discrete_state_input(model_cfg) -> bool:
     return value
 
 
+def _get_state_order(model_cfg) -> str:
+    """Read and validate the proprio->state channel ordering from YAML."""
+    from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+        STATE_ORDERS,
+    )
+
+    value = str(model_cfg.get("state_order", "comet"))
+    if value not in STATE_ORDERS:
+        raise ValueError(
+            f"actor.model.openpi.state_order must be one of {STATE_ORDERS}, got "
+            f"{value!r}."
+        )
+    return value
+
+
 def get_model(cfg, torch_dtype=None):
     """Build the BEHAVIOR pi05 model from a model config (factory entry).
 
@@ -143,6 +158,7 @@ def get_model(cfg, torch_dtype=None):
     # single environment; ``openpi.env`` defaults to "behavior" (the only env
     # registered today) when absent.
     env_type = model_cfg.get("env", "behavior")
+    state_order = _get_state_order(model_cfg)
     processor = get_eval_processer(
         env_type,
         norm_stats,
@@ -152,17 +168,19 @@ def get_model(cfg, torch_dtype=None):
         model_action_dim=pi0_config.action_dim,
         vlm_vla=(pi0_config.mode == "vlm_vla"),
         discrete_state_input=discrete_state_input,
+        state_order=state_order,
     )
 
     logger.info(
         "openpi_pytorch: loaded %s (%.2fB params) strict from %s precision=%s "
-        "num_steps=%s discrete_state_input=%s",
+        "num_steps=%s discrete_state_input=%s state_order=%s",
         pi0_config,
         n_params / 1e9,
         weights_path,
         cfg.precision,
         num_steps,
         discrete_state_input,
+        state_order,
     )
     return OpenPiPytorchActionModel(
         model,

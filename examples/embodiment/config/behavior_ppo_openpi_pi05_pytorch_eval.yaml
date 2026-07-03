@@ -137,6 +137,9 @@ actor:
       # pi05 state injection: true puts normalized state into language tokens;
       # false removes state from the language prompt.
       discrete_state_input: true
+      # Reference (comet) state order — must match the norm stats at
+      # {assets_dir}/{asset_id} (both grippers at the tail).
+      state_order: comet
 
   optim:
     lr: 1.0e-4

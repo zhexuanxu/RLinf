@@ -47,6 +47,7 @@ openpi:
   # prompt; false uses image + text only. pi0 suffix-state injection is a
   # different model structure and is not selected by this pi0_5 template.
   discrete_state_input: true
+  state_order: comet
   # VLM token output. "vla" (default) is action-only; "vlm_vla" lets the
   # PaliGemma backbone emit the subtask: SFT adds a CE loss over the subtask
   # response + EOS (combined as language_loss_weight * ce + action_loss_weight

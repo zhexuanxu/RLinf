@@ -105,7 +105,7 @@ rollout:
 
   model:
     # NEW-format checkpoint produced by ckpt_convertor.openpi (old2new / sft2new).
-    model_path: /mnt/public/xzxuan/repos/RLinf/logs/20260626-09:15:26-behavior_pi05_vlm_vla_sg_false_50k/pi05_sft_pytorch_new
+    model_path: /mnt/public/xzxuan/repos/RLinf/outputs/sft_ckpt/vlm_vla_50k_sg_false_no_state
     # /mnt/public/xzxuan/repos/RLinf/logs/20260611-13:45:13-behavior_pi05_vlm_vla/sft_behavior_pi05_vlm_vla/pi05_sft_pytorch_new_10000
     # /mnt/public/xzxuan/repos/RLinf/logs/20260611-13:45:13-behavior_pi05_vlm_vla/sft_behavior_pi05_vlm_vla/pi05_sft_pytorch_new
     precision: ${actor.model.precision}
@@ -130,7 +130,7 @@ actor:
       # Canonical BEHAVIOR norm stats — the SAME assets the SFT path resolves,
       # so eval and SFT share one norm-stats distribution. Norm stats live at
       # {assets_dir}/{asset_id}/norm_stats.json.
-      assets_dir: /mnt/public/xzxuan/repos/RLinf/logs/20260622-03:51:24-behavior_pi05_vlm_vla_sg_false_50k/pi05_sft_pytorch_new
+      assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/sft_ckpt/vlm_vla_50k_sg_false_no_state
       asset_id: physical-intelligence/behavior
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).
@@ -138,6 +138,9 @@ actor:
       # pi05 state injection: true puts normalized state into language tokens
       # before Subtask; false removes state from the language prompt.
       discrete_state_input: false
+      # Reference (comet) state order — must match the norm stats at
+      # {assets_dir}/{asset_id} (both grippers at the tail).
+      state_order: comet
       # VLM token output at eval: the VLM first generates the subtask text
       # (greedy, up to max_new_tokens, terminated by EOS per batch row), then
       # the action expert denoises actions attending to the generated tokens

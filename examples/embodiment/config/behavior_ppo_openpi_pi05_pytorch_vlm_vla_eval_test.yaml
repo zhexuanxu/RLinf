@@ -156,6 +156,9 @@ actor:
       # pi05 state injection: true puts normalized state into language tokens
       # before Subtask; false removes state from the language prompt.
       discrete_state_input: true
+      # Reference (comet) state order — must match the norm stats at
+      # {assets_dir}/{asset_id} (both grippers at the tail).
+      state_order: comet
       # VLM token output at eval: the VLM first generates the subtask text
       # (greedy, up to max_new_tokens, terminated by EOS per batch row), then
       # the action expert denoises actions attending to the generated tokens

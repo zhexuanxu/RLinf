@@ -46,6 +46,11 @@ openpi:
   # prompt; false uses image + text only. pi0 suffix-state injection is a
   # different model structure and is not selected by this pi0_5 template.
   discrete_state_input: true
+  # Proprio->state channel ordering used by extract_state_from_proprio.
+  # "comet": reference / pretrained-checkpoint order (both grippers at the tail,
+  # left gripper at index 21). "align": action-aligned order (left gripper moved
+  # to index 14). MUST match the state_order used to generate norm_stats.json.
+  state_order: comet
   # Placeholders — set the real norm-stats + tokenizer locations in the eval
   # experiment config.
   assets_dir: "/path/to/assets"

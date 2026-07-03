@@ -17,9 +17,16 @@
 Vendored from ``rlinf/models/embodiment/openpi/policies/behavior_policy.py`` with
 the installed-``openpi`` dependencies removed: the upstream ``transforms.DataTransformFn``
 base and ``openpi.models.model.ModelType`` are replaced by a local lightweight
-callable base, and the BEHAVIOR pi05 branch is kept exactly (state extraction,
-image key mapping, and the 23-dim action slice). Logic is byte-identical to the
-old transforms (verified by a cross-check test against the old policy).
+callable base, and the BEHAVIOR pi05 branch is kept (image key mapping and the
+23-dim action slice).
+
+``extract_state_from_proprio`` supports two channel orderings via its
+``state_order`` argument (threaded from ``actor.model.openpi.state_order`` in
+YAML): ``"comet"`` reproduces the reference repo (``openpi-comet``
+``b1k_policy.py``) / pretrained-checkpoint order with both grippers at the tail,
+while ``"align"`` reorders the left gripper to index 14 so the 23-dim state lines
+up channel-for-channel with the R1Pro action space. The two orderings produce
+different layouts, so norm stats are not interchangeable between them.
 """
 
 from __future__ import annotations
@@ -48,8 +55,49 @@ class DataTransformFn:
         raise NotImplementedError
 
 
-def extract_state_from_proprio(proprio_data: np.ndarray) -> np.ndarray:
-    """Extract 23-dim policy state from the full proprio vector."""
+STATE_ORDERS = ("comet", "align")
+
+
+def extract_state_from_proprio(
+    proprio_data: np.ndarray, state_order: str = "comet"
+) -> np.ndarray:
+    """Extract the 23-dim policy state from the full R1Pro proprio vector.
+
+    Two channel orderings are supported via ``state_order``:
+
+    ``"comet"`` (reference / pretrained-checkpoint order; both grippers at the
+    tail, matching ``openpi-comet`` ``b1k_policy.py`` and the legacy JAX twin)::
+
+        state[0:3]   base_qvel
+        state[3:7]   trunk_qpos
+        state[7:14]  arm_left_qpos
+        state[14:21] arm_right_qpos
+        state[21]    left_gripper_width
+        state[22]    right_gripper_width
+
+    ``"align"`` (action-aligned order; left gripper moved to index 14 so the
+    state lines up channel-for-channel with the R1Pro action space —
+    OmniGibson ``_raw_controller_order``: base, trunk, arm_left, gripper_left,
+    arm_right, gripper_right)::
+
+        state[0:3]   base_qvel            == action base (vel x, y, yaw)
+        state[3:7]   trunk_qpos           == action trunk
+        state[7:14]  arm_left_qpos        == action arm_left
+        state[14]    left_gripper_width   == action gripper_left
+        state[15:22] arm_right_qpos       == action arm_right
+        state[22]    right_gripper_width  == action gripper_right
+
+    Each gripper's two finger joints are collapsed to a single width via
+    ``.sum(axis=-1)`` (the action space uses a 1-dim smooth gripper command).
+
+    The two orderings produce different 23-dim layouts, so ``norm_stats.json``
+    must be regenerated with the matching ``state_order`` — stats are not
+    interchangeable between ``"comet"`` and ``"align"``.
+    """
+    if state_order not in STATE_ORDERS:
+        raise ValueError(
+            f"state_order must be one of {STATE_ORDERS}, got {state_order!r}."
+        )
     base_qvel = proprio_data[..., R1PRO_PROPRIO_INDICES["base_qvel"]]  # 3
     trunk_qpos = proprio_data[..., R1PRO_PROPRIO_INDICES["trunk_qpos"]]  # 4
     arm_left_qpos = proprio_data[..., R1PRO_PROPRIO_INDICES["arm_left_qpos"]]  # 7
@@ -60,14 +108,28 @@ def extract_state_from_proprio(proprio_data: np.ndarray) -> np.ndarray:
     right_gripper_width = proprio_data[
         ..., R1PRO_PROPRIO_INDICES["gripper_right_qpos"]
     ].sum(axis=-1, keepdims=True)  # 1
+    if state_order == "comet":
+        # Reference order: both grippers at the tail (left gripper at index 21).
+        return np.concatenate(
+            [
+                base_qvel,
+                trunk_qpos,
+                arm_left_qpos,
+                arm_right_qpos,
+                left_gripper_width,  # gripper rearranged from 21 to 14 to match the action space
+                right_gripper_width,
+            ],
+            axis=-1,
+        )
+    # "align": left gripper moved to index 14 to match the action space.
     return np.concatenate(
         [
-            base_qvel,
-            trunk_qpos,
-            arm_left_qpos,
-            arm_right_qpos,
-            left_gripper_width,  # gripper rearranged from 21 to 14 to match the action space
-            right_gripper_width,
+            base_qvel,  # 3  -> state[0:3]   == action base
+            trunk_qpos,  # 4  -> state[3:7]   == action trunk
+            arm_left_qpos,  # 7  -> state[7:14]  == action arm_left
+            left_gripper_width,  # 1  -> state[14] == action gripper_left (rearranged from 21 to 14 to match the action space)
+            arm_right_qpos,  # 7  -> state[15:22] == action arm_right
+            right_gripper_width,  # 1  -> state[22]    == action gripper_right
         ],
         axis=-1,
     )
@@ -90,6 +152,7 @@ class BehaviorInputs(DataTransformFn):
 
     extract_state_from_proprio: bool = True
     use_all_wrist_images: bool = True
+    state_order: str = "comet"
 
     def __call__(self, data: dict) -> dict:
         base_image = _parse_image(data["observation/image"])  # [h, w, c]
@@ -104,7 +167,7 @@ class BehaviorInputs(DataTransformFn):
             right_wrist = _parse_image(data["observation/right_wrist_image"])
 
         state = (
-            extract_state_from_proprio(data["observation/state"])
+            extract_state_from_proprio(data["observation/state"], self.state_order)
             if self.extract_state_from_proprio
             else data["observation/state"]
         )

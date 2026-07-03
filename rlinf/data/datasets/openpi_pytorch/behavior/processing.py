@@ -83,6 +83,7 @@ class BehaviorEvalProcessor(EvalProcessor):
         image_resolution: tuple[int, int] = (224, 224),
         vlm_vla: bool = False,
         discrete_state_input: bool = True,
+        state_order: str = "comet",
     ):
         if "state" not in norm_stats or "actions" not in norm_stats:
             raise ValueError("norm_stats must contain 'state' and 'actions'.")
@@ -99,7 +100,9 @@ class BehaviorEvalProcessor(EvalProcessor):
         self.vlm_vla = vlm_vla
         self.discrete_state_input = discrete_state_input
         self._inputs = BehaviorInputs(
-            extract_state_from_proprio=True, use_all_wrist_images=True
+            extract_state_from_proprio=True,
+            use_all_wrist_images=True,
+            state_order=state_order,
         )
         self._outputs = BehaviorOutputs(action_dim=action_env_dim)
 

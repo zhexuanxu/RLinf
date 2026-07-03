@@ -54,6 +54,7 @@ def get_eval_processer(
     image_resolution=(224, 224),
     vlm_vla=False,
     discrete_state_input=True,
+    state_order="comet",
 ) -> EvalProcessor:
     """Build the eval processor registered for ``env_type``.
 
@@ -79,6 +80,7 @@ def get_eval_processer(
         image_resolution=image_resolution,
         vlm_vla=vlm_vla,
         discrete_state_input=discrete_state_input,
+        state_order=state_order,
     )
 
 
