@@ -376,6 +376,40 @@ def validate_behavior_data_config_migration(data_cfg) -> None:
             )
 
 
+def _validate_task_names(tasks: list[str]) -> None:
+    """Validate ``data.tasks`` for subtask-supervised (``fine_grained_level=1``) SFT.
+
+    The task list must be explicit and known: an empty list is a configuration
+    error (it is NOT an implicit "all tasks"), and every name must be a key of the
+    authoritative ``TASK_NAMES_TO_INDICES`` map. Unknown names are reported by
+    name so a typo is easy to spot.
+
+    Args:
+        tasks: The resolved ``data.tasks`` list.
+
+    Raises:
+        ValueError: If ``tasks`` is empty or names any task absent from
+            ``TASK_NAMES_TO_INDICES``.
+    """
+    from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_dataset import (
+        TASK_NAMES_TO_INDICES,
+    )
+
+    if not tasks:
+        raise ValueError(
+            "openpi_pytorch BEHAVIOR SFT at fine_grained_level=1 requires a "
+            "non-empty data.tasks listing the task(s) to train on; an empty list "
+            "is not treated as 'all tasks'. To train on every task, list all "
+            "names explicitly (e.g. via the behavior_task_names() helper)."
+        )
+    unknown = [name for name in tasks if name not in TASK_NAMES_TO_INDICES]
+    if unknown:
+        raise ValueError(
+            f"data.tasks contains unknown BEHAVIOR task name(s): {unknown}. Valid "
+            "names are the keys of TASK_NAMES_TO_INDICES in behavior_sft_dataset."
+        )
+
+
 def create_behavior_sft_data_loader(
     *,
     behavior_dataset_root: str,
@@ -612,24 +646,14 @@ def build_behavior_sft_dataloader(
     enable_gap = bool(data_cfg.get("enable_gap", True))
 
     tasks = list(data_cfg.tasks)
-    subtask_labels = None
     if fine_grained_level == 1:
-        # The subtask labels are the per-task list from config, indexed by the
-        # annotation's skill_idx. The task-0000 recipe is exactly one task.
-        if len(tasks) != 1:
-            raise ValueError(
-                "openpi_pytorch BEHAVIOR SFT at fine_grained_level=1 supports "
-                f"exactly one task; got data.tasks={tasks}."
-            )
-        task_subtasks = data_cfg.get("task_subtasks", None)
-        labels = task_subtasks.get(tasks[0]) if task_subtasks else None
-        if not labels:
-            raise ValueError(
-                "openpi_pytorch BEHAVIOR SFT at fine_grained_level=1 requires the "
-                f"subtask labels at data.task_subtasks.{tasks[0]}; none was "
-                "configured."
-            )
-        subtask_labels = {i: str(label) for i, label in enumerate(labels)}
+        # Subtask supervision no longer needs a per-task label list: each frame's
+        # subtask text is resolved at runtime from that frame's own episode
+        # annotation (see BehaviorSftDataset._resolve_subtask_text), which is
+        # correct even for the many tasks whose skill sequence varies per episode.
+        # `data.tasks` must name the tasks to train on explicitly; an empty list
+        # is a configuration error rather than an implicit "all tasks".
+        _validate_task_names(tasks)
 
     loader = create_behavior_sft_data_loader(
         behavior_dataset_root=str(data_cfg.behavior_dataset_root),
@@ -650,7 +674,9 @@ def build_behavior_sft_dataloader(
         tolerance_s=float(data_cfg.tolerance_s),
         shuffle=not eval_dataset,
         seed=int(cfg.actor.seed),
-        subtask_labels=subtask_labels,
+        # Subtask text is resolved per frame from each episode's own annotation;
+        # no per-task label list is threaded through.
+        subtask_labels=None,
         enable_gap=enable_gap,
         vlm_vla=(mode == "vlm_vla"),
         discrete_state_input=discrete_state_input,

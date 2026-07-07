@@ -74,6 +74,9 @@ from lerobot.common.datasets.video_utils import get_safe_default_codec
 from torch.utils.data import Dataset, get_worker_info
 
 # The vendored, self-contained transform base (replaces openpi.transforms.DataTransformFn).
+from rlinf.data.datasets.openpi_pytorch.behavior.skill_language import (
+    entry_to_subtask_text,
+)
 from rlinf.data.datasets.openpi_pytorch.behavior.skill_segments import (
     SkillSegments,
     build_skill_segments,
@@ -444,11 +447,15 @@ class BehaviorSftDataset(LeRobotDataset):
       (the model prompt). Every frame is used.
     * ``1`` — two text items: ``item["task"]`` (still the main task, the model
       prompt) plus ``item["response"]``, the subtask label supervising the VLM.
-      The label is resolved deterministically from the episode's
-      ``skill_annotation`` via :mod:`.skill_segments` and the configured
-      ``subtask_labels``; frames the resolver maps to no subtask (outside
-      ``valid_duration``, gaps with ``enable_gap=False``, trailing gaps) are
-      skipped by the streaming cursor.
+      The label is resolved deterministically from the frame's own episode
+      ``skill_annotation`` via :mod:`.skill_segments` (which frame belongs to
+      which skill window) and :func:`.skill_language.entry_to_subtask_text`
+      (that window's ``skill_description`` + ``object_id`` rendered as natural
+      language). Because the text comes from each episode's own annotation, the
+      dataset is correct across tasks whose skill sequences vary per episode —
+      no fixed per-task label list is needed or used. Frames the resolver maps
+      to no subtask (outside ``valid_duration``, gaps with ``enable_gap=False``,
+      trailing gaps) are skipped by the streaming cursor.
     """
 
     def __init__(
@@ -496,11 +503,10 @@ class BehaviorSftDataset(LeRobotDataset):
             raise ValueError(
                 f"fine_grained_level must be 0 or 1, got {fine_grained_level!r}."
             )
-        if fine_grained_level == 1 and not subtask_labels:
-            raise ValueError(
-                "fine_grained_level=1 requires subtask_labels (the per-task "
-                "subtask list from data.task_subtasks); none were supplied."
-            )
+        # Subtask labels are resolved per frame from that frame's own episode
+        # annotation (see `_attach_text`), so no per-task `subtask_labels` list is
+        # required at level 1. The parameter is retained for API compatibility but
+        # is not consulted for label text.
         if fine_grained_level == 1 and not chunk_streaming_using_keyframe:
             raise ValueError(
                 "fine_grained_level=1 skips unlabeled frames and therefore "
@@ -653,8 +659,16 @@ class BehaviorSftDataset(LeRobotDataset):
         # Subtask supervision resolves every frame through the deterministic
         # skill-segment table; an episode without a (valid) skill annotation
         # cannot be labeled, so it aborts construction instead of training on
-        # silently mislabeled frames.
+        # silently mislabeled frames. The per-window ``skill_idx`` is bounded by
+        # that episode's own number of skill windows (indices are dense and
+        # contiguous 0..N-1 within an episode), so the subtask text is resolved
+        # from the episode's own annotation and is correct even for tasks whose
+        # skill sequence varies across episodes.
         self._skill_segments: dict[int, SkillSegments] = {}
+        # Cache of converted subtask text keyed by (episode_id, skill_idx): one
+        # skill window spans many frames, so the conversion is done once per
+        # window rather than per frame.
+        self._subtask_text_cache: dict[tuple[int, int], str] = {}
         if self.fine_grained_level == 1:
             for ep_id in self.episodes:
                 annotation = self.meta.annotations.get(ep_id)
@@ -663,8 +677,9 @@ class BehaviorSftDataset(LeRobotDataset):
                         f"episode {ep_id}: fine_grained_level=1 requires a skill "
                         "annotation under annotations/, but none was loaded."
                     )
+                num_windows = len(annotation.get("skill_annotation") or [])
                 self._skill_segments[ep_id] = build_skill_segments(
-                    annotation, len(self.subtask_labels), episode_id=ep_id
+                    annotation, num_windows, episode_id=ep_id
                 )
 
         self.omnigibson_mapping = {
@@ -909,8 +924,9 @@ class BehaviorSftDataset(LeRobotDataset):
 
         Always sets ``item["task"]``, the episode's main-task text (the model
         prompt at every level). At ``fine_grained_level=1`` it additionally sets
-        ``item["response"]``, the subtask label supervising the VLM. The
-        non-streaming path passes ``subtask_index=None`` and resolves it here.
+        ``item["response"]``, the subtask label supervising the VLM, resolved
+        from the frame's own episode annotation. The non-streaming path passes
+        ``subtask_index=None`` and resolves it here.
         """
         ep_idx = item["episode_index"].item()
         item["task"] = self.meta.episodes[ep_idx]["tasks"][0]
@@ -926,7 +942,42 @@ class BehaviorSftDataset(LeRobotDataset):
                     f"episode {ep_idx} frame {frame_index} has no subtask label; "
                     "unlabeled frames are only skippable in streaming mode."
                 )
-        item["response"] = self.subtask_labels[subtask_index]
+        item["response"] = self._resolve_subtask_text(ep_idx, subtask_index)
+
+    def _resolve_subtask_text(self, ep_idx: int, skill_idx: int) -> str:
+        """Return the natural-language subtask for one skill window of an episode.
+
+        The window's ``skill_description`` + ``object_id`` are converted by
+        :func:`.skill_language.entry_to_subtask_text`. Results are cached per
+        ``(ep_idx, skill_idx)`` because a window spans many frames. A missing
+        annotation or an out-of-range ``skill_idx`` fails loudly rather than
+        emitting a silently mislabeled frame.
+        """
+        cache_key = (ep_idx, skill_idx)
+        cached = self._subtask_text_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        annotation = self.meta.annotations.get(ep_idx)
+        if annotation is None:
+            raise ValueError(
+                f"episode {ep_idx}: no skill annotation loaded, cannot resolve "
+                f"subtask text for skill_idx {skill_idx}."
+            )
+        windows = annotation.get("skill_annotation") or []
+        if not 0 <= skill_idx < len(windows):
+            raise ValueError(
+                f"episode {ep_idx}: skill_idx {skill_idx} is out of range for the "
+                f"{len(windows)} skill window(s) in this episode's annotation."
+            )
+        text = entry_to_subtask_text(
+            windows[skill_idx],
+            task_name=self.meta.episodes[ep_idx]["tasks"][0],
+            episode_id=ep_idx,
+            skill_idx=skill_idx,
+        )
+        self._subtask_text_cache[cache_key] = text
+        return text
 
     def _get_query_indices(self, idx: int, ep_idx: int):
         """Compute action-horizon query indices and per-key padding masks."""
