@@ -196,8 +196,7 @@ def clean_object_name(token: str) -> str:
     name = stem.replace("_", " ").strip()
     if not name or not any(ch.isalpha() for ch in name):
         raise ValueError(
-            f"object token {token!r} cleaned to a name with no category part: "
-            f"{name!r}"
+            f"object token {token!r} cleaned to a name with no category part: {name!r}"
         )
     return name
 
