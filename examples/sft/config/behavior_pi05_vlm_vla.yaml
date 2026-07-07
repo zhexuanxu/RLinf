@@ -26,7 +26,7 @@ runner:
   max_epochs: 20
   max_steps: 30000
   val_check_interval: -1
-  save_interval: 1000
+  save_interval: 10000
 
 data:
   # Set this to your local BEHAVIOR streaming dataset folder (the
@@ -44,7 +44,7 @@ data:
   # Gap frames between two skill windows belong to the NEXT skill when true
   # (the default); when false they are not used for training. Frames outside
   # the annotation's valid_duration and trailing gaps are never used.
-  enable_gap: true
+  enable_gap: false
   tolerance_s: 1.0e-4
   # BEHAVIOR task-0000 with its four ordered subtask labels, indexed by the
   # annotation's skill_idx.
@@ -77,25 +77,18 @@ actor:
       # Quantile-normalization stats for the 2025-challenge-demos BEHAVIOR task
       # 0000, resolved as {assets_dir}/{asset_id}/norm_stats.json (the same
       # canonical stats the eval path resolves).
-      assets_dir: /mnt/public/xzxuan/repos/openpi-comet-pytorch-mixed/outputs/assets/train/pi05_b1k-task0000_sft_pytorch_mixed
-      asset_id: "behavior-1k/2025-challenge-demos"
+      assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id: turn_on_radio_reorder
+      # These norm stats were generated with the action-aligned state order
+      # (left gripper at index 14), so the model must extract state the same way.
+      state_order: align
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
-      # pi05 state injection: true puts normalized state into language tokens
-      # before Subtask; false removes state from the language prompt.
       discrete_state_input: true
-      # Reference (comet) state order — matches the pi05_b1k-task0000 norm stats
-      # this config points at (both grippers at the tail).
-      state_order: comet
-      # VLM token output: the SFT loss is
-      #   language_loss_weight * subtask CE + action_loss_weight * flow matching
-      # and eval generates the subtask (greedy, up to max_new_tokens) before
-      # denoising actions. stop_gradient_to_vlm keeps the flow gradient inside
-      # the action expert (the CE loss still trains the full VLM).
       mode: vlm_vla
       language_loss_weight: 1.0
-      action_loss_weight: 1.0
+      action_loss_weight: 10
       stop_gradient_to_vlm: False
       max_new_tokens: 24
       language_temperature: 0.0
