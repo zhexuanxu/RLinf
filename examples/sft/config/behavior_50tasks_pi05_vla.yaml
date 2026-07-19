@@ -20,11 +20,11 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "sft_behavior_pi05_vlm_vla"
+    experiment_name: "sft_behavior_50tasks_pi05_vla"
     logger_backends: ["tensorboard"]
 
   max_epochs: 20
-  max_steps: 30000
+  max_steps: 50000
   val_check_interval: -1
   save_interval: 10000
 
@@ -38,29 +38,77 @@ data:
   modalities: ["rgb"]
   num_workers: 8
   # Directory for the on-disk Arrow cache that datasets.load_dataset materializes
-  # from the low-dim parquet before training. The HuggingFace default lands under
-  # HF_HOME on the small container overlay; point it at the large /mnt/public
-  # volume so the cache never competes with the overlay for space. (Videos are
-  # decoded on the fly from the dataset's videos/ and are unaffected.)
+  # from the low-dim parquet before training. It re-encodes a full copy (~140 GB
+  # for all 50 tasks); the HuggingFace default lands under HF_HOME on the small
+  # container overlay (a few GB free) and overflows with "No space left on
+  # device". Point it at the large /mnt/public volume. The cache is built once and
+  # reused across ranks and subsequent runs. (Videos are decoded on the fly from
+  # the dataset's videos/ and are unaffected.)
   hf_cache_dir: /mnt/public/xzxuan/.cache/hf_datasets
   # Subtask supervision: each frame carries the main task as the prompt plus
   # the subtask label (resolved from the episode's skill annotation) as the
-  # VLM response. Level 1 requires mode: vlm_vla below and task_subtasks.
-  fine_grained_level: 1
+  # VLM response. Level 1 requires mode: vlm_vla below.
+  fine_grained_level: 0
   # Gap frames between two skill windows belong to the NEXT skill when true
   # (the default); when false they are not used for training. Frames outside
   # the annotation's valid_duration and trailing gaps are never used.
   enable_gap: false
   tolerance_s: 1.0e-4
-  # BEHAVIOR task-0000 with its four ordered subtask labels, indexed by the
-  # annotation's skill_idx.
-  tasks: ["turning_on_radio"]
-  # task_subtasks:
-  #   turning_on_radio:
-  #     - "move to radio"
-  #     - "pick up radio from coffee table"
-  #     - "press radio"
-  #     - "place radio on coffee table"
+  # All 50 BEHAVIOR tasks, listed explicitly and ordered by their canonical task
+  # index (the keys of TASK_NAMES_TO_INDICES in behavior_sft_dataset.py). The
+  # subtask text for every frame is resolved at load time from that frame's own
+  # episode skill annotation, so no per-task subtask list is configured here.
+  tasks:
+    - "turning_on_radio"
+    - "picking_up_trash"
+    - "putting_away_Halloween_decorations"
+    - "cleaning_up_plates_and_food"
+    - "can_meat"
+    - "setting_mousetraps"
+    - "hiding_Easter_eggs"
+    - "picking_up_toys"
+    - "rearranging_kitchen_furniture"
+    - "putting_up_Christmas_decorations_inside"
+    - "set_up_a_coffee_station_in_your_kitchen"
+    - "putting_dishes_away_after_cleaning"
+    - "preparing_lunch_box"
+    - "loading_the_car"
+    - "carrying_in_groceries"
+    - "bringing_in_wood"
+    - "moving_boxes_to_storage"
+    - "bringing_water"
+    - "tidying_bedroom"
+    - "outfit_a_basic_toolbox"
+    - "sorting_vegetables"
+    - "collecting_childrens_toys"
+    - "putting_shoes_on_rack"
+    - "boxing_books_up_for_storage"
+    - "storing_food"
+    - "clearing_food_from_table_into_fridge"
+    - "assembling_gift_baskets"
+    - "sorting_household_items"
+    - "getting_organized_for_work"
+    - "clean_up_your_desk"
+    - "setting_the_fire"
+    - "clean_boxing_gloves"
+    - "wash_a_baseball_cap"
+    - "wash_dog_toys"
+    - "hanging_pictures"
+    - "attach_a_camera_to_a_tripod"
+    - "clean_a_patio"
+    - "clean_a_trumpet"
+    - "spraying_for_bugs"
+    - "spraying_fruit_trees"
+    - "make_microwave_popcorn"
+    - "cook_cabbage"
+    - "chop_an_onion"
+    - "slicing_vegetables"
+    - "chopping_wood"
+    - "cook_hot_dogs"
+    - "cook_bacon"
+    - "freeze_pies"
+    - "canning_food"
+    - "make_pizza"
 
 algorithm:
   adv_type: gae
@@ -80,11 +128,11 @@ actor:
     # New-format fp32 base checkpoint (exactly what the reference trainer loads).
     model_path: /mnt/public/xzxuan/models/pi05_base_pytorch_new
     openpi:
-      # Quantile-normalization stats for the 2025-challenge-demos BEHAVIOR task
-      # 0000, resolved as {assets_dir}/{asset_id}/norm_stats.json (the same
-      # canonical stats the eval path resolves).
+      # Quantile-normalization stats computed over all 50 BEHAVIOR tasks with the
+      # action-aligned state order, resolved as {assets_dir}/{asset_id}/norm_stats.json
+      # (the same canonical stats the eval path resolves).
       assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
-      asset_id: turn_on_radio_reorder
+      asset_id: 50tasks_reorder
       # These norm stats were generated with the action-aligned state order
       # (left gripper at index 14), so the model must extract state the same way.
       state_order: align
@@ -92,12 +140,16 @@ actor:
       # in code).
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
       discrete_state_input: true
-      mode: vlm_vla
-      language_loss_weight: 1.0
-      action_loss_weight: 10
-      stop_gradient_to_vlm: False
-      max_new_tokens: 24
-      language_temperature: 0.0
+      # Override the pi0_5_pytorch template's 200. In vla (action-only) mode the
+      # prompt is `Task: {instruction}, State: {32 discrete ints};\nAction:`.
+      # Across all 50 tasks the long natural-language instructions (make_pizza is
+      # the worst at ~241 tokens) plus the state block exceed 200 for ~10 tasks.
+      # Unlike vlm_vla (which raises), vla's tokenize() SILENTLY TRUNCATES on
+      # overflow -- it would drop the trailing `Action:` cue and part of the state,
+      # corrupting those tasks' prompts with no error. 288 covers the 241 worst
+      # case with headroom (multiple of 32). This is also the model's prompt token
+      # budget, so model and data pipeline both read this single value.
+      max_token_len: 288
 
   optim:
     lr: 2.5e-5
@@ -106,8 +158,8 @@ actor:
     adam_eps: 1.0e-08
     weight_decay: 1e-10
     clip_grad: 1.0
-    total_training_steps: 30000
-    lr_warmup_steps: 1000
+    total_training_steps: 50000
+    lr_warmup_steps: 2000
     # Reference-exact warmup+cosine: warmup starts at peak/(warmup+1) and cosine
     # decays to min_lr over total_training_steps (matches openpi-comet-pytorch-mixed).
     lr_scheduler: "openpi_cosine"

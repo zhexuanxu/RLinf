@@ -37,6 +37,14 @@ data:
   repo_id: "behavior-1k/2025-challenge-demos"
   modalities: ["rgb"]
   num_workers: 8
+  # Directory for the on-disk Arrow cache that datasets.load_dataset materializes
+  # from the low-dim parquet before training. It re-encodes a full copy (~140 GB
+  # for all 50 tasks); the HuggingFace default lands under HF_HOME on the small
+  # container overlay (a few GB free) and overflows with "No space left on
+  # device". Point it at the large /mnt/public volume. The cache is built once and
+  # reused across ranks and subsequent runs. (Videos are decoded on the fly from
+  # the dataset's videos/ and are unaffected.)
+  hf_cache_dir: /mnt/public/xzxuan/.cache/hf_datasets
   # Subtask supervision: each frame carries the main task as the prompt plus
   # the subtask label (resolved from the episode's skill annotation) as the
   # VLM response. Level 1 requires mode: vlm_vla below.
@@ -132,6 +140,16 @@ actor:
       # in code).
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
       discrete_state_input: true
+      # Override the pi0_5_pytorch template's 200. The vlm_vla supervision
+      # sequence is `Task: {instruction}. State: {32 discrete ints};\nSubtask:
+      # {subtask}.` + EOS. Across all 50 tasks the long natural-language task
+      # instructions (make_pizza is ~107 prompt tokens) plus the ~131-token state
+      # block push the worst case to 257 tokens (make_pizza) -- well over 200, so
+      # ~20 tasks overflowed and aborted the loader. 288 covers the 257 worst case
+      # with headroom (and is a multiple of 32). This is also the model's prompt
+      # token budget (pi0 builds fixed-length attention/KV tensors from it), so the
+      # model and data pipeline both read this single value.
+      max_token_len: 288
       mode: vlm_vla
       language_loss_weight: 1.0
       action_loss_weight: 10
@@ -147,7 +165,7 @@ actor:
     weight_decay: 1e-10
     clip_grad: 1.0
     total_training_steps: 50000
-    lr_warmup_steps: 1000
+    lr_warmup_steps: 2000
     # Reference-exact warmup+cosine: warmup starts at peak/(warmup+1) and cosine
     # decays to min_lr over total_training_steps (matches openpi-comet-pytorch-mixed).
     lr_scheduler: "openpi_cosine"

@@ -161,6 +161,23 @@ TASK_INDICES_TO_NAMES = {v: k for k, v in TASK_NAMES_TO_INDICES.items()}
 
 ANNOTATIONS_PATH = "annotations"
 
+# Parquet columns the streaming pipeline actually consumes, verified against every
+# ``hf_dataset`` access: ``episode_index`` / ``task_index`` / ``timestamp`` (cursor
+# + subtask resolution), ``observation.state`` and ``action`` (the model inputs),
+# and ``index`` (kept for LeRobot bookkeeping). ``observation.cam_rel_poses`` is
+# referenced nowhere and ``observation.task_info`` is explicitly popped in
+# ``__getitem__``; both are projected out so the on-disk Arrow cache that
+# ``load_dataset`` materializes holds only what training reads (~12% smaller, and
+# it never re-encodes the large unused columns).
+_REQUIRED_PARQUET_COLUMNS = [
+    "index",
+    "episode_index",
+    "task_index",
+    "timestamp",
+    "observation.state",
+    "action",
+]
+
 
 # ---------------------------------------------------------------------------
 # Lazy OmniGibson utility access
@@ -476,7 +493,15 @@ class BehaviorSftDataset(LeRobotDataset):
         modalities: Iterable[str] | None = None,
         cameras: Iterable[str] | None = None,
         local_only: bool = False,
-        check_timestamp_sync: bool = True,
+        # Defaults to False: the timestamp-sync check (see __init__ below) stacks
+        # the whole flat table's ``timestamp`` and ``episode_index`` columns
+        # through the per-row ``hf_transform_to_torch`` hook -- ~119M rows for the
+        # 50-task dataset -- costing tens of minutes per worker at startup. The
+        # streaming ``__getitem__`` resolves frames by ``frame_duration`` index, not
+        # by reconstructing frame positions from evenly-spaced timestamps, so the
+        # check guards an assumption this path does not rely on. Pass True to opt
+        # back into the (expensive) LeRobot data-integrity scan.
+        check_timestamp_sync: bool = False,
         chunk_streaming_using_keyframe: bool = True,
         shuffle: bool = True,
         seed: int = 42,
@@ -488,6 +513,7 @@ class BehaviorSftDataset(LeRobotDataset):
         enable_gap: bool = True,
         dist_rank: int | None = None,
         dist_world_size: int | None = None,
+        hf_cache_dir: str | Path | None = None,
     ):
         import packaging.version
 
@@ -543,6 +569,18 @@ class BehaviorSftDataset(LeRobotDataset):
         # back to ``torch.distributed`` only when these are not provided.
         self._dist_rank = dist_rank
         self._dist_world_size = dist_world_size
+        # Directory for the on-disk Arrow cache that ``load_dataset`` materializes
+        # from the parquet. This MUST live on a disk with room for the whole
+        # low-dim dataset (~140 GB for 50 tasks): the HuggingFace default lands
+        # under ``HF_HOME`` which is often a small container overlay, causing
+        # ``ENOSPC`` during "Generating train split". When not provided, default to
+        # a sibling of the dataset root so the cache follows the (large) disk the
+        # dataset itself lives on rather than the overlay.
+        self._hf_cache_dir = (
+            Path(os.path.expanduser(str(hf_cache_dir)))
+            if hf_cache_dir
+            else Path(self.root).parent / ".hf_datasets_cache"
+        )
         # Real OmniGibson video/stat utilities, imported lazily here (never at module
         # import) and cached so the streaming hot path and `load_hf_dataset` can reuse
         # them without re-importing. See `_omnigibson_utils`.
@@ -741,16 +779,36 @@ class BehaviorSftDataset(LeRobotDataset):
         )
 
     def load_hf_dataset(self):
-        """Load the parquet frames for the selected episodes as a HF dataset."""
+        """Load the parquet frames for the selected episodes as a HF dataset.
+
+        ``load_dataset`` re-encodes the parquet into an on-disk Arrow cache before
+        returning a memory-mapped table; ``cache_dir`` steers that cache onto a
+        large disk (see ``self._hf_cache_dir``) and ``columns`` restricts it to the
+        columns the pipeline reads (:data:`_REQUIRED_PARQUET_COLUMNS`), so the
+        large unused columns are never re-encoded.
+        """
+        self._hf_cache_dir.mkdir(parents=True, exist_ok=True)
         if self.episodes is None:
             path = str(self.root / "data")
-            hf_dataset = load_dataset("parquet", data_dir=path, split="train")
+            hf_dataset = load_dataset(
+                "parquet",
+                data_dir=path,
+                split="train",
+                cache_dir=str(self._hf_cache_dir),
+                columns=_REQUIRED_PARQUET_COLUMNS,
+            )
         else:
             files = [
                 str(self.root / self.meta.get_data_file_path(ep_idx))
                 for ep_idx in self.episodes
             ]
-            hf_dataset = load_dataset("parquet", data_files=files, split="train")
+            hf_dataset = load_dataset(
+                "parquet",
+                data_files=files,
+                split="train",
+                cache_dir=str(self._hf_cache_dir),
+                columns=_REQUIRED_PARQUET_COLUMNS,
+            )
         hf_dataset.set_transform(self._hf_transform_to_torch)
         return hf_dataset
 

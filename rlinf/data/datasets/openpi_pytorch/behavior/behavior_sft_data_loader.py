@@ -33,6 +33,7 @@ import dataclasses
 import logging
 import multiprocessing
 import typing
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -435,6 +436,7 @@ def create_behavior_sft_data_loader(
     state_order: str,
     dist_rank: int,
     dist_world_size: int,
+    hf_cache_dir: str | None = None,
 ) -> "BehaviorSftDataLoader":
     """Build the BEHAVIOR-1K SFT data loader yielding ``(Observation, actions)``.
 
@@ -469,6 +471,10 @@ def create_behavior_sft_data_loader(
             ``"align"``); must match the ordering used to generate the norm stats.
         dist_rank: This rank's id, threaded into the per-rank chunk partition.
         dist_world_size: Total ranks, threaded into the per-rank chunk partition.
+        hf_cache_dir: Directory for the on-disk Arrow cache that ``load_dataset``
+            materializes from the parquet. Must be on a disk with room for the
+            whole low-dim dataset; when ``None`` the dataset defaults it to a
+            sibling of the dataset root (see :class:`BehaviorSftDataset`).
 
     Returns:
         A loader whose iteration yields ``(Observation, actions)`` 2-tuples.
@@ -492,6 +498,7 @@ def create_behavior_sft_data_loader(
         enable_gap=enable_gap,
         dist_rank=dist_rank,
         dist_world_size=dist_world_size,
+        hf_cache_dir=hf_cache_dir,
     )
 
     transform = BehaviorSftTransform(
@@ -683,5 +690,14 @@ def build_behavior_sft_dataloader(
         state_order=state_order,
         dist_rank=rank,
         dist_world_size=world_size,
+        # Steer the on-disk Arrow cache onto a large disk. ``load_dataset`` writes a
+        # full re-encoded copy of the low-dim parquet (~140 GB for 50 tasks) before
+        # training; the HuggingFace default lands under HF_HOME (often a small
+        # container overlay) and overflows with ENOSPC. Read from YAML, else fall
+        # back to a sibling of the dataset root so it follows the dataset's disk.
+        hf_cache_dir=str(
+            data_cfg.get("hf_cache_dir", None)
+            or (Path(str(data_cfg.behavior_dataset_root)).parent / ".hf_datasets_cache")
+        ),
     )
     return loader, loader.data_config()

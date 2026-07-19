@@ -39,6 +39,7 @@ data:
   num_workers: 8
   # Action-only training reads main-task prompts (level 0). Subtask
   # supervision (level 1) is the vlm_vla recipe — see behavior_pi05_vlm_vla.yaml.
+  hf_cache_dir: /mnt/public/xzxuan/.cache/hf_datasets
   fine_grained_level: 0
   tolerance_s: 1.0e-4
   # BEHAVIOR task-0000.
