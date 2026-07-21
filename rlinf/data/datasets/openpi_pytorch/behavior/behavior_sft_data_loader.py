@@ -612,9 +612,8 @@ def build_behavior_sft_dataloader(
     # Norm stats + tokenizer resolve STRICTLY from YAML (no checkpoint-relative
     # fallback); load_norm_stats rejects a blank assets_dir/asset_id the same way
     # the eval model factory does, so neither path can silently load non-task-0000
-    # stats.
-    assets_dir = model_cfg.openpi.assets_dir
-    asset_id = model_cfg.openpi.asset_id
+    # stats. assets_dir/asset_id are resolved from control_mode below (the switch);
+    # only the tokenizer is mode-independent and read here.
     tokenizer_path = model_cfg.openpi.paligemma_tokenizer
 
     # The model mode and the data granularity are one decision: action-only
@@ -669,11 +668,34 @@ def build_behavior_sft_dataloader(
             f"action_dim to {expected_env_dim} for this control mode (the model "
             f"still pads to openpi.model_action_dim)."
         )
+    # control_mode is the switch: resolve the dataset root + norm-stats asset for
+    # this mode. resolve_behavior_paths prefers optional mode-specific YAML fields
+    # (e.g. behavior_dataset_root_eef_delta / asset_id_eef_delta) and otherwise
+    # falls back to the base fields, so one config can carry both modes' paths and
+    # flipping control_mode selects the matching data/stats. Paths stay in YAML
+    # (no hardcoded filesystem defaults in code); the validations below reject any
+    # residual mode/dataset/stats mismatch.
+    from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+        resolve_behavior_paths,
+        validate_converted_dataset,
+    )
+
+    resolved = resolve_behavior_paths(data_cfg, model_cfg.openpi, control_mode)
+    behavior_dataset_root = str(resolved["behavior_dataset_root"])
+    assets_dir = resolved["assets_dir"]
+    asset_id = resolved["asset_id"]
     # Reject a norm-stats asset whose manifest disagrees with this run's mode/dim
-    # (delta-EEF assets carry a manifest; legacy joint stats without one pass).
+    # (delta-EEF assets carry a manifest; legacy joint stats without one pass only
+    # for joint_absolute).
     validate_norm_stats_for_control_mode(
         assets_dir, asset_id, control_mode, expected_env_dim
     )
+    # Reject a dataset root that does not match the control mode: for
+    # eef_delta_pose the root must be a converted delta-EEF dataset (action
+    # shape 21 + a matching provenance covering data.tasks); for joint_absolute
+    # it must be the original 23-dim dataset. This closes the hole where a delta
+    # config could stream the old 23-dim parquet while passing config-dim checks.
+    validate_converted_dataset(behavior_dataset_root, control_mode, list(data_cfg.tasks))
     fine_grained_level = int(data_cfg.fine_grained_level)
     if fine_grained_level not in (0, 1):
         raise ValueError(
@@ -702,7 +724,7 @@ def build_behavior_sft_dataloader(
         _validate_task_names(tasks)
 
     loader = create_behavior_sft_data_loader(
-        behavior_dataset_root=str(data_cfg.behavior_dataset_root),
+        behavior_dataset_root=behavior_dataset_root,
         assets_dir=str(assets_dir),
         asset_id=asset_id,
         tokenizer_path=str(tokenizer_path),

@@ -103,6 +103,64 @@ class TestNormStatsManifestGuard:
         with pytest.raises(ValueError):
             validate_norm_stats_for_control_mode(ad, aid, run_mode, run_dim)
 
+    def test_delta_run_rejects_manifestless_legacy_asset(self, tmp_path):
+        # A manifest-less asset is a legacy joint stats file; delta mode must
+        # refuse it (not silently normalize 21-dim actions against 23-dim stats).
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        ad, aid = self._write_asset(tmp_path, None, None)
+        with pytest.raises(ValueError):
+            validate_norm_stats_for_control_mode(ad, aid, "eef_delta_pose", 21)
+
+
+class TestControlModeResolver:
+    def _cvt(self):
+        import importlib.util as u
+
+        spec = u.spec_from_file_location(
+            "cvt_res",
+            "rlinf/data/datasets/openpi_pytorch/behavior/convert_to_eef_delta.py",
+        )
+        m = u.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_mode_selects_suffixed_fields(self):
+        from omegaconf import OmegaConf
+
+        cvt = self._cvt()
+        data = OmegaConf.create(
+            {
+                "behavior_dataset_root": "/orig",
+                "train_data_paths": "/orig",
+                "behavior_dataset_root_eef_delta": "/delta",
+                "train_data_paths_eef_delta": "/delta",
+            }
+        )
+        op = OmegaConf.create(
+            {"assets_dir": "/a", "asset_id": "joint", "asset_id_eef_delta": "delta_asset"}
+        )
+        r = cvt.resolve_behavior_paths(data, op, "eef_delta_pose")
+        assert r["behavior_dataset_root"] == "/delta"
+        assert r["asset_id"] == "delta_asset"
+        rj = cvt.resolve_behavior_paths(data, op, "joint_absolute")
+        assert rj["behavior_dataset_root"] == "/orig"
+        assert rj["asset_id"] == "joint"
+
+    def test_falls_back_to_base_fields(self):
+        from omegaconf import OmegaConf
+
+        cvt = self._cvt()
+        data = OmegaConf.create(
+            {"behavior_dataset_root": "/only", "train_data_paths": "/only"}
+        )
+        op = OmegaConf.create({"assets_dir": "/a", "asset_id": "only_asset"})
+        r = cvt.resolve_behavior_paths(data, op, "eef_delta_pose")
+        assert r["behavior_dataset_root"] == "/only"
+        assert r["asset_id"] == "only_asset"
+
 
 class TestConverterMath:
     def _cvt(self):

@@ -520,13 +520,114 @@ def aggregate_episode_stats_from_jsonl(
     return {k: aggregate_feature_stats(v) for k, v in per_feature.items() if per_feature[k]}
 
 
+def validate_converted_dataset(
+    dataset_root: str, control_mode: str, tasks: list | None = None
+) -> dict:
+    """Validate a dataset root is consistent with the selected control mode.
 
-# --------------------------------------------------------------------------- #
-# Dataset-level conversion: writes a new LeRobot dataset with 21-dim delta-EEF
-# actions, symlinking the (large) original videos, regenerating meta for the
-# converted tasks, and recording provenance. Refuses to touch the original.
-# --------------------------------------------------------------------------- #
-def _task_indices_for_names(src_root, task_names):
+    For ``eef_delta_pose`` this requires ``dataset_root`` to be a converted
+    delta-EEF dataset: ``meta/info.json`` action shape must equal 21, a
+    ``meta/eef_delta_provenance.json`` must be present with matching
+    ``control_mode`` / ``action_env_dim`` (and, when ``tasks`` is given, its task
+    set must cover the requested tasks). For ``joint_absolute`` it requires the
+    original 23-dim action shape and rejects a delta provenance file. Returns the
+    provenance dict (or ``None`` for joint mode). Raises ``ValueError`` on any
+    mismatch so a mode/dataset mix-up fails before streaming.
+    """
+    import json
+    import os
+
+    info_path = os.path.join(dataset_root, "meta", "info.json")
+    if not os.path.isfile(info_path):
+        raise ValueError(f"dataset root {dataset_root} has no meta/info.json.")
+    info = json.load(open(info_path))
+    action_shape = info["features"]["action"]["shape"]
+    action_len = int(action_shape[-1])
+    prov_path = os.path.join(dataset_root, "meta", "eef_delta_provenance.json")
+    has_prov = os.path.isfile(prov_path)
+
+    if control_mode == "joint_absolute":
+        if action_len != OLD_ACTION_DIM:
+            raise ValueError(
+                f"control_mode=joint_absolute expects a {OLD_ACTION_DIM}-dim "
+                f"action dataset, but {dataset_root} has action shape "
+                f"{action_shape}."
+            )
+        if has_prov:
+            raise ValueError(
+                f"control_mode=joint_absolute but {dataset_root} carries a "
+                f"delta-EEF provenance file; point at the original dataset."
+            )
+        return None
+
+    # eef_delta_pose
+    if action_len != NEW_ACTION_DIM:
+        raise ValueError(
+            f"control_mode=eef_delta_pose expects a {NEW_ACTION_DIM}-dim action "
+            f"dataset, but {dataset_root} has action shape {action_shape}. Point "
+            f"at the converted delta-EEF dataset."
+        )
+    if not has_prov:
+        raise ValueError(
+            f"control_mode=eef_delta_pose but {dataset_root} has no "
+            f"meta/eef_delta_provenance.json; it is not a converted delta-EEF "
+            f"dataset."
+        )
+    prov = json.load(open(prov_path))
+    if prov.get("control_mode") != "eef_delta_pose":
+        raise ValueError(
+            f"{prov_path} control_mode={prov.get('control_mode')!r}, expected "
+            f"'eef_delta_pose'."
+        )
+    if int(prov.get("action_env_dim", -1)) != NEW_ACTION_DIM:
+        raise ValueError(
+            f"{prov_path} action_env_dim={prov.get('action_env_dim')}, expected "
+            f"{NEW_ACTION_DIM}."
+        )
+    if tasks:
+        prov_tasks = set(prov.get("tasks") or [])
+        missing = [t for t in tasks if t not in prov_tasks]
+        if missing:
+            raise ValueError(
+                f"data.tasks {missing} are not in the converted dataset "
+                f"{dataset_root} (provenance tasks: {sorted(prov_tasks)}). Convert "
+                f"those tasks or point at the matching converted root."
+            )
+    return prov
+
+
+def resolve_behavior_paths(data_cfg, openpi_cfg, control_mode: str) -> dict:
+    """Resolve dataset root + norm-stats asset for the selected control mode.
+
+    ``control_mode`` is the switch: for ``eef_delta_pose`` the resolver prefers
+    the mode-specific config fields when present (``data.behavior_dataset_root_eef_delta``,
+    ``data.train_data_paths_eef_delta``, ``openpi.assets_dir_eef_delta``,
+    ``openpi.asset_id_eef_delta``), otherwise falls back to the base fields. This
+    keeps all paths in YAML (no hardcoded filesystem defaults in code, per the
+    repo convention) while letting one field select the dataset/stats. The strong
+    consistency checks (:func:`validate_converted_dataset`,
+    ``validate_norm_stats_for_control_mode``) then reject any residual mismatch,
+    so flipping ``control_mode`` without matching paths fails loudly rather than
+    silently training on the wrong data.
+
+    Returns ``{behavior_dataset_root, train_data_paths, assets_dir, asset_id}``.
+    """
+    suffix = "_eef_delta" if control_mode == "eef_delta_pose" else ""
+
+    def pick(cfg, base_key):
+        if suffix:
+            mode_key = base_key + suffix
+            if mode_key in cfg and cfg.get(mode_key) is not None:
+                return cfg.get(mode_key)
+        return cfg.get(base_key)
+
+    return {
+        "behavior_dataset_root": pick(data_cfg, "behavior_dataset_root"),
+        "train_data_paths": pick(data_cfg, "train_data_paths"),
+        "assets_dir": pick(openpi_cfg, "assets_dir"),
+        "asset_id": pick(openpi_cfg, "asset_id"),
+    }
+
     import json
 
     name_to_idx = {}

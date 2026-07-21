@@ -103,15 +103,24 @@ def validate_norm_stats_for_control_mode(
 ) -> None:
     """Reject a norm-stats asset whose manifest disagrees with the run.
 
-    When the asset carries a ``metadata`` manifest (delta-EEF assets always do),
-    its ``control_mode`` and meaningful ``action_env_dim`` must match this run,
-    so a 21-dim delta action can never be silently normalized against a 23-dim
-    joint stats file. Legacy assets without a manifest (original joint_absolute
-    stats) are accepted unchanged.
+    A delta-EEF asset always carries a ``metadata`` manifest, so for
+    ``eef_delta_pose`` a MISSING manifest is an error (it means the asset is a
+    legacy 23-dim joint stats file, which must never be used for delta actions).
+    For ``joint_absolute`` a manifest-less asset is the original behavior and is
+    accepted. When a manifest is present, its ``control_mode`` and meaningful
+    ``action_env_dim`` must match this run.
     """
     manifest = load_norm_stats_manifest(assets_dir, asset_id)
     if manifest is None:
-        return
+        if control_mode == "joint_absolute":
+            return
+        raise ValueError(
+            f"norm-stats asset {assets_dir}/{asset_id} has no metadata manifest, "
+            f"but control_mode={control_mode!r} requires one (a manifest-less "
+            f"asset is a legacy joint_absolute stats file). Point at the "
+            f"delta-EEF stats asset produced by compute_norm_stats.py "
+            f"--control-mode {control_mode}."
+        )
     m_mode = manifest.get("control_mode")
     m_dim = manifest.get("action_env_dim")
     if m_mode is not None and m_mode != control_mode:
