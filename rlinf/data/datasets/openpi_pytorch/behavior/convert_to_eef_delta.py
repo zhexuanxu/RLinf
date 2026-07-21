@@ -411,3 +411,218 @@ class UrdfArmFK:
                 out[side] = (p_eef, quats)
         return out
 
+
+# --------------------------------------------------------------------------- #
+# Batched episode conversion + per-episode action statistics.
+# --------------------------------------------------------------------------- #
+def convert_episode_actions(
+    action23: np.ndarray, state256: np.ndarray, fk: "UrdfArmFK"
+) -> np.ndarray:
+    """Convert a whole episode's actions (F,23) + states (F,256) -> (F,21).
+
+    Batched: two FK passes (target from action, current from state) per episode.
+    """
+    action23 = np.asarray(action23, dtype=np.float64).reshape(-1, OLD_ACTION_DIM)
+    state256 = np.asarray(state256, dtype=np.float64).reshape(-1, 256)
+    f = action23.shape[0]
+
+    # cspace vectors (F,15): trunk + left arm + right arm.
+    q_target = np.concatenate(
+        [action23[:, _ACT["trunk"]], action23[:, _ACT["arm_left"]], action23[:, _ACT["arm_right"]]],
+        axis=1,
+    )
+    q_current = np.concatenate(
+        [
+            state256[:, _PROPRIO["trunk_qpos"]],
+            state256[:, _PROPRIO["arm_left_qpos"]],
+            state256[:, _PROPRIO["arm_right_qpos"]],
+        ],
+        axis=1,
+    )
+    eef_t = fk(q_target)
+    eef_c = fk(q_current)
+
+    out = np.empty((f, NEW_ACTION_DIM), dtype=np.float64)
+    out[:, 0:3] = action23[:, _ACT["base"]]
+    out[:, 3:7] = action23[:, _ACT["trunk"]]
+    for lo, arm, gidx_new, gidx_old in (
+        (7, "left", 13, _ACT["gripper_left"]),
+        (14, "right", 20, _ACT["gripper_right"]),
+    ):
+        (pt, qt), (pc, qc) = eef_t[arm], eef_c[arm]
+        out[:, lo : lo + 3] = pt - pc
+        out[:, lo + 3 : lo + 6] = relative_rotation_axisangle(qc, qt)
+        out[:, gidx_new] = action23[:, gidx_old]
+    return out
+
+
+def action_stats(action: np.ndarray) -> dict:
+    """LeRobot-style per-episode stats for an (F, D) action array."""
+    a = np.asarray(action, dtype=np.float64)
+    return {
+        "min": a.min(axis=0).tolist(),
+        "max": a.max(axis=0).tolist(),
+        "mean": a.mean(axis=0).tolist(),
+        "std": a.std(axis=0).tolist(),
+        "q01": np.quantile(a, 0.01, axis=0).tolist(),
+        "q99": np.quantile(a, 0.99, axis=0).tolist(),
+        "count": [int(a.shape[0])],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Dataset-level conversion: writes a new LeRobot dataset with 21-dim delta-EEF
+# actions, symlinking the (large) original videos, regenerating meta for the
+# converted tasks, and recording provenance. Refuses to touch the original.
+# --------------------------------------------------------------------------- #
+def _task_indices_for_names(src_root, task_names):
+    import json
+
+    name_to_idx = {}
+    with open(f"{src_root}/meta/tasks.jsonl") as fh:
+        for line in fh:
+            d = json.loads(line)
+            name_to_idx[d["task_name"]] = d["task_index"]
+    missing = [t for t in task_names if t not in name_to_idx]
+    if missing:
+        raise ValueError(f"Unknown task name(s) {missing}; not in {src_root}/meta/tasks.jsonl.")
+    return {t: name_to_idx[t] for t in task_names}
+
+
+def convert_dataset(
+    src_root: str,
+    dst_root: str,
+    task_names: list,
+    urdf_path: str,
+    *,
+    converter_version: str = "1",
+    omnigibson_version: str = "unknown",
+    overwrite: bool = False,
+) -> dict:
+    """Convert the selected tasks of a BEHAVIOR LeRobot dataset to delta-EEF.
+
+    Writes ``dst_root`` with 21-dim actions for the requested tasks; symlinks
+    the original ``videos/`` (never copies); regenerates ``meta/`` filtered to
+    the converted tasks with recomputed 21-dim action stats; and writes
+    ``meta/eef_delta_provenance.json``. The original dataset is never modified.
+    """
+    import json
+    import os
+    import shutil
+
+    import pyarrow.parquet as pq
+
+    src_root = os.path.abspath(src_root)
+    dst_root = os.path.abspath(dst_root)
+    if dst_root == src_root or dst_root.startswith(src_root + os.sep):
+        raise ValueError(
+            f"Refusing in-place / nested conversion: dst_root ({dst_root}) must "
+            f"be outside src_root ({src_root})."
+        )
+    if os.path.exists(dst_root):
+        if not overwrite:
+            raise FileExistsError(f"dst_root exists: {dst_root} (pass overwrite=True).")
+        shutil.rmtree(dst_root)
+
+    fk = UrdfArmFK(urdf_path)
+    task_idx = _task_indices_for_names(src_root, task_names)
+    selected_task_indices = set(task_idx.values())
+
+    os.makedirs(f"{dst_root}/meta", exist_ok=True)
+    os.makedirs(f"{dst_root}/data", exist_ok=True)
+    # Reuse videos by symlink — never a second physical copy (they are large).
+    os.symlink(f"{src_root}/videos", f"{dst_root}/videos")
+
+    info = json.load(open(f"{src_root}/meta/info.json"))
+    chunks_size = int(info.get("chunks_size", 10000))
+
+    # Filter episodes.jsonl / episodes_stats.jsonl to the selected tasks.
+    sel_episodes = []
+    with open(f"{src_root}/meta/episodes.jsonl") as fh:
+        for line in fh:
+            d = json.loads(line)
+            if d["episode_index"] // chunks_size in selected_task_indices:
+                sel_episodes.append(d)
+    sel_ep_set = {d["episode_index"] for d in sel_episodes}
+
+    # Convert each episode's parquet, collect new action stats.
+    new_action_stats = {}
+    total_frames = 0
+    data_tmpl = info["data_path"]
+    for d in sel_episodes:
+        ei = d["episode_index"]
+        chunk = ei // chunks_size
+        rel = data_tmpl.format(episode_chunk=chunk, episode_index=ei)
+        src_parquet = f"{src_root}/{rel}"
+        dst_parquet = f"{dst_root}/{rel}"
+        os.makedirs(os.path.dirname(dst_parquet), exist_ok=True)
+
+        table = pq.read_table(src_parquet)
+        cols = table.column_names
+        pdf = table.to_pandas()
+        act23 = np.stack([np.asarray(a, dtype=np.float64) for a in pdf["action"]])
+        st256 = np.stack([np.asarray(s, dtype=np.float64) for s in pdf["observation.state"]])
+        act21 = convert_episode_actions(act23, st256, fk).astype(np.float32)
+        pdf["action"] = list(act21)
+        # Preserve original column order and schema (only action changes width).
+        import pyarrow as pa
+
+        out_table = pa.Table.from_pandas(pdf[cols], preserve_index=False)
+        pq.write_table(out_table, dst_parquet)
+
+        new_action_stats[ei] = action_stats(act21)
+        total_frames += int(d.get("length", act21.shape[0]))
+
+    # Regenerate meta/episodes_stats.jsonl: copy each selected episode's stats,
+    # replacing only the "action" entry (state and image stats are unchanged).
+    with open(f"{src_root}/meta/episodes_stats.jsonl") as fin, open(
+        f"{dst_root}/meta/episodes_stats.jsonl", "w"
+    ) as fout:
+        for line in fin:
+            rec = json.loads(line)
+            if rec["episode_index"] in sel_ep_set:
+                rec["stats"]["action"] = new_action_stats[rec["episode_index"]]
+                fout.write(json.dumps(rec) + "\n")
+
+    # episodes.jsonl (filtered), tasks.jsonl (filtered), info.json (action 21).
+    with open(f"{dst_root}/meta/episodes.jsonl", "w") as fout:
+        for d in sel_episodes:
+            fout.write(json.dumps(d) + "\n")
+    with open(f"{src_root}/meta/tasks.jsonl") as fin, open(
+        f"{dst_root}/meta/tasks.jsonl", "w"
+    ) as fout:
+        for line in fin:
+            if json.loads(line)["task_index"] in selected_task_indices:
+                fout.write(line if line.endswith("\n") else line + "\n")
+
+    info["features"]["action"]["shape"] = [NEW_ACTION_DIM]
+    info["total_episodes"] = len(sel_episodes)
+    info["total_frames"] = total_frames
+    info["total_tasks"] = len(selected_task_indices)
+    json.dump(info, open(f"{dst_root}/meta/info.json", "w"), indent=4)
+
+    provenance = {
+        "control_mode": "eef_delta_pose",
+        "action_env_dim": NEW_ACTION_DIM,
+        "model_action_dim": 32,
+        "source_action_dim": OLD_ACTION_DIM,
+        "controller": {"arms": "InverseKinematicsController", "mode": "pose_delta_ori",
+                       "command_input_limits": None, "command_output_limits": None},
+        "conversion_source": "dpos=FK(action_target)-FK(state_achieved); "
+                             "dori=quat2axisangle(mat2quat(R_target @ R_current.T))",
+        "orientation_convention": "exact_relative_rotation_axisangle_base_frame_left_multiply",
+        "cspace_joints": CSPACE_JOINTS,
+        "eef_offset_pos": EEF_OFFSET_POS.tolist(),
+        "eef_offset_quat_xyzw": EEF_OFFSET_QUAT_XYZW.tolist(),
+        "tasks": list(task_names),
+        "task_indices": task_idx,
+        "converter_version": converter_version,
+        "omnigibson_version": omnigibson_version,
+        "urdf_path": urdf_path,
+        "source_root": src_root,
+    }
+    json.dump(provenance, open(f"{dst_root}/meta/eef_delta_provenance.json", "w"), indent=2)
+    return {"episodes": len(sel_episodes), "frames": total_frames, "dst_root": dst_root}
+
+
+
