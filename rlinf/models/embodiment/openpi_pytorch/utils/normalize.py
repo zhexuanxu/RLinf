@@ -82,6 +82,52 @@ def load_norm_stats(assets_dir, asset_id) -> dict[str, NormStats]:
     return out
 
 
+def load_norm_stats_manifest(assets_dir, asset_id) -> dict | None:
+    """Read the optional ``metadata`` manifest from the norm_stats asset.
+
+    Delta-EEF assets (produced by ``compute_norm_stats.py --control-mode``) carry
+    a ``metadata`` block documenting ``control_mode`` / ``action_env_dim`` /
+    ``model_action_dim`` / ``state_order`` / ``tasks``. Returns it, or ``None``
+    for legacy assets without a manifest (so existing joint_absolute assets stay
+    compatible). Resolution mirrors :func:`load_norm_stats`.
+    """
+    path = pathlib.Path(assets_dir).expanduser() / asset_id / "norm_stats.json"
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text())
+    return data.get("metadata")
+
+
+def validate_norm_stats_for_control_mode(
+    assets_dir, asset_id, control_mode: str, action_env_dim: int
+) -> None:
+    """Reject a norm-stats asset whose manifest disagrees with the run.
+
+    When the asset carries a ``metadata`` manifest (delta-EEF assets always do),
+    its ``control_mode`` and meaningful ``action_env_dim`` must match this run,
+    so a 21-dim delta action can never be silently normalized against a 23-dim
+    joint stats file. Legacy assets without a manifest (original joint_absolute
+    stats) are accepted unchanged.
+    """
+    manifest = load_norm_stats_manifest(assets_dir, asset_id)
+    if manifest is None:
+        return
+    m_mode = manifest.get("control_mode")
+    m_dim = manifest.get("action_env_dim")
+    if m_mode is not None and m_mode != control_mode:
+        raise ValueError(
+            f"norm-stats asset {assets_dir}/{asset_id} was built for "
+            f"control_mode={m_mode!r}, but this run uses control_mode="
+            f"{control_mode!r}. Point at the matching asset."
+        )
+    if m_dim is not None and int(m_dim) != int(action_env_dim):
+        raise ValueError(
+            f"norm-stats asset {assets_dir}/{asset_id} has meaningful action "
+            f"length {m_dim}, but this run expects {action_env_dim} "
+            f"(control_mode={control_mode!r})."
+        )
+
+
 def normalize_quantile(x: np.ndarray, stats: NormStats) -> np.ndarray:
     """Map ``x`` to ``[-1, 1]`` using q01/q99 (openpi quantile normalize)."""
     if stats.q01 is None or stats.q99 is None:

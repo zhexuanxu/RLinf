@@ -151,6 +151,18 @@ def get_model(cfg, torch_dtype=None):
     # task-0000 stats the SFT data loader resolves), so eval and SFT share one
     # norm-stats distribution and there is no hard-coded asset/tokenizer path.
     norm_stats = load_norm_stats(model_cfg.assets_dir, model_cfg.asset_id)
+    # Reject a stats asset whose manifest disagrees with the run's control mode /
+    # action dim (delta-EEF assets carry a manifest; legacy joint stats without
+    # one pass unchanged), so a 21-dim delta action can never be normalized
+    # against a 23-dim joint stats file.
+    from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+        validate_norm_stats_for_control_mode,
+    )
+
+    control_mode = str(model_cfg.get("control_mode", "joint_absolute"))
+    validate_norm_stats_for_control_mode(
+        model_cfg.assets_dir, model_cfg.asset_id, control_mode, action_env_dim
+    )
     tokenizer = PaligemmaTokenizer(
         model_cfg.paligemma_tokenizer, max_len=pi0_config.max_token_len
     )

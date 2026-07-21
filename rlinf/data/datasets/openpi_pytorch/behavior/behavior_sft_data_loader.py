@@ -56,6 +56,7 @@ from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
     NormStats,
     load_norm_stats,
     normalize_quantile,
+    validate_norm_stats_for_control_mode,
 )
 from rlinf.models.embodiment.openpi_pytorch.utils.tokenizer import PaligemmaTokenizer
 
@@ -668,6 +669,11 @@ def build_behavior_sft_dataloader(
             f"action_dim to {expected_env_dim} for this control mode (the model "
             f"still pads to openpi.model_action_dim)."
         )
+    # Reject a norm-stats asset whose manifest disagrees with this run's mode/dim
+    # (delta-EEF assets carry a manifest; legacy joint stats without one pass).
+    validate_norm_stats_for_control_mode(
+        assets_dir, asset_id, control_mode, expected_env_dim
+    )
     fine_grained_level = int(data_cfg.fine_grained_level)
     if fine_grained_level not in (0, 1):
         raise ValueError(
