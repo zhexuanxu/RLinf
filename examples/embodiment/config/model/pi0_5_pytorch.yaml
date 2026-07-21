@@ -51,6 +51,14 @@ openpi:
   # left gripper at index 21). "align": action-aligned order (left gripper moved
   # to index 14). MUST match the state_order used to generate norm_stats.json.
   state_order: comet
+  # Robot action space the dataset/eval controller use. "joint_absolute"
+  # (default): the 23-dim base(3)+trunk(4)+arm_left(7)+gripper_left(1)+
+  # arm_right(7)+gripper_right(1) vector with absolute joint targets for the
+  # manipulators. "eef_delta_pose": both arms become 6-DoF base-frame
+  # end-effector deltas (OmniGibson InverseKinematicsController, pose_delta_ori),
+  # giving a 21-dim vector. validate_embodied_cfg maps this onto the R1Pro arm
+  # controllers, so eval need only set this field (not hand-edit controller_config).
+  control_mode: joint_absolute
   # Placeholders — set the real norm-stats + tokenizer locations in the eval
   # experiment config.
   assets_dir: "/path/to/assets"

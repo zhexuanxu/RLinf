@@ -950,6 +950,20 @@ def validate_embodied_cfg(cfg):
             assert cfg.env.train.base_config_name == "r1pro_behavior", (
                 f"Only r1pro_behavior is supported for omnigibson, got {cfg.env.train.base_config_name}"
             )
+            # Validate the robot action space. behavior_policy only imports numpy,
+            # so this is cheap and safe to import during config validation.
+            from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+                CONTROL_MODES,
+            )
+
+            control_mode = str(
+                cfg.actor.model.openpi.get("control_mode", "joint_absolute")
+            )
+            if control_mode not in CONTROL_MODES:
+                raise ValueError(
+                    f"actor.model.openpi.control_mode must be one of "
+                    f"{CONTROL_MODES}, got {control_mode!r}."
+                )
     return cfg
 
 

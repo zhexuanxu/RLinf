@@ -46,6 +46,8 @@ from rlinf.data.lerobot_paths import (
 )
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+    CONTROL_MODE_ACTION_ENV_DIM,
+    CONTROL_MODES,
     STATE_ORDERS,
     BehaviorInputs,
 )
@@ -634,6 +636,28 @@ def build_behavior_sft_dataloader(
         raise ValueError(
             f"actor.model.openpi.state_order must be one of {STATE_ORDERS}, got "
             f"{state_order!r}."
+        )
+    # Robot action space. "joint_absolute" is the original 23-dim absolute-joint
+    # dataset; "eef_delta_pose" is the 21-dim delta-EEF converted dataset. The
+    # field is declarative (the experiment YAML points behavior_dataset_root and
+    # openpi.asset_id at the matching dataset/stats); the guard below rejects a
+    # config that changes control_mode but leaves an inconsistent action dim, so
+    # SFT can never silently normalize 21-dim actions with 23-dim stats.
+    control_mode = str(model_cfg.openpi.get("control_mode", "joint_absolute"))
+    if control_mode not in CONTROL_MODES:
+        raise ValueError(
+            f"actor.model.openpi.control_mode must be one of {CONTROL_MODES}, got "
+            f"{control_mode!r}."
+        )
+    expected_env_dim = CONTROL_MODE_ACTION_ENV_DIM[control_mode]
+    action_env_dim = int(model_cfg.openpi.get("action_env_dim", model_cfg.action_dim))
+    if action_env_dim != expected_env_dim:
+        raise ValueError(
+            f"actor.model.openpi.control_mode={control_mode!r} expects a semantic "
+            f"action dim of {expected_env_dim}, but actor.model.action_dim / "
+            f"openpi.action_env_dim resolved to {action_env_dim}. Set action_dim to "
+            f"{expected_env_dim} for this control mode (the model still pads to "
+            f"openpi.model_action_dim)."
         )
     fine_grained_level = int(data_cfg.fine_grained_level)
     if fine_grained_level not in (0, 1):

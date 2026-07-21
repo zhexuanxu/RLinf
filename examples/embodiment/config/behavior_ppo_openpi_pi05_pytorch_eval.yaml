@@ -140,6 +140,9 @@ actor:
       # Reference (comet) state order — must match the norm stats at
       # {assets_dir}/{asset_id} (both grippers at the tail).
       state_order: comet
+      # Robot action space (see model/pi0_5_pytorch.yaml). This config evaluates
+      # the original 23-dim absolute-joint controller.
+      control_mode: joint_absolute
 
   optim:
     lr: 1.0e-4

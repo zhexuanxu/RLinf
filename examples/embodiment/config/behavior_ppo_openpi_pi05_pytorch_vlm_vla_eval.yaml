@@ -141,6 +141,9 @@ actor:
       # Reference (comet) state order — must match the norm stats at
       # {assets_dir}/{asset_id} (both grippers at the tail).
       state_order: comet
+      # Robot action space (see model/pi0_5_pytorch.yaml). This config evaluates
+      # the original 23-dim absolute-joint controller.
+      control_mode: joint_absolute
       # VLM token output at eval: the VLM first generates the subtask text
       # (greedy, up to max_new_tokens, terminated by EOS per batch row), then
       # the action expert denoises actions attending to the generated tokens

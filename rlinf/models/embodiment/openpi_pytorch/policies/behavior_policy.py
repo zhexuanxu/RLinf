@@ -57,6 +57,23 @@ class DataTransformFn:
 
 STATE_ORDERS = ("comet", "align")
 
+# Robot action space selection (actor.model.openpi.control_mode). Both modes keep
+# base(3, velocity) + trunk(4, abs joint) + grippers(1 each, smooth); they differ
+# only in the two arm slices:
+#   "joint_absolute": each arm is 7 absolute joint-position targets -> 23-dim action
+#   "eef_delta_pose": each arm is a 6-DoF base-frame EEF delta       -> 21-dim action
+#                     (OmniGibson InverseKinematicsController, pose_delta_ori)
+CONTROL_MODES = ("joint_absolute", "eef_delta_pose")
+
+# Semantic env action dimension per control mode (BEFORE padding to the model's
+# model_action_dim). Fixed slices base(3)+trunk(4)+gripper_left(1)+gripper_right(1)
+# = 9; each arm adds 7 (absolute joint) or 6 (EEF delta pose).
+CONTROL_MODE_ACTION_ENV_DIM = {
+    "joint_absolute": 23,  # 9 + 7 + 7
+    "eef_delta_pose": 21,  # 9 + 6 + 6
+}
+
+
 
 def extract_state_from_proprio(
     proprio_data: np.ndarray, state_order: str = "comet"

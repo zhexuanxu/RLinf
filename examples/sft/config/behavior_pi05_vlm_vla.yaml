@@ -88,6 +88,9 @@ actor:
       # These norm stats were generated with the action-aligned state order
       # (left gripper at index 14), so the model must extract state the same way.
       state_order: align
+      # Robot action space (see model/pi0_5_pytorch.yaml). This config trains on
+      # the original 23-dim absolute-joint dataset.
+      control_mode: joint_absolute
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model

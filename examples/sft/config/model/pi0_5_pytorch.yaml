@@ -48,6 +48,14 @@ openpi:
   # different model structure and is not selected by this pi0_5 template.
   discrete_state_input: true
   state_order: comet
+  # Robot action space the dataset/eval controller use. "joint_absolute"
+  # (default): the 23-dim base(3)+trunk(4)+arm_left(7)+gripper_left(1)+
+  # arm_right(7)+gripper_right(1) vector with absolute joint targets for the
+  # manipulators. "eef_delta_pose": both arms become 6-DoF base-frame
+  # end-effector deltas (OmniGibson InverseKinematicsController, pose_delta_ori),
+  # giving a 21-dim vector; requires the delta-EEF converted dataset and matching
+  # norm stats. MUST match the action space the dataset was authored in.
+  control_mode: joint_absolute
   # VLM token output. "vla" (default) is action-only; "vlm_vla" lets the
   # PaliGemma backbone emit the subtask: SFT adds a CE loss over the subtask
   # response + EOS (combined as language_loss_weight * ce + action_loss_weight
