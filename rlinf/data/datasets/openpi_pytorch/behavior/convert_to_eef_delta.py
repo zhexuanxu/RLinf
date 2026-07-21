@@ -628,6 +628,13 @@ def resolve_behavior_paths(data_cfg, openpi_cfg, control_mode: str) -> dict:
         "asset_id": pick(openpi_cfg, "asset_id"),
     }
 
+
+# --------------------------------------------------------------------------- #
+# Dataset-level conversion: writes a new LeRobot dataset with 21-dim delta-EEF
+# actions, symlinking the (large) original videos, regenerating meta for the
+# converted tasks, and recording provenance. Refuses to touch the original.
+# --------------------------------------------------------------------------- #
+def _task_indices_for_names(src_root, task_names):
     import json
 
     name_to_idx = {}
@@ -684,6 +691,18 @@ def convert_dataset(
     os.makedirs(f"{dst_root}/data", exist_ok=True)
     # Reuse videos by symlink — never a second physical copy (they are large).
     os.symlink(f"{src_root}/videos", f"{dst_root}/videos")
+    # Per-episode meta (meta/episodes/task-XXXX/episode_*.json) is action-
+    # independent env-config metadata that the LeRobot loader asserts exists.
+    # Symlink the selected tasks' per-episode meta dirs (small JSON, unchanged by
+    # the action conversion) rather than copy.
+    src_ep_meta = f"{src_root}/meta/episodes"
+    if os.path.isdir(src_ep_meta):
+        os.makedirs(f"{dst_root}/meta/episodes", exist_ok=True)
+        for tidx in sorted(_task_indices_for_names(src_root, task_names).values()):
+            task_dir = f"task-{tidx:04d}"
+            src_task = f"{src_ep_meta}/{task_dir}"
+            if os.path.isdir(src_task):
+                os.symlink(src_task, f"{dst_root}/meta/episodes/{task_dir}")
 
     info = json.load(open(f"{src_root}/meta/info.json"))
     chunks_size = int(info.get("chunks_size", 10000))
