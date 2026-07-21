@@ -98,13 +98,6 @@ import pathlib
 
 import numpy as np
 
-from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_data_loader import (
-    _pad_to_dim,
-)
-from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_dataset import (
-    BehaviorSftDatasetMetadata,
-    _omnigibson_utils,
-)
 from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
     extract_state_from_proprio,
 )
@@ -114,6 +107,22 @@ from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
 _STATE_SRC_KEY = "observation.state"
 _ACTION_SRC_KEY = "action"
 _STAT_KEYS = ("mean", "std", "q01", "q99")
+
+
+def _pad_to_dim(x: np.ndarray, target_dim: int, value: float = 0.0) -> np.ndarray:
+    """Right-pad a 1-D stat vector to ``target_dim`` with ``value``.
+
+    Inlined here (rather than imported from behavior_sft_data_loader) so the
+    ``--from-episodes-stats`` fast path does not drag in torch at import time.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if x.shape[-1] > target_dim:
+        raise ValueError(
+            f"cannot pad length-{x.shape[-1]} vector down to {target_dim}."
+        )
+    out = np.full(target_dim, value, dtype=np.float64)
+    out[: x.shape[-1]] = x
+    return out
 
 
 def compute_norm_stats(
@@ -170,6 +179,13 @@ def compute_norm_stats(
             f"{dataset_root}/meta/episodes_stats.jsonl"
         )
     else:
+        # Heavy path: import the OmniGibson-backed metadata only when actually
+        # aggregating via meta.stats (the fast path above never needs it).
+        from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_dataset import (
+            BehaviorSftDatasetMetadata,
+            _omnigibson_utils,
+        )
+
         meta = BehaviorSftDatasetMetadata(
             repo_id=repo_id,
             root=dataset_root,
