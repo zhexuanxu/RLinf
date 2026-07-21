@@ -162,6 +162,99 @@ class TestControlModeResolver:
         assert r["asset_id"] == "only_asset"
 
 
+class TestConverterHelpers:
+    """Guards against the resolve_behavior_paths edit that once shadowed
+    _task_indices_for_names (leaving it undefined -> convert_dataset NameError)."""
+
+    def _cvt(self):
+        import importlib.util as u
+
+        spec = u.spec_from_file_location(
+            "cvt_help",
+            "rlinf/data/datasets/openpi_pytorch/behavior/convert_to_eef_delta.py",
+        )
+        m = u.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_task_indices_for_names_is_module_level_and_callable(self, tmp_path):
+        import json
+
+        cvt = self._cvt()
+        assert callable(getattr(cvt, "_task_indices_for_names", None))
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        (meta / "tasks.jsonl").write_text(
+            json.dumps({"task_index": 0, "task_name": "turning_on_radio"}) + "\n"
+            + json.dumps({"task_index": 1, "task_name": "picking_up_trash"}) + "\n"
+        )
+        idx = cvt._task_indices_for_names(str(tmp_path), ["turning_on_radio"])
+        assert idx == {"turning_on_radio": 0}
+        import pytest
+
+        with pytest.raises(ValueError):
+            cvt._task_indices_for_names(str(tmp_path), ["no_such_task"])
+
+
+class TestPaddedStatValidation:
+    def _write_asset(self, tmp_path, meaningful_len, padded_len, model_dim):
+        import json
+
+        d = tmp_path / "asset"
+        d.mkdir()
+        arr = [1.0] * meaningful_len + [0.0] * (padded_len - meaningful_len)
+        payload = {
+            "norm_stats": {
+                "state": {k: list(arr) for k in ("mean", "std", "q01", "q99")},
+                "actions": {k: list(arr) for k in ("mean", "std", "q01", "q99")},
+            },
+            "metadata": {
+                "control_mode": "eef_delta_pose",
+                "action_env_dim": 21,
+                "model_action_dim": model_dim,
+            },
+        }
+        (d / "norm_stats.json").write_text(json.dumps(payload))
+        return str(tmp_path), "asset"
+
+    def test_correct_padding_passes(self, tmp_path):
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        ad, aid = self._write_asset(tmp_path, 21, 32, 32)
+        validate_norm_stats_for_control_mode(
+            ad, aid, "eef_delta_pose", 21, model_action_dim=32
+        )
+
+    def test_wrong_model_action_dim_rejected(self, tmp_path):
+        import pytest
+
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        ad, aid = self._write_asset(tmp_path, 21, 32, 64)
+        with pytest.raises(ValueError):
+            validate_norm_stats_for_control_mode(
+                ad, aid, "eef_delta_pose", 21, model_action_dim=32
+            )
+
+    def test_too_short_arrays_rejected(self, tmp_path):
+        import pytest
+
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        # arrays padded to 21, but the run pads to 32
+        ad, aid = self._write_asset(tmp_path, 21, 21, 32)
+        with pytest.raises(ValueError):
+            validate_norm_stats_for_control_mode(
+                ad, aid, "eef_delta_pose", 21, model_action_dim=32
+            )
+
+
 class TestConverterMath:
     def _cvt(self):
         import importlib.util as u

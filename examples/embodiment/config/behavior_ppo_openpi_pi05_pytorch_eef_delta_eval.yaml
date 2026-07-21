@@ -1,0 +1,78 @@
+defaults:
+  - env/behavior_r1pro@env.train
+  - env/behavior_r1pro@env.eval
+  - model/pi0_5_pytorch@actor.model
+  - training_backend/fsdp@actor.fsdp_config
+  - weight_syncer/patch_syncer@weight_syncer
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor,env,rollout: all
+
+runner:
+  task_type: embodied
+  only_eval: True
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "behavior_ppo_openpi_pi05_pytorch_eef_delta_eval"
+    logger_backends: ["tensorboard"]
+  val_check_interval: 1
+
+algorithm:
+  adv_type: gae
+  loss_type: actor_critic
+  eval_rollout_epoch: 8
+
+env:
+  group_name: "EnvGroup"
+
+rollout:
+  pipeline_stage_num: 1
+  model:
+    model_path: /mnt/public/xzxuan/repos/RLinf/outputs/sft_ckpt/eef_delta_task0
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 1
+  eval_batch_size: 1
+  global_batch_size: 1
+  seed: 42
+  model:
+    model_path: ${rollout.model.model_path}
+    # Delta-EEF is a 21-dim action space; the model still pads to
+    # openpi.model_action_dim (32). validate_embodied_cfg maps control_mode onto
+    # the R1Pro arm controllers (IK pose_delta_ori) so the env action space is 21.
+    action_dim: 21
+    add_value_head: True
+    openpi:
+      assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id: turn_on_radio_eef_delta
+      paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
+      discrete_state_input: true
+      state_order: align
+      control_mode: eef_delta_pose
+
+  optim:
+    lr: 2.5e-5
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    use_orig_params: True
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False
