@@ -714,6 +714,7 @@ def convert_dataset(
     converter_version: str = "1",
     omnigibson_version: str = "unknown",
     overwrite: bool = False,
+    progress_every: int = 0,
 ) -> dict:
     """Convert the selected tasks of a BEHAVIOR LeRobot dataset to delta-EEF.
 
@@ -721,10 +722,15 @@ def convert_dataset(
     the original ``videos/`` (never copies); regenerates ``meta/`` filtered to
     the converted tasks with recomputed 21-dim action stats; and writes
     ``meta/eef_delta_provenance.json``. The original dataset is never modified.
+
+    ``progress_every`` (>0) prints an episode/frame/rate/ETA line every N
+    converted episodes (and once at the end). 0 (default) stays silent, so
+    existing callers and tests are unchanged.
     """
     import json
     import os
     import shutil
+    import time
 
     import pyarrow.parquet as pq
 
@@ -777,7 +783,9 @@ def convert_dataset(
     new_action_stats = {}
     total_frames = 0
     data_tmpl = info["data_path"]
-    for d in sel_episodes:
+    total_eps = len(sel_episodes)
+    t0 = time.time()
+    for i, d in enumerate(sel_episodes, 1):
         ei = d["episode_index"]
         chunk = ei // chunks_size
         rel = data_tmpl.format(episode_chunk=chunk, episode_index=ei)
@@ -800,6 +808,17 @@ def convert_dataset(
 
         new_action_stats[ei] = action_stats(act21)
         total_frames += int(d.get("length", act21.shape[0]))
+
+        if progress_every and (i % progress_every == 0 or i == total_eps):
+            elapsed = time.time() - t0
+            rate = i / elapsed if elapsed > 0 else 0.0
+            eta_h = (total_eps - i) / rate / 3600.0 if rate > 0 else 0.0
+            print(
+                f"[convert] {i}/{total_eps} episodes, {total_frames} frames, "
+                f"{rate:.2f} eps/s, elapsed {elapsed / 3600.0:.2f} h, "
+                f"ETA {eta_h:.2f} h",
+                flush=True,
+            )
 
     # Regenerate meta/episodes_stats.jsonl: copy each selected episode's stats,
     # replacing only the "action" entry (state and image stats are unchanged).
@@ -866,4 +885,108 @@ def convert_dataset(
     return {"episodes": len(sel_episodes), "frames": total_frames, "dst_root": dst_root}
 
 
+# --------------------------------------------------------------------------- #
+# CLI: one-command dataset conversion. Kept path-agnostic (all filesystem paths
+# are required arguments, no baked-in defaults, per the repo convention); the
+# concrete BEHAVIOR paths live in the wrapper shell script that drives this.
+# This module imports only numpy/dataclasses at top and json/os/shutil/pyarrow
+# lazily, so running it never pulls in torch/OmniGibson/Isaac.
+# --------------------------------------------------------------------------- #
+def _all_task_names(src_root: str) -> list:
+    """Every task name in ``src_root/meta/tasks.jsonl``, in file order."""
+    import json
 
+    names = []
+    with open(f"{src_root}/meta/tasks.jsonl") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                names.append(json.loads(line)["task_name"])
+    if not names:
+        raise ValueError(f"No tasks found in {src_root}/meta/tasks.jsonl.")
+    return names
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Convert a BEHAVIOR R1Pro LeRobot dataset from 23-dim absolute-joint "
+            "actions to 21-dim delta-EEF actions (both arms -> 6-DoF base-frame "
+            "EEF deltas for OmniGibson's InverseKinematicsController pose_delta_ori)."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--src-root",
+        required=True,
+        help="Source LeRobot dataset root (the original 23-dim joint dataset), "
+        "e.g. /mnt/public/xzxuan/data/2025-challenge-demos.",
+    )
+    parser.add_argument(
+        "--dst-root",
+        required=True,
+        help="Destination root for the converted 21-dim delta-EEF dataset. Must "
+        "be outside --src-root (the original is never modified).",
+    )
+    parser.add_argument(
+        "--urdf-path",
+        required=True,
+        help="R1Pro URDF used for analytical base-frame FK, e.g. "
+        ".../omnigibson-robot-assets/models/r1pro/urdf/r1pro.urdf.",
+    )
+    parser.add_argument(
+        "--tasks",
+        nargs="*",
+        default=None,
+        help="Task name(s) to convert. Omit to convert ALL tasks in "
+        "--src-root/meta/tasks.jsonl.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete and rebuild --dst-root if it already exists.",
+    )
+    parser.add_argument(
+        "--omnigibson-version",
+        default="unknown",
+        help="OmniGibson version string recorded in the provenance manifest.",
+    )
+    parser.add_argument(
+        "--converter-version",
+        default="1",
+        help="Converter version string recorded in the provenance manifest.",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=200,
+        help="Print an episode/frame/rate/ETA line every N episodes (0 to silence).",
+    )
+    args = parser.parse_args()
+
+    task_names = args.tasks if args.tasks else _all_task_names(args.src_root)
+    print(
+        f"[convert] {len(task_names)} task(s): {args.src_root} -> {args.dst_root}",
+        flush=True,
+    )
+    result = convert_dataset(
+        args.src_root,
+        args.dst_root,
+        task_names,
+        args.urdf_path,
+        converter_version=args.converter_version,
+        omnigibson_version=args.omnigibson_version,
+        overwrite=args.overwrite,
+        progress_every=args.progress_every,
+    )
+    print(
+        f"[convert] DONE: {result['episodes']} episodes, {result['frames']} "
+        f"frames -> {result['dst_root']}",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
