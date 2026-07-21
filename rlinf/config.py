@@ -950,66 +950,64 @@ def validate_embodied_cfg(cfg):
             assert cfg.env.train.base_config_name == "r1pro_behavior", (
                 f"Only r1pro_behavior is supported for omnigibson, got {cfg.env.train.base_config_name}"
             )
-            # Validate the robot action space. behavior_policy only imports numpy,
-            # so this is cheap and safe to import during config validation.
-            from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
-                CONTROL_MODE_ACTION_ENV_DIM,
-                CONTROL_MODES,
-            )
+            apply_behavior_control_mode(cfg)
+    return cfg
 
-            if "control_mode" not in cfg.actor.model.openpi:
-                raise ValueError(
-                    "actor.model.openpi.control_mode is required for BEHAVIOR "
-                    f"pi0.5 (one of {CONTROL_MODES}); it is declared in the shared "
-                    "model template. A missing key indicates a malformed config."
-                )
-            control_mode = str(cfg.actor.model.openpi.control_mode)
-            if control_mode not in CONTROL_MODES:
-                raise ValueError(
-                    f"actor.model.openpi.control_mode must be one of "
-                    f"{CONTROL_MODES}, got {control_mode!r}."
-                )
-            # Dimensional consistency: the model's SEMANTIC action dim must match the
-            # control mode (joint_absolute=23, eef_delta_pose=21). This is distinct
-            # from the PADDED model dim (openpi.model_action_dim, e.g. 32); do not
-            # conflate the two. Rejects e.g. control_mode=eef_delta_pose left at
-            # action_dim=23.
-            expected_env_dim = CONTROL_MODE_ACTION_ENV_DIM[control_mode]
-            action_dim = int(cfg.actor.model.action_dim)
-            action_env_dim = int(
-                cfg.actor.model.openpi.get("action_env_dim", action_dim)
-            )
-            if action_dim != expected_env_dim or action_env_dim != expected_env_dim:
-                raise ValueError(
-                    f"actor.model.openpi.control_mode={control_mode!r} expects a "
-                    f"semantic action dim of {expected_env_dim}, but "
-                    f"actor.model.action_dim={action_dim} / "
-                    f"openpi.action_env_dim={action_env_dim}. Set action_dim to "
-                    f"{expected_env_dim} (the model still pads to "
-                    f"openpi.model_action_dim)."
-                )
-            # For delta-EEF, rewrite the R1Pro arm controllers to OmniGibson's IK
-            # (pose_delta_ori, raw metric deltas) so the env applies exactly the
-            # 21-dim vector the SFT data encodes, without hand-editing
-            # env/behavior_r1pro.yaml per config. Full-dict replacement is required:
-            # leaving JointController-only keys (motor_type, use_delta_commands,
-            # pos_kp) would break the IK controller constructor. Base, trunk, and
-            # grippers are unchanged.
-            if control_mode == "eef_delta_pose":
-                for env_split in ("train", "eval"):
-                    env_cfg = cfg.env.get(env_split)
-                    if env_cfg is None or env_cfg.get("omni_config") is None:
-                        continue
-                    controller_config = env_cfg.omni_config.robots[
-                        0
-                    ].controller_config
-                    for arm in ("arm_left", "arm_right"):
-                        controller_config[arm] = {
-                            "name": "InverseKinematicsController",
-                            "mode": "pose_delta_ori",
-                            "command_input_limits": None,
-                            "command_output_limits": None,
-                        }
+
+def apply_behavior_control_mode(cfg):
+    """Validate the BEHAVIOR control mode and map it onto the R1Pro controllers.
+
+    Extracted from :func:`validate_embodied_cfg` so it can be unit-tested without
+    a Ray ``Cluster``. Requires ``actor.model.openpi.control_mode``, checks the
+    semantic action dim matches the mode (23 joint / 21 delta, distinct from the
+    padded ``model_action_dim``), and for ``eef_delta_pose`` rewrites both arm
+    controllers in ``env.{train,eval}.omni_config`` to OmniGibson's IK
+    (``pose_delta_ori``, raw metric deltas) so the env applies exactly the 21-dim
+    vector the SFT data encodes. Base, trunk, and grippers are unchanged.
+    """
+    # behavior_policy only imports numpy, so this is cheap during validation.
+    from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+        CONTROL_MODE_ACTION_ENV_DIM,
+        CONTROL_MODES,
+    )
+
+    if "control_mode" not in cfg.actor.model.openpi:
+        raise ValueError(
+            "actor.model.openpi.control_mode is required for BEHAVIOR "
+            f"pi0.5 (one of {CONTROL_MODES}); it is declared in the shared "
+            "model template. A missing key indicates a malformed config."
+        )
+    control_mode = str(cfg.actor.model.openpi.control_mode)
+    if control_mode not in CONTROL_MODES:
+        raise ValueError(
+            f"actor.model.openpi.control_mode must be one of "
+            f"{CONTROL_MODES}, got {control_mode!r}."
+        )
+    expected_env_dim = CONTROL_MODE_ACTION_ENV_DIM[control_mode]
+    action_dim = int(cfg.actor.model.action_dim)
+    action_env_dim = int(cfg.actor.model.openpi.get("action_env_dim", action_dim))
+    if action_dim != expected_env_dim or action_env_dim != expected_env_dim:
+        raise ValueError(
+            f"actor.model.openpi.control_mode={control_mode!r} expects a "
+            f"semantic action dim of {expected_env_dim}, but "
+            f"actor.model.action_dim={action_dim} / "
+            f"openpi.action_env_dim={action_env_dim}. Set action_dim to "
+            f"{expected_env_dim} (the model still pads to "
+            f"openpi.model_action_dim)."
+        )
+    if control_mode == "eef_delta_pose":
+        for env_split in ("train", "eval"):
+            env_cfg = cfg.env.get(env_split)
+            if env_cfg is None or env_cfg.get("omni_config") is None:
+                continue
+            controller_config = env_cfg.omni_config.robots[0].controller_config
+            for arm in ("arm_left", "arm_right"):
+                controller_config[arm] = {
+                    "name": "InverseKinematicsController",
+                    "mode": "pose_delta_ori",
+                    "command_input_limits": None,
+                    "command_output_limits": None,
+                }
     return cfg
 
 

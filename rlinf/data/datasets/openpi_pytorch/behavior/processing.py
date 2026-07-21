@@ -27,7 +27,9 @@ using the vendored, parity-verified primitives:
     -> model.Observation
 
 and the inverse on actions: quantile-Unnormalize -> slice to the env action dim
-(23) -> keep the first ``action_chunk`` steps.
+(``action_env_dim``: 23 for joint_absolute, 21 for eef_delta_pose) -> keep the
+first ``action_chunk`` steps. The state is always the 23-dim proprio; only the
+action width depends on control_mode.
 """
 
 from __future__ import annotations

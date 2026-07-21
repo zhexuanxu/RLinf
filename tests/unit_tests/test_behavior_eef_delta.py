@@ -352,3 +352,109 @@ def _rotvec_to_mat(rotvec):
     k = rotvec / theta
     K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
     return np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * (K @ K)
+
+
+class TestEvalControllerMappingAndDecode:
+    """AC-6 without Isaac: exercise the REAL validate_embodied_cfg controller
+    mapping (apply_behavior_control_mode) and the BehaviorEvalProcessor decode
+    [B, chunk, 32] -> [B, chunk, 21]. The live env.step is proven separately by
+    the Isaac EVAL_SMOKE_OK run."""
+
+    def _behavior_cfg(self, control_mode, action_dim):
+        from omegaconf import OmegaConf
+
+        joint_arm = {
+            "name": "JointController",
+            "motor_type": "position",
+            "use_delta_commands": False,
+            "pos_kp": 150,
+        }
+        robot = {
+            "type": "R1Pro",
+            "controller_config": {
+                "base": {"name": "HolonomicBaseJointController"},
+                "trunk": {"name": "JointController", "use_delta_commands": False},
+                "arm_left": dict(joint_arm),
+                "arm_right": dict(joint_arm),
+                "gripper_left": {"name": "MultiFingerGripperController"},
+                "gripper_right": {"name": "MultiFingerGripperController"},
+            },
+        }
+        env_split = {"omni_config": {"robots": [robot]}}
+        return OmegaConf.create(
+            {
+                "actor": {
+                    "model": {
+                        "action_dim": action_dim,
+                        "openpi": {
+                            "control_mode": control_mode,
+                            "action_env_dim": action_dim,
+                        },
+                    }
+                },
+                "env": {"train": dict(env_split), "eval": dict(env_split)},
+            }
+        )
+
+    def test_delta_maps_arms_to_ik_pose_delta_ori(self):
+        from rlinf.config import apply_behavior_control_mode
+
+        cfg = self._behavior_cfg("eef_delta_pose", 21)
+        apply_behavior_control_mode(cfg)
+        for split in ("train", "eval"):
+            cc = cfg.env[split].omni_config.robots[0].controller_config
+            for arm in ("arm_left", "arm_right"):
+                assert cc[arm].name == "InverseKinematicsController"
+                assert cc[arm].mode == "pose_delta_ori"
+                assert cc[arm].command_input_limits is None
+                assert "motor_type" not in cc[arm]  # no stale JointController keys
+            # base/trunk/grippers unchanged
+            assert cc.trunk.name == "JointController"
+
+    def test_joint_leaves_arms_and_delta_dim_mismatch_rejected(self):
+        import pytest
+
+        from rlinf.config import apply_behavior_control_mode
+
+        cfg = self._behavior_cfg("joint_absolute", 23)
+        apply_behavior_control_mode(cfg)
+        assert (
+            cfg.env.eval.omni_config.robots[0].controller_config.arm_left.name
+            == "JointController"
+        )
+        # delta mode with action_dim 23 must be rejected
+        with pytest.raises(ValueError):
+            apply_behavior_control_mode(self._behavior_cfg("eef_delta_pose", 23))
+
+    def test_behavior_eval_processor_decodes_to_21(self):
+        # Decode a normalized [B, chunk, 32] model action through the real
+        # BehaviorEvalProcessor and assert the env action is [B, chunk, 21].
+        import torch
+
+        from rlinf.data.datasets.openpi_pytorch.behavior.processing import (
+            BehaviorEvalProcessor,
+        )
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            load_norm_stats,
+        )
+
+        asset = "/mnt/public/xzxuan/repos/RLinf/outputs/norm_stats"
+        try:
+            norm_stats = load_norm_stats(asset, "turn_on_radio_eef_delta")
+        except FileNotFoundError:
+            import pytest
+
+            pytest.skip("delta norm stats asset not present")
+
+        proc = BehaviorEvalProcessor(
+            norm_stats,
+            tokenizer=None,
+            action_chunk=32,
+            action_env_dim=21,
+            model_action_dim=32,
+            state_order="align",
+        )
+        B, chunk = 2, 32
+        model_actions = torch.zeros(B, chunk, 32, dtype=torch.float32)
+        out = proc.postprocess_actions(model_actions)
+        assert out.shape == (B, chunk, 21), out.shape
