@@ -29,10 +29,15 @@ runner:
   save_interval: 1000
 
 data:
-  # Converted delta-EEF dataset for task-0000 (21-dim actions). The original
-  # 23-dim dataset is preserved at /mnt/public/xzxuan/data/2025-challenge-demos.
-  train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
-  behavior_dataset_root: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
+  # Single-switch routing: base fields point at the ORIGINAL joint dataset; the
+  # *_eef_delta fields point at the converted delta-EEF dataset. control_mode
+  # (actor.model.openpi.control_mode below) selects which set the loader reads
+  # via resolve_behavior_paths. Both are predeclared so flipping control_mode
+  # routes the dataset without hand-editing paths.
+  train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
+  behavior_dataset_root: /mnt/public/xzxuan/data/2025-challenge-demos
+  train_data_paths_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
+  behavior_dataset_root_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
   repo_id: "behavior-1k/2025-challenge-demos"
   modalities: ["rgb"]
   num_workers: 8
@@ -58,11 +63,14 @@ actor:
     # still pads to openpi.model_action_dim (32); only the meaningful width is 21.
     action_dim: 21
     openpi:
-      # Delta-EEF norm stats computed from the converted actions
-      # (compute_norm_stats.py --control-mode eef_delta_pose). Carries a manifest
-      # that the loader validates against control_mode + action_env_dim.
+      # Single-switch routing (see data: above). Base assets_dir/asset_id point
+      # at the ORIGINAL joint task-0000 stats; the *_eef_delta fields point at the
+      # delta-EEF stats (compute_norm_stats.py --control-mode eef_delta_pose,
+      # carries a manifest the loader validates). control_mode selects which set.
       assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
-      asset_id: turn_on_radio_eef_delta
+      asset_id: turn_on_radio_reorder
+      assets_dir_eef_delta: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id_eef_delta: turn_on_radio_eef_delta
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
       discrete_state_input: true
       # State is still the recorded 23-dim proprio; "align" pairs with the

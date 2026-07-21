@@ -615,34 +615,75 @@ def validate_converted_dataset(
 def resolve_behavior_paths(data_cfg, openpi_cfg, control_mode: str) -> dict:
     """Resolve dataset root + norm-stats asset for the selected control mode.
 
-    ``control_mode`` is the switch: for ``eef_delta_pose`` the resolver prefers
-    the mode-specific config fields when present (``data.behavior_dataset_root_eef_delta``,
-    ``data.train_data_paths_eef_delta``, ``openpi.assets_dir_eef_delta``,
-    ``openpi.asset_id_eef_delta``), otherwise falls back to the base fields. This
-    keeps all paths in YAML (no hardcoded filesystem defaults in code, per the
-    repo convention) while letting one field select the dataset/stats. The strong
+    ``control_mode`` is the single switch. A BEHAVIOR config predeclares BOTH the
+    base (joint) paths and the mode-specific delta paths, and this function selects
+    the set matching ``control_mode``:
+
+    - ``joint_absolute`` -> the base fields (``data.behavior_dataset_root``,
+      ``data.train_data_paths``, ``openpi.assets_dir``, ``openpi.asset_id``).
+    - ``eef_delta_pose`` -> the delta fields (``data.behavior_dataset_root_eef_delta``,
+      ``data.train_data_paths_eef_delta``, ``openpi.assets_dir_eef_delta``,
+      ``openpi.asset_id_eef_delta``). These are REQUIRED for delta mode -- a
+      missing delta field is an error, never a silent fall back to the joint
+      paths (which would train delta actions against the joint dataset/stats).
+
+    All paths live in YAML (no hardcoded filesystem defaults in code, per the repo
+    convention); this only chooses which predeclared field to read. The strong
     consistency checks (:func:`validate_converted_dataset`,
-    ``validate_norm_stats_for_control_mode``) then reject any residual mismatch,
-    so flipping ``control_mode`` without matching paths fails loudly rather than
-    silently training on the wrong data.
+    ``validate_norm_stats_for_control_mode``) then reject any residual mismatch.
 
     Returns ``{behavior_dataset_root, train_data_paths, assets_dir, asset_id}``.
     """
-    suffix = "_eef_delta" if control_mode == "eef_delta_pose" else ""
+    if control_mode == "eef_delta_pose":
+        def pick_delta(cfg, base_key, label):
+            mode_key = base_key + "_eef_delta"
+            if mode_key not in cfg or cfg.get(mode_key) is None:
+                raise ValueError(
+                    f"control_mode=eef_delta_pose requires {label}.{mode_key} to "
+                    f"be set (the delta-EEF dataset/stats path); it is missing. "
+                    f"Declare the delta path alongside the base {label}.{base_key} "
+                    f"so control_mode selects between them."
+                )
+            return cfg.get(mode_key)
 
-    def pick(cfg, base_key):
-        if suffix:
-            mode_key = base_key + suffix
-            if mode_key in cfg and cfg.get(mode_key) is not None:
-                return cfg.get(mode_key)
-        return cfg.get(base_key)
+        return {
+            "behavior_dataset_root": pick_delta(data_cfg, "behavior_dataset_root", "data"),
+            "train_data_paths": pick_delta(data_cfg, "train_data_paths", "data"),
+            "assets_dir": pick_delta(openpi_cfg, "assets_dir", "openpi"),
+            "asset_id": pick_delta(openpi_cfg, "asset_id", "openpi"),
+        }
 
+    # joint_absolute: the original base fields, unchanged.
     return {
-        "behavior_dataset_root": pick(data_cfg, "behavior_dataset_root"),
-        "train_data_paths": pick(data_cfg, "train_data_paths"),
-        "assets_dir": pick(openpi_cfg, "assets_dir"),
-        "asset_id": pick(openpi_cfg, "asset_id"),
+        "behavior_dataset_root": data_cfg.get("behavior_dataset_root"),
+        "train_data_paths": data_cfg.get("train_data_paths"),
+        "assets_dir": openpi_cfg.get("assets_dir"),
+        "asset_id": openpi_cfg.get("asset_id"),
     }
+
+
+def resolve_norm_stats_asset(openpi_cfg, control_mode: str):
+    """Resolve the norm-stats (assets_dir, asset_id) for the control mode.
+
+    The eval path has no ``data`` section (its data is the sim env), so it only
+    needs the stats asset. Same contract as :func:`resolve_behavior_paths`:
+    ``eef_delta_pose`` REQUIRES ``openpi.assets_dir_eef_delta`` /
+    ``openpi.asset_id_eef_delta`` (error if missing); ``joint_absolute`` uses the
+    base fields. Shared by SFT and eval so both resolve the SAME delta asset by
+    mode.
+    """
+    if control_mode == "eef_delta_pose":
+        out = {}
+        for base_key in ("assets_dir", "asset_id"):
+            mode_key = base_key + "_eef_delta"
+            if mode_key not in openpi_cfg or openpi_cfg.get(mode_key) is None:
+                raise ValueError(
+                    f"control_mode=eef_delta_pose requires openpi.{mode_key} "
+                    f"(the delta-EEF stats path); it is missing."
+                )
+            out[base_key] = openpi_cfg.get(mode_key)
+        return out["assets_dir"], out["asset_id"]
+    return openpi_cfg.get("assets_dir"), openpi_cfg.get("asset_id")
 
 
 # --------------------------------------------------------------------------- #

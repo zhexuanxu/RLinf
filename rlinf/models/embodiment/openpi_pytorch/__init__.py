@@ -147,30 +147,44 @@ def get_model(cfg, torch_dtype=None):
     action_chunk = int(cfg.num_action_chunks)
     action_env_dim = int(cfg.action_dim)
 
-    # Norm stats + tokenizer resolve strictly from YAML (the SAME canonical
-    # task-0000 stats the SFT data loader resolves), so eval and SFT share one
-    # norm-stats distribution and there is no hard-coded asset/tokenizer path.
-    norm_stats = load_norm_stats(model_cfg.assets_dir, model_cfg.asset_id)
-    # Reject a stats asset whose manifest disagrees with the run's control mode /
-    # action dim (delta-EEF assets carry a manifest; legacy joint stats without
-    # one pass unchanged), so a 21-dim delta action can never be normalized
-    # against a 23-dim joint stats file.
+    # Norm stats + tokenizer resolve strictly from YAML. control_mode selects the
+    # stats asset via the SAME resolver contract the SFT loader uses, so eval and
+    # SFT resolve one delta asset by mode. For the BEHAVIOR env control_mode is
+    # required (no silent default); non-behavior envs keep the base fields.
     from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
         validate_norm_stats_for_control_mode,
     )
 
-    control_mode = str(model_cfg.get("control_mode", "joint_absolute"))
+    env_type = model_cfg.get("env", "behavior")
+    if env_type == "behavior":
+        if "control_mode" not in model_cfg:
+            raise ValueError(
+                "actor.model.openpi.control_mode is required for BEHAVIOR pi0.5 "
+                "eval (one of joint_absolute / eef_delta_pose)."
+            )
+        control_mode = str(model_cfg.control_mode)
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_norm_stats_asset,
+        )
+
+        assets_dir, asset_id = resolve_norm_stats_asset(model_cfg, control_mode)
+    else:
+        control_mode = str(model_cfg.get("control_mode", "joint_absolute"))
+        assets_dir, asset_id = model_cfg.assets_dir, model_cfg.asset_id
+
+    norm_stats = load_norm_stats(assets_dir, asset_id)
+    # Reject a stats asset whose manifest disagrees with the run's control mode /
+    # action dim, so a 21-dim delta action can never be normalized against a
+    # 23-dim joint stats file.
     validate_norm_stats_for_control_mode(
-        model_cfg.assets_dir, model_cfg.asset_id, control_mode, action_env_dim,
+        assets_dir, asset_id, control_mode, action_env_dim,
         model_action_dim=int(pi0_config.action_dim),
     )
     tokenizer = PaligemmaTokenizer(
         model_cfg.paligemma_tokenizer, max_len=pi0_config.max_token_len
     )
-    # The eval processor is selected by env so the factory is not coupled to a
-    # single environment; ``openpi.env`` defaults to "behavior" (the only env
-    # registered today) when absent.
-    env_type = model_cfg.get("env", "behavior")
+    # The eval processor is selected by env (``env_type`` resolved above;
+    # ``openpi.env`` defaults to "behavior", the only env registered today).
     state_order = _get_state_order(model_cfg)
     processor = get_eval_processer(
         env_type,

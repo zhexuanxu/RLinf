@@ -56,8 +56,13 @@ actor:
     action_dim: 21
     add_value_head: True
     openpi:
+      # Single-switch routing: base assets point at the original joint stats; the
+      # *_eef_delta assets point at the delta stats. control_mode selects (shared
+      # resolve_norm_stats_asset contract with the SFT loader).
       assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
-      asset_id: turn_on_radio_eef_delta
+      asset_id: turn_on_radio_reorder
+      assets_dir_eef_delta: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id_eef_delta: turn_on_radio_eef_delta
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
       discrete_state_input: true
       state_order: align

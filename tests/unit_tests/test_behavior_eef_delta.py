@@ -140,7 +140,12 @@ class TestControlModeResolver:
             }
         )
         op = OmegaConf.create(
-            {"assets_dir": "/a", "asset_id": "joint", "asset_id_eef_delta": "delta_asset"}
+            {
+                "assets_dir": "/a",
+                "asset_id": "joint",
+                "assets_dir_eef_delta": "/a",
+                "asset_id_eef_delta": "delta_asset",
+            }
         )
         r = cvt.resolve_behavior_paths(data, op, "eef_delta_pose")
         assert r["behavior_dataset_root"] == "/delta"
@@ -149,7 +154,11 @@ class TestControlModeResolver:
         assert rj["behavior_dataset_root"] == "/orig"
         assert rj["asset_id"] == "joint"
 
-    def test_falls_back_to_base_fields(self):
+    def test_missing_delta_fields_error_for_delta_mode(self):
+        # eef_delta_pose REQUIRES the *_eef_delta fields; a config with only base
+        # fields must fail loudly rather than silently training delta actions
+        # against the joint dataset/stats.
+        import pytest
         from omegaconf import OmegaConf
 
         cvt = self._cvt()
@@ -157,9 +166,27 @@ class TestControlModeResolver:
             {"behavior_dataset_root": "/only", "train_data_paths": "/only"}
         )
         op = OmegaConf.create({"assets_dir": "/a", "asset_id": "only_asset"})
-        r = cvt.resolve_behavior_paths(data, op, "eef_delta_pose")
-        assert r["behavior_dataset_root"] == "/only"
-        assert r["asset_id"] == "only_asset"
+        with pytest.raises(ValueError):
+            cvt.resolve_behavior_paths(data, op, "eef_delta_pose")
+
+    def test_joint_mode_uses_base_fields(self):
+        from omegaconf import OmegaConf
+
+        cvt = self._cvt()
+        data = OmegaConf.create(
+            {
+                "behavior_dataset_root": "/orig",
+                "train_data_paths": "/orig",
+                "behavior_dataset_root_eef_delta": "/delta",
+                "train_data_paths_eef_delta": "/delta",
+            }
+        )
+        op = OmegaConf.create(
+            {"assets_dir": "/a", "asset_id": "joint", "asset_id_eef_delta": "delta_asset"}
+        )
+        r = cvt.resolve_behavior_paths(data, op, "joint_absolute")
+        assert r["behavior_dataset_root"] == "/orig"
+        assert r["asset_id"] == "joint"
 
 
 class TestConverterHelpers:
