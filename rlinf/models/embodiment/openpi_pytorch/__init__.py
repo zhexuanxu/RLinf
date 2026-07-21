@@ -161,7 +161,8 @@ def get_model(cfg, torch_dtype=None):
 
     control_mode = str(model_cfg.get("control_mode", "joint_absolute"))
     validate_norm_stats_for_control_mode(
-        model_cfg.assets_dir, model_cfg.asset_id, control_mode, action_env_dim
+        model_cfg.assets_dir, model_cfg.asset_id, control_mode, action_env_dim,
+        model_action_dim=int(pi0_config.action_dim),
     )
     tokenizer = PaligemmaTokenizer(
         model_cfg.paligemma_tokenizer, max_len=pi0_config.max_token_len

@@ -593,6 +593,22 @@ def validate_converted_dataset(
                 f"{dataset_root} (provenance tasks: {sorted(prov_tasks)}). Convert "
                 f"those tasks or point at the matching converted root."
             )
+    # Inspect a real parquet action row, not just metadata: stale/corrupt
+    # info.json could otherwise hide a wrong-width action column until training.
+    import glob
+
+    sample = sorted(glob.glob(os.path.join(dataset_root, "data", "*", "*.parquet")))
+    if sample:
+        import pyarrow.parquet as pq
+
+        row = pq.read_table(sample[0], columns=["action"]).to_pandas()["action"].iloc[0]
+        row_len = len(np.asarray(row))
+        if row_len != NEW_ACTION_DIM:
+            raise ValueError(
+                f"converted dataset {dataset_root} parquet action width is "
+                f"{row_len} (sampled {os.path.basename(sample[0])}), expected "
+                f"{NEW_ACTION_DIM} for eef_delta_pose."
+            )
     return prov
 
 

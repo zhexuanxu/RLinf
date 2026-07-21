@@ -99,7 +99,7 @@ def load_norm_stats_manifest(assets_dir, asset_id) -> dict | None:
 
 
 def validate_norm_stats_for_control_mode(
-    assets_dir, asset_id, control_mode: str, action_env_dim: int
+    assets_dir, asset_id, control_mode: str, action_env_dim: int, model_action_dim=None
 ) -> None:
     """Reject a norm-stats asset whose manifest disagrees with the run.
 
@@ -109,6 +109,12 @@ def validate_norm_stats_for_control_mode(
     For ``joint_absolute`` a manifest-less asset is the original behavior and is
     accepted. When a manifest is present, its ``control_mode`` and meaningful
     ``action_env_dim`` must match this run.
+
+    When ``model_action_dim`` is given, the manifest's ``model_action_dim`` (if
+    present) must match it, and the actual on-disk ``norm_stats.actions.*`` /
+    ``norm_stats.state.*`` arrays must be padded to that model dim -- so the
+    meaningful env dim (e.g. 21) and the padded model/stat dim (e.g. 32) are both
+    enforced on the real arrays, not just the manifest (AC-7).
     """
     manifest = load_norm_stats_manifest(assets_dir, asset_id)
     if manifest is None:
@@ -135,6 +141,30 @@ def validate_norm_stats_for_control_mode(
             f"length {m_dim}, but this run expects {action_env_dim} "
             f"(control_mode={control_mode!r})."
         )
+    if model_action_dim is not None:
+        m_model_dim = manifest.get("model_action_dim")
+        if m_model_dim is not None and int(m_model_dim) != int(model_action_dim):
+            raise ValueError(
+                f"norm-stats asset {assets_dir}/{asset_id} manifest "
+                f"model_action_dim={m_model_dim}, but this run pads to "
+                f"{model_action_dim}."
+            )
+        # Verify the actual arrays are padded to the model dim (distinguish the
+        # meaningful env dim from the padded stat dim on the real data).
+        stats = load_norm_stats(assets_dir, asset_id)
+        for key in ("actions", "state"):
+            if key not in stats:
+                continue
+            for arr_name in ("mean", "std", "q01", "q99"):
+                arr = getattr(stats[key], arr_name, None)
+                if arr is None:
+                    continue
+                if int(arr.shape[-1]) != int(model_action_dim):
+                    raise ValueError(
+                        f"norm-stats asset {assets_dir}/{asset_id} "
+                        f"{key}.{arr_name} has length {arr.shape[-1]}, expected "
+                        f"the padded model dim {model_action_dim}."
+                    )
 
 
 def normalize_quantile(x: np.ndarray, stats: NormStats) -> np.ndarray:
