@@ -470,6 +470,57 @@ def action_stats(action: np.ndarray) -> dict:
     }
 
 
+def aggregate_feature_stats(stats_ft_list: list) -> dict:
+    """Count-weighted aggregation of per-episode feature stats.
+
+    Faithful numpy re-implementation of OmniGibson's
+    ``omnigibson.learning.utils.lerobot_utils.aggregate_feature_stats`` (mean is
+    count-weighted, variance via the parallel algorithm, quantiles are the
+    percentile-of-per-episode-quantiles), so a delta-EEF norm-stats asset built
+    here matches the methodology of the original assets WITHOUT importing the
+    heavy OmniGibson/Isaac stack just to read ``meta/**``.
+    """
+    means = np.stack([np.asarray(s["mean"], dtype=np.float64) for s in stats_ft_list])
+    variances = np.stack([np.asarray(s["std"], dtype=np.float64) ** 2 for s in stats_ft_list])
+    counts = np.stack([np.asarray(s["count"], dtype=np.float64) for s in stats_ft_list])
+    q01 = np.stack([np.asarray(s["q01"], dtype=np.float64) for s in stats_ft_list])
+    q99 = np.stack([np.asarray(s["q99"], dtype=np.float64) for s in stats_ft_list])
+    total_count = counts.sum(axis=0)
+    while counts.ndim < means.ndim:
+        counts = np.expand_dims(counts, axis=-1)
+    total_mean = (means * counts).sum(axis=0) / total_count
+    delta = means - total_mean
+    total_var = ((variances + delta**2) * counts).sum(axis=0) / total_count
+    return {
+        "min": np.min(np.stack([np.asarray(s["min"], dtype=np.float64) for s in stats_ft_list]), axis=0),
+        "max": np.max(np.stack([np.asarray(s["max"], dtype=np.float64) for s in stats_ft_list]), axis=0),
+        "mean": total_mean,
+        "std": np.sqrt(total_var),
+        "q01": np.percentile(q01, 1, axis=0),
+        "q99": np.percentile(q99, 99, axis=0),
+        "count": total_count,
+    }
+
+
+def aggregate_episode_stats_from_jsonl(
+    episodes_stats_path: str, feature_keys=("action", "observation.state")
+) -> dict:
+    """Aggregate the selected features across all episodes in an ``episodes_stats.jsonl``.
+
+    Returns ``{feature_key: {min/max/mean/std/q01/q99/count: np.ndarray}}``.
+    """
+    import json
+
+    per_feature = {k: [] for k in feature_keys}
+    with open(episodes_stats_path) as fh:
+        for line in fh:
+            rec = json.loads(line)
+            for k in feature_keys:
+                per_feature[k].append(rec["stats"][k])
+    return {k: aggregate_feature_stats(v) for k, v in per_feature.items() if per_feature[k]}
+
+
+
 # --------------------------------------------------------------------------- #
 # Dataset-level conversion: writes a new LeRobot dataset with 21-dim delta-EEF
 # actions, symlinking the (large) original videos, regenerating meta for the

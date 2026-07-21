@@ -125,6 +125,7 @@ def compute_norm_stats(
     action_dim: int,
     state_order: str = "comet",
     control_mode: str = "joint_absolute",
+    from_episodes_stats: bool = False,
 ) -> dict[str, dict[str, list[float]]]:
     """Aggregate per-episode LeRobot stats into padded state/action norm stats.
 
@@ -141,6 +142,12 @@ def compute_norm_stats(
     are aggregated and passed through (the state stats are still the recorded
     proprio, unchanged). The action's meaningful length is validated against the
     control mode before padding.
+
+    ``from_episodes_stats`` aggregates ``meta/episodes_stats.jsonl`` directly with
+    a faithful numpy re-implementation of OmniGibson's ``aggregate_stats`` (no
+    OmniGibson/Isaac import), aggregating ALL episodes in the file. Use it for a
+    converted delta-EEF dataset (whose episodes_stats is already filtered to the
+    converted tasks) to avoid the heavy metadata path.
     """
     from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
         CONTROL_MODE_ACTION_ENV_DIM,
@@ -152,28 +159,39 @@ def compute_norm_stats(
             f"control_mode must be one of {CONTROL_MODES}, got {control_mode!r}."
         )
 
-    meta = BehaviorSftDatasetMetadata(
-        repo_id=repo_id,
-        root=dataset_root,
-        tasks=tasks,
-        modalities=[],
-        cameras=[],
-    )
+    if from_episodes_stats:
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            aggregate_episode_stats_from_jsonl,
+        )
 
-    if episodes:
-        # Aggregate over an explicit episode subset (mirrors BehaviorSftDataset's
-        # per-episode-subset aggregation) rather than all selected-task episodes.
-        _, aggregate_stats, _, _ = _omnigibson_utils()
-        try:
-            subset = [meta.episodes_stats[ep] for ep in episodes]
-        except KeyError as exc:
-            raise KeyError(
-                f"episode {exc} is not among the selected tasks' episodes; "
-                f"check --tasks and --episodes."
-            ) from exc
-        stats = aggregate_stats(subset)
+        if episodes is not None:
+            raise ValueError("--episodes is not supported with --from-episodes-stats.")
+        stats = aggregate_episode_stats_from_jsonl(
+            f"{dataset_root}/meta/episodes_stats.jsonl"
+        )
     else:
-        stats = meta.stats
+        meta = BehaviorSftDatasetMetadata(
+            repo_id=repo_id,
+            root=dataset_root,
+            tasks=tasks,
+            modalities=[],
+            cameras=[],
+        )
+
+        if episodes:
+            # Aggregate over an explicit episode subset (mirrors BehaviorSftDataset's
+            # per-episode-subset aggregation) rather than all selected-task episodes.
+            _, aggregate_stats, _, _ = _omnigibson_utils()
+            try:
+                subset = [meta.episodes_stats[ep] for ep in episodes]
+            except KeyError as exc:
+                raise KeyError(
+                    f"episode {exc} is not among the selected tasks' episodes; "
+                    f"check --tasks and --episodes."
+                ) from exc
+            stats = aggregate_stats(subset)
+        else:
+            stats = meta.stats
 
     expected_action_dim = CONTROL_MODE_ACTION_ENV_DIM[control_mode]
     raw_action = np.asarray(stats[_ACTION_SRC_KEY]["mean"])
@@ -258,6 +276,15 @@ def _parse_args() -> argparse.Namespace:
         "delta-EEF dataset with 21-dim action stats.",
     )
     parser.add_argument(
+        "--from-episodes-stats",
+        action="store_true",
+        help="Aggregate meta/episodes_stats.jsonl directly with a faithful numpy "
+        "re-implementation of OmniGibson's aggregate_stats (no OmniGibson import). "
+        "Aggregates ALL episodes in the file. Recommended for a converted "
+        "delta-EEF dataset (its episodes_stats is already filtered to the "
+        "converted tasks).",
+    )
+    parser.add_argument(
         "--output-dir",
         required=True,
         help="Directory to write into; norm_stats.json is created inside it. "
@@ -280,6 +307,7 @@ def main() -> None:
         action_dim=args.action_dim,
         state_order=args.state_order,
         control_mode=args.control_mode,
+        from_episodes_stats=args.from_episodes_stats,
     )
     out_path = pathlib.Path(args.output_dir).expanduser() / "norm_stats.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
