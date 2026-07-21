@@ -227,10 +227,9 @@ def action_joint_to_eef_delta(
     Args:
         action23: recorded 23-dim action (native controller order).
         state256: recorded 256-dim proprio observation.state.
-        fk_eval_fn: callable(cspace_q_2x?) -> per-arm base-frame EEF (pos, quat).
-            Concretely ``fk_eval_fn(cspace_q)`` returns
-            ``{"left": ArmEefPose, "right": ArmEefPose}`` for a single cspace
-            vector. Called twice (target from action, current from state).
+        fk_eval_fn: callable(cspace_q) -> {"left": ArmEefPose, "right": ArmEefPose}
+            for a single cspace vector (base-frame EEF). Called twice (target
+            from action, current from state).
 
     Returns:
         21-dim delta-EEF action (float64): base[3], trunk[4], left_eef[6],
@@ -265,3 +264,150 @@ def action_joint_to_eef_delta(
         out[lo + 3 : lo + 6] = relative_rotation_axisangle(cur.quat_xyzw, tgt.quat_xyzw)
         out[gidx_new] = action23[gidx_old]
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Analytical URDF forward kinematics (pure numpy, batched, Isaac-free).
+#
+# The R1Pro arm chains base_link -> torso -> arm -> gripper_link have only
+# translational joint origins (all rpy == 0) plus single-axis revolute joints,
+# so FK is a product of translate(xyz) @ axis_rotation(axis, q) transforms. This
+# is validated once against a live OmniGibson robot's get_relative_eef_pose
+# (see validate_fk_against_live_robot) before any bulk conversion.
+# --------------------------------------------------------------------------- #
+def load_arm_chains(urdf_path: str) -> dict:
+    """Parse base_link -> {arm}_gripper_link chains from the R1Pro URDF.
+
+    Returns ``{"left": [joint, ...], "right": [...]}`` where each joint is
+    ``{"name", "type", "xyz"(3), "rpy"(3), "axis"(3)}`` in root->tip order.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(urdf_path).getroot()
+    by_child = {}
+    for j in root.findall("joint"):
+        origin = j.find("origin")
+        xyz = [0.0, 0.0, 0.0]
+        rpy = [0.0, 0.0, 0.0]
+        if origin is not None:
+            if origin.get("xyz"):
+                xyz = [float(v) for v in origin.get("xyz").split()]
+            if origin.get("rpy"):
+                rpy = [float(v) for v in origin.get("rpy").split()]
+        axis_el = j.find("axis")
+        axis = [1.0, 0.0, 0.0]
+        if axis_el is not None and axis_el.get("xyz"):
+            axis = [float(v) for v in axis_el.get("xyz").split()]
+        by_child[j.find("child").get("link")] = {
+            "name": j.get("name"),
+            "type": j.get("type"),
+            "parent": j.find("parent").get("link"),
+            "xyz": xyz,
+            "rpy": rpy,
+            "axis": axis,
+        }
+
+    chains = {}
+    for side in ("left", "right"):
+        seq, link = [], f"{side}_gripper_link"
+        while link in by_child:
+            seq.append(by_child[link])
+            link = by_child[link]["parent"]
+        seq.reverse()
+        chains[side] = seq
+    return chains
+
+
+def _rpy_matrix(rpy) -> np.ndarray:
+    rx, ry, rz = rpy
+    cx, sx = np.cos(rx), np.sin(rx)
+    cy, sy = np.cos(ry), np.sin(ry)
+    cz, sz = np.cos(rz), np.sin(rz)
+    rxm = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    rym = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    rzm = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return rzm @ rym @ rxm
+
+
+def _axis_rotation(axis: np.ndarray, theta: np.ndarray) -> np.ndarray:
+    """Rodrigues rotation about a fixed unit axis for a batch of angles.
+
+    axis: (3,); theta: (N,) -> (N,3,3).
+    """
+    a = np.asarray(axis, dtype=np.float64)
+    n = np.linalg.norm(a)
+    if n < 1e-12:
+        return np.broadcast_to(np.eye(3), theta.shape + (3, 3)).copy()
+    a = a / n
+    k = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    theta = np.asarray(theta, dtype=np.float64)
+    s = np.sin(theta)[..., None, None]
+    c = np.cos(theta)[..., None, None]
+    eye = np.eye(3)
+    return eye + s * k + (1.0 - c) * (k @ k)
+
+
+class UrdfArmFK:
+    """Batched analytical FK for the two R1Pro arm chains, base-frame EEF.
+
+    Call ``fk(cspace_q)`` with cspace_q shaped (N, 15) or (15,) in CSPACE_JOINTS
+    order; returns ``{"left": (pos[N,3], quat[N,4]), "right": ...}`` after
+    composing the fixed gripper_link->eef_link offset.
+    """
+
+    def __init__(self, urdf_path: str):
+        self.chains = load_arm_chains(urdf_path)
+        self._cspace_index = {name: i for i, name in enumerate(CSPACE_JOINTS)}
+        # Precompute fixed local transforms and the moving-joint metadata.
+        self._plan = {}
+        for side, seq in self.chains.items():
+            steps = []
+            for jd in seq:
+                t = np.eye(4)
+                t[:3, :3] = _rpy_matrix(jd["rpy"])
+                t[:3, 3] = jd["xyz"]
+                moving = jd["type"] in ("revolute", "continuous", "prismatic")
+                steps.append(
+                    {
+                        "T_origin": t,
+                        "moving": moving,
+                        "prismatic": jd["type"] == "prismatic",
+                        "axis": np.asarray(jd["axis"], dtype=np.float64),
+                        "cspace_idx": self._cspace_index.get(jd["name"]),
+                    }
+                )
+            self._plan[side] = steps
+
+    def __call__(self, cspace_q: np.ndarray) -> dict:
+        q = np.asarray(cspace_q, dtype=np.float64)
+        squeeze = q.ndim == 1
+        if squeeze:
+            q = q[None, :]
+        n = q.shape[0]
+        out = {}
+        for side, steps in self._plan.items():
+            acc = np.broadcast_to(np.eye(4), (n, 4, 4)).copy()
+            for st in steps:
+                local = np.broadcast_to(st["T_origin"], (n, 4, 4)).copy()
+                if st["moving"] and st["cspace_idx"] is not None:
+                    ang = q[:, st["cspace_idx"]]
+                    if st["prismatic"]:
+                        # translate along axis by q (not used by arm chains)
+                        local[:, :3, 3] += ang[:, None] * st["axis"]
+                    else:
+                        rot = _axis_rotation(st["axis"], ang)  # (n,3,3)
+                        local[:, :3, :3] = local[:, :3, :3] @ rot
+                acc = acc @ local
+            # apply fixed gripper_link -> eef_link offset
+            p_g = acc[:, :3, 3]
+            r_g = acc[:, :3, :3]
+            r_off = quat2mat_xyzw(EEF_OFFSET_QUAT_XYZW)
+            p_eef = p_g + (r_g @ EEF_OFFSET_POS)
+            r_eef = r_g @ r_off
+            quats = np.stack([_mat2quat_xyzw(r_eef[i]) for i in range(n)], axis=0)
+            if squeeze:
+                out[side] = ArmEefPose(pos=p_eef[0], quat_xyzw=quats[0])
+            else:
+                out[side] = (p_eef, quats)
+        return out
+
