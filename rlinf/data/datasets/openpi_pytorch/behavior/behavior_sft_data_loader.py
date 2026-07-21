@@ -639,25 +639,34 @@ def build_behavior_sft_dataloader(
         )
     # Robot action space. "joint_absolute" is the original 23-dim absolute-joint
     # dataset; "eef_delta_pose" is the 21-dim delta-EEF converted dataset. The
-    # field is declarative (the experiment YAML points behavior_dataset_root and
-    # openpi.asset_id at the matching dataset/stats); the guard below rejects a
-    # config that changes control_mode but leaves an inconsistent action dim, so
-    # SFT can never silently normalize 21-dim actions with 23-dim stats.
-    control_mode = str(model_cfg.openpi.get("control_mode", "joint_absolute"))
+    # field is REQUIRED for BEHAVIOR pi0.5 SFT (every shipped template declares
+    # it); a missing key is a malformed/outdated config and fails loudly rather
+    # than silently defaulting. The checks reject a config whose control_mode
+    # disagrees with EITHER action_dim or action_env_dim, so SFT can never
+    # silently normalize 21-dim actions against 23-dim stats.
+    if "control_mode" not in model_cfg.openpi:
+        raise ValueError(
+            "actor.model.openpi.control_mode is required for BEHAVIOR pi0.5 SFT "
+            f"(one of {CONTROL_MODES}); it is declared in the shared model "
+            "template model/pi0_5_pytorch.yaml. A missing key indicates a "
+            "malformed or outdated config."
+        )
+    control_mode = str(model_cfg.openpi.control_mode)
     if control_mode not in CONTROL_MODES:
         raise ValueError(
             f"actor.model.openpi.control_mode must be one of {CONTROL_MODES}, got "
             f"{control_mode!r}."
         )
     expected_env_dim = CONTROL_MODE_ACTION_ENV_DIM[control_mode]
-    action_env_dim = int(model_cfg.openpi.get("action_env_dim", model_cfg.action_dim))
-    if action_env_dim != expected_env_dim:
+    action_dim_cfg = int(model_cfg.action_dim)
+    action_env_dim = int(model_cfg.openpi.get("action_env_dim", action_dim_cfg))
+    if action_dim_cfg != expected_env_dim or action_env_dim != expected_env_dim:
         raise ValueError(
             f"actor.model.openpi.control_mode={control_mode!r} expects a semantic "
-            f"action dim of {expected_env_dim}, but actor.model.action_dim / "
-            f"openpi.action_env_dim resolved to {action_env_dim}. Set action_dim to "
-            f"{expected_env_dim} for this control mode (the model still pads to "
-            f"openpi.model_action_dim)."
+            f"action dim of {expected_env_dim}, but actor.model.action_dim="
+            f"{action_dim_cfg} / openpi.action_env_dim={action_env_dim}. Set "
+            f"action_dim to {expected_env_dim} for this control mode (the model "
+            f"still pads to openpi.model_action_dim)."
         )
     fine_grained_level = int(data_cfg.fine_grained_level)
     if fine_grained_level not in (0, 1):

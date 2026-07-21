@@ -957,9 +957,13 @@ def validate_embodied_cfg(cfg):
                 CONTROL_MODES,
             )
 
-            control_mode = str(
-                cfg.actor.model.openpi.get("control_mode", "joint_absolute")
-            )
+            if "control_mode" not in cfg.actor.model.openpi:
+                raise ValueError(
+                    "actor.model.openpi.control_mode is required for BEHAVIOR "
+                    f"pi0.5 (one of {CONTROL_MODES}); it is declared in the shared "
+                    "model template. A missing key indicates a malformed config."
+                )
+            control_mode = str(cfg.actor.model.openpi.control_mode)
             if control_mode not in CONTROL_MODES:
                 raise ValueError(
                     f"actor.model.openpi.control_mode must be one of "
