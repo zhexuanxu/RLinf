@@ -198,8 +198,11 @@ class BehaviorSftTransform:
             for key in _IMAGE_KEYS
         }
 
-        # Quantile-normalize the (still 23-dim) state and actions to [-1, 1]
-        # before padding. When configured, the normalized state is also
+        # Quantile-normalize the state (23-dim proprio) and the actions to
+        # [-1, 1] before padding. The action width depends on control_mode
+        # (23 for joint_absolute, 21 for eef_delta_pose); normalize_quantile
+        # slices the stats to the input width, and the matching norm stats are
+        # enforced upstream. When configured, the normalized state is also
         # discretized into the pi05 language prompt.
         state = np.asarray(inputs["state"], dtype=np.float32)
         state = normalize_quantile(state, self.norm_stats["state"]).astype(np.float32)

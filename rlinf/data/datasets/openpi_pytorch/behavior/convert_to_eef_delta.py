@@ -751,6 +751,19 @@ def convert_dataset(
     info["total_episodes"] = len(sel_episodes)
     info["total_frames"] = total_frames
     info["total_tasks"] = len(selected_task_indices)
+    # Recompute total_videos for the filtered task set (one clip per video key
+    # per episode) so the metadata matches the selected episodes rather than the
+    # full source dataset. The clips themselves are reused via the videos/ symlink.
+    if "total_videos" in info:
+        num_video_keys = len(info.get("video_keys") or []) or (
+            sum(
+                1
+                for f in info.get("features", {}).values()
+                if f.get("dtype") == "video"
+            )
+        )
+        info["total_videos"] = len(sel_episodes) * num_video_keys
+    info["total_chunks"] = len(selected_task_indices)
     json.dump(info, open(f"{dst_root}/meta/info.json", "w"), indent=4)
 
     provenance = {
