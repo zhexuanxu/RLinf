@@ -28,6 +28,11 @@ export PYTHONPATH=${DREAMZERO_PATH}:$PYTHONPATH
 
 export HYDRA_FULL_ERROR=1
 
+export RAY_num_prestart_python_workers=0
+export RAY_worker_register_timeout_seconds=600
+export RAY_agent_register_timeout_ms=600000
+export RAY_raylet_start_wait_time_s=600
+
 if [ -z "$1" ]; then
     CONFIG_NAME="maniskill_ppo_openvlaoft"
 else

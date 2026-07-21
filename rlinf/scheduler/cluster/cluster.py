@@ -334,6 +334,7 @@ class Cluster:
             ray_init_kwargs = {
                 "logging_level": Cluster.LOGGING_LEVEL,
                 "namespace": Cluster.NAMESPACE,
+                "_system_config": {"agent_register_timeout_ms": 600000},
             }
             if self._ray_code_sync_fragment is not None:
                 ray_init_kwargs["runtime_env"] = dict(self._ray_code_sync_fragment)
