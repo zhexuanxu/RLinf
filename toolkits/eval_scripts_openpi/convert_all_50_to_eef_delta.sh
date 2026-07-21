@@ -121,11 +121,25 @@ PYTHONPATH="$REPO" python "$STATS" \
   --action-dim "$ACTION_DIM" \
   --output-dir "$ASSETS_DIR/$ASSET_ID"
 
-# ---- Verify (pure JSON reads, no heavy imports) ----------------------------
+# ---- Verify (JSON reads + one real parquet action row) ---------------------
+# Assert (not just print) that the dataset, provenance, tasks.jsonl, and the
+# stats manifest all agree on the expected number of converted tasks, so a
+# partial/failed conversion fails loudly here instead of training on a subset.
 echo ">>> verifying outputs ..."
-python - "$DST_ROOT" "$ASSETS_DIR/$ASSET_ID/norm_stats.json" <<'PY'
-import json, sys
-dst, stats_path = sys.argv[1], sys.argv[2]
+if [ -n "$TASKS" ]; then
+  EXPECTED_TASKS=$(printf '%s\n' $TASKS | grep -c .)
+else
+  EXPECTED_TASKS="$N_TASKS"
+fi
+python - "$DST_ROOT" "$ASSETS_DIR/$ASSET_ID/norm_stats.json" "$EXPECTED_TASKS" <<'PY'
+import glob
+import json
+import sys
+
+import numpy as np
+import pyarrow.parquet as pq
+
+dst, stats_path, expected = sys.argv[1], sys.argv[2], int(sys.argv[3])
 info = json.load(open(f"{dst}/meta/info.json"))
 prov = json.load(open(f"{dst}/meta/eef_delta_provenance.json"))
 stats = json.load(open(stats_path))
@@ -135,9 +149,29 @@ assert act_shape == [21], f"dataset action shape {act_shape} != [21]"
 assert prov["control_mode"] == "eef_delta_pose"
 assert meta.get("control_mode") == "eef_delta_pose", meta
 assert meta.get("action_env_dim") == 21, meta
+# Coverage: every task-count view must agree on the expected number of tasks.
+n_taskrows = sum(1 for ln in open(f"{dst}/meta/tasks.jsonl") if ln.strip())
+assert info.get("total_tasks") == expected, (
+    f"info.total_tasks={info.get('total_tasks')} != expected {expected}"
+)
+assert len(prov.get("tasks") or []) == expected, (
+    f"provenance tasks={len(prov.get('tasks') or [])} != expected {expected}"
+)
+assert n_taskrows == expected, f"tasks.jsonl rows={n_taskrows} != expected {expected}"
+assert len(meta.get("tasks") or []) == expected, (
+    f"stats manifest tasks={len(meta.get('tasks') or [])} != expected {expected}"
+)
+# Inspect a real parquet action row, not just metadata.
+sample = sorted(glob.glob(f"{dst}/data/*/*.parquet"))
+assert sample, "no parquet files found under data/"
+row = pq.read_table(sample[0], columns=["action"]).to_pandas()["action"].iloc[0]
+assert len(np.asarray(row)) == 21, f"parquet action width {len(np.asarray(row))} != 21"
 n_meaningful = sum(1 for v in stats["norm_stats"]["actions"]["q99"] if v != 0.0)
-print(f"  dataset action shape : {act_shape}")
-print(f"  provenance tasks     : {len(prov.get('tasks', []))}")
+print(f"  dataset action shape : {act_shape}  (sampled parquet row width 21 OK)")
+print(
+    f"  tasks covered        : {expected} "
+    f"(info.total_tasks / provenance / tasks.jsonl / manifest all agree)"
+)
 print(f"  dataset episodes     : {info.get('total_episodes')}  frames: {info.get('total_frames')}")
 print(f"  stats meaningful dims: >= {n_meaningful} (of 21)  padded to {len(stats['norm_stats']['actions']['q99'])}")
 print("  OK: dataset + norm stats are consistent for eef_delta_pose.")

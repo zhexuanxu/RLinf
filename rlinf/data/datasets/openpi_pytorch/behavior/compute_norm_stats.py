@@ -309,6 +309,26 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _dataset_task_names(dataset_root: str) -> list[str] | None:
+    """Task names from ``dataset_root/meta/tasks.jsonl`` (in file order).
+
+    Used to self-document the norm-stats manifest when the caller aggregates a
+    whole converted dataset (``--from-episodes-stats`` without ``--tasks``), so
+    the manifest records the actual covered tasks instead of ``null``. Returns
+    ``None`` if the file is absent (the manifest then records ``null``, matching
+    the prior behavior rather than failing stats generation).
+    """
+    tasks_path = pathlib.Path(dataset_root).expanduser() / "meta" / "tasks.jsonl"
+    if not tasks_path.is_file():
+        return None
+    names: list[str] = []
+    for line in tasks_path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            names.append(json.loads(line)["task_name"])
+    return names or None
+
+
 def main() -> None:
     args = _parse_args()
     from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
@@ -327,6 +347,13 @@ def main() -> None:
     )
     out_path = pathlib.Path(args.output_dir).expanduser() / "norm_stats.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Record the covered tasks explicitly. When aggregating a whole converted
+    # dataset (--from-episodes-stats without --tasks), derive the list from the
+    # dataset's meta/tasks.jsonl so the manifest documents the real coverage
+    # (e.g. all 50) instead of null.
+    manifest_tasks = args.tasks
+    if manifest_tasks is None and args.from_episodes_stats:
+        manifest_tasks = _dataset_task_names(args.dataset_root)
     # Manifest documents what this asset was built for so the loader/eval can
     # reject a stats/dim/mode mismatch instead of silently normalizing a 21-dim
     # action against a 23-dim joint stats file.
@@ -335,7 +362,7 @@ def main() -> None:
         "action_env_dim": CONTROL_MODE_ACTION_ENV_DIM[args.control_mode],
         "model_action_dim": args.action_dim,
         "state_order": args.state_order,
-        "tasks": args.tasks,
+        "tasks": manifest_tasks,
         "dataset_root": args.dataset_root,
     }
     out_path.write_text(

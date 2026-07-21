@@ -189,6 +189,36 @@ class TestControlModeResolver:
         assert r["asset_id"] == "joint"
 
 
+class TestNormStatsManifestTaskList:
+    """The all-50 stats manifest must record the real task list (not null) when
+    aggregated from a converted dataset via --from-episodes-stats (no --tasks)."""
+
+    def test_dataset_task_names_reads_tasks_jsonl(self, tmp_path):
+        import json
+
+        from rlinf.data.datasets.openpi_pytorch.behavior.compute_norm_stats import (
+            _dataset_task_names,
+        )
+
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        (meta / "tasks.jsonl").write_text(
+            json.dumps({"task_index": 0, "task_name": "turning_on_radio"}) + "\n"
+            + json.dumps({"task_index": 1, "task_name": "picking_up_trash"}) + "\n"
+        )
+        assert _dataset_task_names(str(tmp_path)) == [
+            "turning_on_radio",
+            "picking_up_trash",
+        ]
+
+    def test_dataset_task_names_missing_returns_none(self, tmp_path):
+        from rlinf.data.datasets.openpi_pytorch.behavior.compute_norm_stats import (
+            _dataset_task_names,
+        )
+
+        assert _dataset_task_names(str(tmp_path)) is None
+
+
 class TestConverterHelpers:
     """Guards against the resolve_behavior_paths edit that once shadowed
     _task_indices_for_names (leaving it undefined -> convert_dataset NameError)."""
