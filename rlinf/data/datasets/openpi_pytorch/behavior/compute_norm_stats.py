@@ -124,6 +124,7 @@ def compute_norm_stats(
     episodes: list[int] | None,
     action_dim: int,
     state_order: str = "comet",
+    control_mode: str = "joint_absolute",
 ) -> dict[str, dict[str, list[float]]]:
     """Aggregate per-episode LeRobot stats into padded state/action norm stats.
 
@@ -132,7 +133,25 @@ def compute_norm_stats(
     each value a list of length ``action_dim``. ``state_order`` selects the
     proprio->state channel ordering (``"comet"`` or ``"align"``) and MUST match
     the ordering used at train/eval time (``actor.model.openpi.state_order``).
+
+    ``control_mode`` selects the ACTION semantics. ``joint_absolute`` uses the
+    23-dim recorded joint action as-is (the original behavior). ``eef_delta_pose``
+    expects ``dataset_root`` to be a converted delta-EEF dataset whose
+    ``episodes_stats.jsonl`` already carries 21-dim delta-EEF action stats; those
+    are aggregated and passed through (the state stats are still the recorded
+    proprio, unchanged). The action's meaningful length is validated against the
+    control mode before padding.
     """
+    from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+        CONTROL_MODE_ACTION_ENV_DIM,
+        CONTROL_MODES,
+    )
+
+    if control_mode not in CONTROL_MODES:
+        raise ValueError(
+            f"control_mode must be one of {CONTROL_MODES}, got {control_mode!r}."
+        )
+
     meta = BehaviorSftDatasetMetadata(
         repo_id=repo_id,
         root=dataset_root,
@@ -155,6 +174,21 @@ def compute_norm_stats(
         stats = aggregate_stats(subset)
     else:
         stats = meta.stats
+
+    expected_action_dim = CONTROL_MODE_ACTION_ENV_DIM[control_mode]
+    raw_action = np.asarray(stats[_ACTION_SRC_KEY]["mean"])
+    if raw_action.shape[-1] != expected_action_dim:
+        raise ValueError(
+            f"control_mode={control_mode!r} expects {expected_action_dim}-dim "
+            f"action stats, but {dataset_root}/meta/episodes_stats.jsonl has "
+            f"{raw_action.shape[-1]}-dim action stats. For eef_delta_pose, point "
+            f"--dataset-root at the converted delta-EEF dataset."
+        )
+    if expected_action_dim > action_dim:
+        raise ValueError(
+            f"action_dim (pad target {action_dim}) must be >= the meaningful "
+            f"action length {expected_action_dim} for control_mode={control_mode!r}."
+        )
 
     norm_stats: dict[str, dict[str, list[float]]] = {"state": {}, "actions": {}}
     for key in _STAT_KEYS:
@@ -216,6 +250,14 @@ def _parse_args() -> argparse.Namespace:
         "(left gripper at index 14). MUST match actor.model.openpi.state_order.",
     )
     parser.add_argument(
+        "--control-mode",
+        choices=("joint_absolute", "eef_delta_pose"),
+        default="joint_absolute",
+        help="Action space. 'joint_absolute' uses the recorded 23-dim joint "
+        "action; 'eef_delta_pose' expects --dataset-root to be a converted "
+        "delta-EEF dataset with 21-dim action stats.",
+    )
+    parser.add_argument(
         "--output-dir",
         required=True,
         help="Directory to write into; norm_stats.json is created inside it. "
@@ -226,6 +268,10 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+    from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+        CONTROL_MODE_ACTION_ENV_DIM,
+    )
+
     norm_stats = compute_norm_stats(
         dataset_root=args.dataset_root,
         repo_id=args.repo_id,
@@ -233,10 +279,24 @@ def main() -> None:
         episodes=args.episodes,
         action_dim=args.action_dim,
         state_order=args.state_order,
+        control_mode=args.control_mode,
     )
     out_path = pathlib.Path(args.output_dir).expanduser() / "norm_stats.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps({"norm_stats": norm_stats}, indent=2))
+    # Manifest documents what this asset was built for so the loader/eval can
+    # reject a stats/dim/mode mismatch instead of silently normalizing a 21-dim
+    # action against a 23-dim joint stats file.
+    manifest = {
+        "control_mode": args.control_mode,
+        "action_env_dim": CONTROL_MODE_ACTION_ENV_DIM[args.control_mode],
+        "model_action_dim": args.action_dim,
+        "state_order": args.state_order,
+        "tasks": args.tasks,
+        "dataset_root": args.dataset_root,
+    }
+    out_path.write_text(
+        json.dumps({"norm_stats": norm_stats, "metadata": manifest}, indent=2)
+    )
     print(f"Wrote norm stats to: {out_path}")
 
 
