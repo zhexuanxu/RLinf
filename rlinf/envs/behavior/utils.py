@@ -288,6 +288,46 @@ def override_sub_cfg(omni_cfg: DictConfig, override_cfg: DictConfig, sub_attr: s
         )
 
 
+def merge_robot_override(omni_cfg: DictConfig, robot_override: DictConfig) -> None:
+    """Merge the rlinf robot override into the OmniGibson base ``robots[0]`` config.
+
+    A plain deep merge (``merge=True``) is used so unspecified default robot fields
+    survive. But a deep merge also keeps the BASE controller's class-specific keys
+    when an override switches a controller group to a different class -- e.g. the
+    base ``JointController`` keys (``motor_type``/``pos_kp``/``use_impedances``/
+    ``use_delta_commands``) leak into an override that sets the group to
+    ``InverseKinematicsController`` (``eef_delta_pose``), which then rejects those
+    stale kwargs at construction (``TypeError: got an unexpected keyword argument
+    'motor_type'``). For any controller group whose override changes the controller
+    ``name`` relative to the base, replace that group wholesale (``merge=False``) so
+    only the override's keys reach OmniGibson. Groups that keep the same class are
+    still deep-merged, preserving the default-field behavior.
+    """
+    base_ctrl = OmegaConf.select(omni_cfg, "robots[0].controller_config", default=None)
+    base_ctrl_names = (
+        {g: OmegaConf.select(base_ctrl, f"{g}.name") for g in base_ctrl}
+        if base_ctrl is not None
+        else {}
+    )
+    OmegaConf.update(omni_cfg, "robots[0]", robot_override, merge=True)
+    override_ctrl = OmegaConf.select(robot_override, "controller_config", default=None)
+    if override_ctrl is None:
+        return
+    for group in list(override_ctrl.keys()):
+        override_name = OmegaConf.select(override_ctrl, f"{group}.name", default=None)
+        if (
+            override_name is not None
+            and base_ctrl_names.get(group) is not None
+            and override_name != base_ctrl_names[group]
+        ):
+            OmegaConf.update(
+                omni_cfg,
+                f"robots[0].controller_config.{group}",
+                OmegaConf.select(override_ctrl, group),
+                merge=False,
+            )
+
+
 def setup_omni_cfg(cfg: DictConfig) -> DictConfig:
     """
     Setup OmniGibson's config, overrided by user-set config
@@ -322,7 +362,7 @@ def setup_omni_cfg(cfg: DictConfig) -> DictConfig:
     assert robot_override is not None, (
         "OmniGibson config must contain a non-empty robots list, but robots[0] config is None"
     )
-    OmegaConf.update(omni_cfg, "robots[0]", robot_override, merge=True)
+    merge_robot_override(omni_cfg, robot_override)
 
     override_proprio_obs = OmegaConf.select(
         override_cfg, "robots[0].proprio_obs", default=None

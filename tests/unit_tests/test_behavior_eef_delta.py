@@ -488,3 +488,95 @@ class TestEvalControllerMappingAndDecode:
         model_actions = torch.zeros(B, chunk, 32, dtype=torch.float32)
         out = proc.postprocess_actions(model_actions)
         assert out.shape == (B, chunk, 21), out.shape
+
+
+class TestSetupOmniCfgControllerMerge:
+    """merge_robot_override must not leak base JointController class-keys into an
+    override that switches an arm to InverseKinematicsController (the eef_delta
+    eval/replay env-construction bug: OmniGibson IK rejects motor_type)."""
+
+    def _base(self):
+        from omegaconf import OmegaConf
+
+        return OmegaConf.create(
+            {
+                "robots": [
+                    {
+                        "name": "robot_r1",
+                        "controller_config": {
+                            "base": {"name": "HolonomicBaseJointController", "vel_kp": 150},
+                            "trunk": {"name": "JointController", "motor_type": "position", "pos_kp": 150},
+                            "arm_left": {
+                                "name": "JointController",
+                                "motor_type": "position",
+                                "pos_kp": 150,
+                                "use_impedances": False,
+                                "use_delta_commands": False,
+                                "command_input_limits": None,
+                            },
+                            "arm_right": {
+                                "name": "JointController",
+                                "motor_type": "position",
+                                "pos_kp": 150,
+                                "use_impedances": False,
+                                "use_delta_commands": False,
+                                "command_input_limits": None,
+                            },
+                        },
+                    }
+                ]
+            }
+        )
+
+    def test_ik_override_drops_stale_jointcontroller_keys(self):
+        from omegaconf import OmegaConf
+
+        from rlinf.envs.behavior.utils import merge_robot_override
+
+        base = self._base()
+        override = OmegaConf.create(
+            {
+                "controller_config": {
+                    "arm_left": {
+                        "name": "InverseKinematicsController",
+                        "mode": "pose_delta_ori",
+                        "command_input_limits": None,
+                        "command_output_limits": None,
+                    },
+                    "arm_right": {
+                        "name": "InverseKinematicsController",
+                        "mode": "pose_delta_ori",
+                        "command_input_limits": None,
+                        "command_output_limits": None,
+                    },
+                }
+            }
+        )
+        merge_robot_override(base, override)
+        cc = base.robots[0].controller_config
+        for arm in ("arm_left", "arm_right"):
+            assert cc[arm].name == "InverseKinematicsController"
+            assert cc[arm].mode == "pose_delta_ori"
+            for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
+                assert stale not in cc[arm], f"{stale} leaked into {arm}: {dict(cc[arm])}"
+        # A group whose class is unchanged keeps its deep-merged joint keys.
+        assert cc.trunk.name == "JointController" and "motor_type" in cc.trunk
+        # Non-controller robot defaults survive the merge.
+        assert base.robots[0].name == "robot_r1"
+
+    def test_same_class_override_deep_merges(self):
+        from omegaconf import OmegaConf
+
+        from rlinf.envs.behavior.utils import merge_robot_override
+
+        base = self._base()
+        # Joint override (same class) should preserve base keys + apply the override.
+        override = OmegaConf.create(
+            {"controller_config": {"arm_left": {"name": "JointController", "pos_kp": 300}}}
+        )
+        merge_robot_override(base, override)
+        cc = base.robots[0].controller_config
+        assert cc.arm_left.name == "JointController"
+        assert cc.arm_left.pos_kp == 300  # override applied
+        assert cc.arm_left.motor_type == "position"  # base key preserved
+
