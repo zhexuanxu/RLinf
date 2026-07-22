@@ -1253,6 +1253,41 @@ class EnvWorker(Worker):
     def evaluate(self, input_channel: Channel, rollout_channel: Channel):
         eval_metrics = defaultdict(list)
 
+        # Replay mode: instead of stepping the env with actor-generated actions,
+        # feed the recorded dataset actions for the episode whose cached initial
+        # state (tro_state instance) the env resets to. The actor still runs over
+        # the channel to keep the handshake alive, but its output is discarded.
+        replay_cfg = self.cfg.env.eval.get("replay", None)
+        replay_enabled = bool(replay_cfg and replay_cfg.get("enabled", False))
+        replay_source = None
+        replay_instance_ids = None
+        if replay_enabled:
+            from rlinf.envs.behavior.replay import BehaviorReplayActionSource
+
+            replay_source = BehaviorReplayActionSource(
+                dataset_root=replay_cfg.dataset_root,
+                action_env_dim=self.cfg.actor.model.action_dim,
+                num_action_chunks=self.cfg.actor.model.num_action_chunks,
+                num_envs=self.eval_num_envs_per_stage,
+                episode_stride=replay_cfg.get("episode_stride", 10),
+            )
+            ids = OmegaConf.select(
+                self.cfg, "env.eval.omni_config.task.activity_instance_id"
+            )
+            if ids is None:
+                raise ValueError(
+                    "replay requires env.eval.omni_config.task.activity_instance_id "
+                    "(the cached tro_state instances to reset to)."
+                )
+            ids = OmegaConf.to_container(ids, resolve=True) if OmegaConf.is_config(ids) else ids
+            replay_instance_ids = list(ids) if isinstance(ids, (list, tuple)) else [ids]
+            self.log_info(
+                f"[replay] enabled: dataset_root={replay_cfg.dataset_root} "
+                f"action_dim={self.cfg.actor.model.action_dim} "
+                f"instance_ids={replay_instance_ids} "
+                f"episode_stride={replay_source.episode_stride}"
+            )
+
         for eval_rollout_epoch in range(self.cfg.algorithm.eval_rollout_epoch):
             if not self.cfg.env.eval.auto_reset or eval_rollout_epoch == 0:
                 for stage_id in range(self.stage_num):
@@ -1279,11 +1314,30 @@ class EnvWorker(Worker):
                         mode="eval",
                     )
 
+            replay_chunks = None
+            if replay_enabled:
+                inst = replay_instance_ids[
+                    eval_rollout_epoch % len(replay_instance_ids)
+                ]
+                actions, _ = replay_source.load_episode(inst)
+                replay_chunks = replay_source.episode_to_chunks(
+                    actions, self.n_eval_chunk_steps
+                )
+                self.log_info(
+                    f"[replay] epoch {eval_rollout_epoch}: instance {inst} -> "
+                    f"episode {replay_source.episode_index(inst)} "
+                    f"({actions.shape[0]} recorded steps, feeding "
+                    f"{self.n_eval_chunk_steps} chunks of "
+                    f"{self.cfg.actor.model.num_action_chunks})"
+                )
+
             for eval_step in range(self.n_eval_chunk_steps):
                 for stage_id in range(self.stage_num):
                     raw_chunk_actions = self.recv_chunk_actions(
                         input_channel, mode="eval"
                     )
+                    if replay_enabled:
+                        raw_chunk_actions = replay_chunks[eval_step]
                     env_output, env_info = self.env_evaluate_step(
                         raw_chunk_actions, stage_id
                     )
