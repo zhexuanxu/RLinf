@@ -27,7 +27,9 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    rollout,env,actor: all
+    # Single GPU: replay uses one env (one episode per epoch), so env_world_size
+    # must be 1 to divide total_num_envs=1.
+    rollout,env,actor: 0-0
 
 runner:
   task_type: embodied
