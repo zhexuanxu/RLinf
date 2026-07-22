@@ -36,8 +36,8 @@ data:
   # routes the dataset without hand-editing paths.
   train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   behavior_dataset_root: /mnt/public/xzxuan/data/2025-challenge-demos
-  train_data_paths_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
-  behavior_dataset_root_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
+  train_data_paths_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta-t0
+  behavior_dataset_root_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta-t0
   repo_id: "behavior-1k/2025-challenge-demos"
   modalities: ["rgb"]
   num_workers: 8
