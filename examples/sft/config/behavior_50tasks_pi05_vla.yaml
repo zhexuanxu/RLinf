@@ -34,6 +34,11 @@ data:
   # parameters from this section directly (no hidden defaults).
   train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
   behavior_dataset_root: /mnt/public/xzxuan/data/2025-challenge-demos
+  # Single-switch routing: control_mode=eef_delta_pose selects these converted
+  # all-50 delta-EEF paths via resolve_behavior_paths; joint_absolute uses the base
+  # fields above. Both predeclared so flipping only control_mode routes.
+  train_data_paths_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
+  behavior_dataset_root_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta
   repo_id: "behavior-1k/2025-challenge-demos"
   modalities: ["rgb"]
   num_workers: 8
@@ -133,6 +138,11 @@ actor:
       # (the same canonical stats the eval path resolves).
       assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
       asset_id: 50tasks_reorder
+      # Delta-EEF stats selected when control_mode=eef_delta_pose (all-50 scope;
+      # shared resolve_norm_stats_asset contract with eval). control_mode picks
+      # between these and the base joint stats above.
+      assets_dir_eef_delta: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id_eef_delta: 50tasks_eef_delta
       # These norm stats were generated with the action-aligned state order
       # (left gripper at index 14), so the model must extract state the same way.
       state_token: align

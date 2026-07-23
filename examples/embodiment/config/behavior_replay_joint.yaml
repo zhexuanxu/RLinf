@@ -155,6 +155,11 @@ actor:
       action_env_dim: ${actor.model.action_dim}
       assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
       asset_id: turn_on_radio_reorder
+      # Delta-EEF stats selected when control_mode=eef_delta_pose (task-0000 scope;
+      # shared resolve_norm_stats_asset contract). control_mode picks between these
+      # and the base joint stats above.
+      assets_dir_eef_delta: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id_eef_delta: turn_on_radio_eef_delta
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
       discrete_state_input: true
       state_token: align

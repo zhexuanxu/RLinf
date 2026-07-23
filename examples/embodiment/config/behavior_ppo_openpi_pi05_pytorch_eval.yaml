@@ -130,6 +130,11 @@ actor:
       # live at {assets_dir}/{asset_id}/norm_stats.json.
       assets_dir: /mnt/public/xzxuan/repos/RLinf_pi05/logs/20260605-12:39:44-behavior_pi05_vla/pi05_sft_pytorch_new
       asset_id: physical-intelligence/behavior
+      # Delta-EEF stats selected when control_mode=eef_delta_pose (task-0000 scope;
+      # shared resolve_norm_stats_asset contract with the SFT loader). Base
+      # assets_dir/asset_id stay the joint stats; control_mode picks between them.
+      assets_dir_eef_delta: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id_eef_delta: turn_on_radio_eef_delta
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
