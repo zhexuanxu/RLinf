@@ -61,9 +61,9 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 1
+  micro_batch_size: 4
   eval_batch_size: 1
-  global_batch_size: 1
+  global_batch_size: 64
   seed: 42
   model:
     model_path: ${rollout.model.model_path}

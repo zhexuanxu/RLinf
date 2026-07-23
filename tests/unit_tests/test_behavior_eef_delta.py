@@ -970,24 +970,54 @@ class TestStateBasedEefShippedConfigs:
                     r["behavior_dataset_root"], mode, list(cfg.data.tasks)
                 )
 
-    def test_absolute_eef_eval_config_maps_ik_absolute_pose(self):
+    # The shipped single-node BEHAVIOR eval configs target an 8-GPU node with the
+    # default `actor,env,rollout: all` placement, so actor_world_size == 8 and
+    # validate_cfg asserts global_batch_size % (micro_batch_size * 8) == 0
+    # (config.py). Assert that Ray-free invariant here so the audit catches an
+    # unlaunchable config (e.g. global=1/micro=1) without needing a live Cluster.
+    _SINGLE_NODE_ACTOR_GPUS = 8
+
+    def _assert_actor_batch_divisible(self, cfg, name):
+        placement = cfg.cluster.component_placement
+        # Only the "actor,env,rollout: all" single-node placement is asserted here;
+        # a non-"all" placement would need the real Cluster to resolve world size.
+        assert any(str(v) == "all" for v in placement.values()), (name, dict(placement))
+        micro = int(cfg.actor.micro_batch_size)
+        gb = int(cfg.actor.global_batch_size)
+        ws = self._SINGLE_NODE_ACTOR_GPUS
+        assert gb % (micro * ws) == 0, (
+            f"{name}: global_batch_size ({gb}) must be divisible by "
+            f"micro_batch_size ({micro}) * actor_world_size ({ws})"
+        )
+
+    def test_eef_eval_configs_pass_batch_and_ik_invariants(self):
         from rlinf.config import apply_behavior_control_mode
         from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
             resolve_norm_stats_asset,
         )
 
-        cfg = self._compose(self.EMB_DIR, "behavior_ppo_openpi_pi05_pytorch_absolute_eef_eval")
-        op = cfg.actor.model.openpi
-        assert op.control_mode == "absolute_eef"
-        assert int(cfg.actor.model.action_dim) == 21
-        assert int(cfg.env.eval.total_num_envs) > 0  # validate_cfg precondition
-        assert resolve_norm_stats_asset(op, "absolute_eef")[1] == "turn_on_radio_absolute_eef"
-        apply_behavior_control_mode(cfg)
-        arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
-        assert arm.name == "InverseKinematicsController"
-        assert arm.mode == "absolute_pose"
-        for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
-            assert stale not in arm
+        # Both dedicated EEF eval configs: the FSDP batch/placement invariant that
+        # validate_cfg enforces (missed by a total_num_envs-only check), THEN the
+        # IK controller mapping. Would FAIL on the pre-R14 global=1/micro=1 sizing.
+        cases = [
+            ("behavior_ppo_openpi_pi05_pytorch_absolute_eef_eval", "absolute_eef", "turn_on_radio_absolute_eef", "absolute_pose"),
+            ("behavior_ppo_openpi_pi05_pytorch_eef_delta_eval", "eef_delta_pose", "turn_on_radio_eef_delta", "pose_delta_ori"),
+        ]
+        for name, mode, stats, arm_mode in cases:
+            cfg = self._compose(self.EMB_DIR, name)
+            op = cfg.actor.model.openpi
+            assert op.control_mode == mode, name
+            assert int(cfg.actor.model.action_dim) == 21, name
+            assert int(op.action_env_dim) == 21, name
+            assert int(cfg.env.eval.total_num_envs) > 0, name
+            self._assert_actor_batch_divisible(cfg, name)
+            assert resolve_norm_stats_asset(op, mode)[1] == stats, name
+            apply_behavior_control_mode(cfg)
+            arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
+            assert arm.name == "InverseKinematicsController", name
+            assert arm.mode == arm_mode, name
+            for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
+                assert stale not in arm, (name, stale)
 
     def test_delta_eef_config_maps_ik_pose_delta_ori(self):
         from rlinf.config import apply_behavior_control_mode
