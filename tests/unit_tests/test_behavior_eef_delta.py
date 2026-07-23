@@ -695,7 +695,7 @@ class TestShippedConfigSingleSwitch:
         "eef_delta_pose": 21,
     }
 
-    def _compose(self, cfg_dir, name):
+    def _compose(self, cfg_dir, name, overrides=None):
         import os
 
         from hydra import compose, initialize_config_dir
@@ -709,9 +709,16 @@ class TestShippedConfigSingleSwitch:
         with initialize_config_dir(
             version_base="1.1", config_dir=os.path.abspath(cfg_dir)
         ):
-            cfg = compose(config_name=name)
+            cfg = compose(config_name=name, overrides=overrides)
         OmegaConf.resolve(cfg)
         return cfg
+
+    def _compose_mode(self, cfg_dir, name, mode):
+        """Compose with ONLY control_mode overridden, so the template-derived
+        action_dim re-resolves for that mode (single-switch)."""
+        return self._compose(
+            cfg_dir, name, overrides=[f"actor.model.openpi.control_mode={mode}"]
+        )
 
     def test_all_shipped_configs_derive_action_dim_from_mode(self):
         import glob
@@ -735,11 +742,79 @@ class TestShippedConfigSingleSwitch:
             assert int(cfg.actor.model.action_dim) == exp, (name, mode)
             assert int(cfg.actor.model.openpi.action_env_dim) == exp, (name, mode)
 
-    def test_sft_flip_routes_dataset_and_stats(self):
-        # A dual-declared delta SFT config: flipping only control_mode flips the
-        # semantic dim AND the dataset root + stats asset.
-        from omegaconf import OmegaConf
+    def test_original_sft_configs_flip_both_modes(self):
+        # The exact R7-R9 gap: each ORIGINAL required SFT config must route the
+        # dataset AND stats on a control_mode-only flip. Composed in BOTH modes,
+        # asserting (dim, dataset root, stats asset). Would FAIL if the R11
+        # *_eef_delta fields were removed.
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_behavior_paths,
+        )
 
+        # name -> (delta dataset-root suffix, delta stats asset, joint stats asset)
+        matrix = {
+            "behavior_pi05_vla": ("eef-delta-t0", "turn_on_radio_eef_delta", "behavior-1k/2025-challenge-demos"),
+            "behavior_pi05_vlm_vla": ("eef-delta-t0", "turn_on_radio_eef_delta", "turn_on_radio_reorder"),
+            "behavior_50tasks_pi05_vla": ("2025-challenge-demos-eef-delta", "50tasks_eef_delta", "50tasks_reorder"),
+            "behavior_50tasks_pi05_vlm_vla": ("2025-challenge-demos-eef-delta", "50tasks_eef_delta", "50tasks_reorder"),
+        }
+        for name, (root_suffix, delta_asset, joint_asset) in matrix.items():
+            cj = self._compose_mode(self.SFT_DIR, name, "joint_absolute")
+            assert int(cj.actor.model.action_dim) == 23, name
+            rj = resolve_behavior_paths(cj.data, cj.actor.model.openpi, "joint_absolute")
+            assert rj["asset_id"] == joint_asset, name
+            assert not rj["behavior_dataset_root"].rstrip("/").endswith(
+                ("eef-delta", "eef-delta-t0")
+            )
+
+            cd = self._compose_mode(self.SFT_DIR, name, "eef_delta_pose")
+            assert int(cd.actor.model.action_dim) == 21, name
+            assert int(cd.actor.model.openpi.action_env_dim) == 21, name
+            rd = resolve_behavior_paths(cd.data, cd.actor.model.openpi, "eef_delta_pose")
+            assert rd["behavior_dataset_root"].rstrip("/").endswith(root_suffix), (
+                name,
+                rd["behavior_dataset_root"],
+            )
+            assert rd["asset_id"] == delta_asset, name
+
+    def test_original_eval_configs_flip_both_modes(self):
+        # Each ORIGINAL eval/replay config must route the stats AND map the arm
+        # controller on a control_mode-only flip (both modes).
+        from rlinf.config import apply_behavior_control_mode
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_norm_stats_asset,
+        )
+
+        # name -> joint stats asset (delta asset is turn_on_radio_eef_delta for all)
+        matrix = {
+            "behavior_ppo_openpi_pi05_pytorch_eval": "physical-intelligence/behavior",
+            "behavior_ppo_openpi_pi05_pytorch_vlm_vla_eval": "physical-intelligence/behavior",
+            "behavior_ppo_openpi_pi05_pytorch_vlm_vla_eval_test": "physical-intelligence/behavior",
+            "behavior_replay_joint": "turn_on_radio_reorder",
+        }
+        for name, joint_asset in matrix.items():
+            cj = self._compose_mode(self.EMB_DIR, name, "joint_absolute")
+            assert int(cj.actor.model.action_dim) == 23, name
+            assert resolve_norm_stats_asset(cj.actor.model.openpi, "joint_absolute")[1] == joint_asset
+            apply_behavior_control_mode(cj)
+            armj = cj.env.eval.omni_config.robots[0].controller_config.arm_left
+            assert armj.name == "JointController", name
+
+            cd = self._compose_mode(self.EMB_DIR, name, "eef_delta_pose")
+            assert int(cd.actor.model.action_dim) == 21, name
+            assert (
+                resolve_norm_stats_asset(cd.actor.model.openpi, "eef_delta_pose")[1]
+                == "turn_on_radio_eef_delta"
+            ), name
+            apply_behavior_control_mode(cd)
+            armd = cd.env.eval.omni_config.robots[0].controller_config.arm_left
+            assert armd.name == "InverseKinematicsController" and armd.mode == "pose_delta_ori"
+            for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
+                assert stale not in armd, (name, stale)
+
+    def test_dedicated_delta_sft_flip_routes(self):
+        # The dedicated _eef_delta SFT variant: flipping to joint routes to the
+        # original dataset/stats (both modes predeclared).
         from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
             resolve_behavior_paths,
         )
@@ -752,12 +827,6 @@ class TestShippedConfigSingleSwitch:
         j = resolve_behavior_paths(cfg.data, op, "joint_absolute")
         assert j["behavior_dataset_root"].endswith("2025-challenge-demos")
         assert j["asset_id"] == "50tasks_reorder"
-        # absolute_eef path must be declared to be selectable (else clear error)
-        import pytest
-
-        OmegaConf.set_struct(cfg, False)
-        with pytest.raises(ValueError):
-            resolve_behavior_paths(cfg.data, op, "absolute_eef")
 
     def test_absolute_eef_config_routes_and_maps(self):
         from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
