@@ -35,19 +35,117 @@ from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
 )
 
 
+class TestStateBasedEefConversion:
+    """State-based absolute_eef/delta_eef conversion (no FK) + scipy pi-fix."""
+
+    def test_quat2axisangle_robust_at_pi(self):
+        # The R1Pro downward-gripper orientation sits near the +/-pi axis-angle
+        # singularity; scipy must round-trip it (the old mat2axisangle did not).
+        from scipy.spatial.transform import Rotation as R
+
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef import (
+            quat2axisangle,
+        )
+
+        q = np.array([-0.0222, 0.9998, -0.0003, 0.0012])
+        q = q / np.linalg.norm(q)
+        aa = quat2axisangle(q)
+        # reconstruct and compare rotation matrices
+        rebuilt = R.from_rotvec(aa).as_matrix()
+        truth = R.from_quat(q).as_matrix()
+        assert np.abs(rebuilt - truth).max() < 1e-9
+        # magnitude is near pi, not the buggy 3.256
+        assert abs(np.linalg.norm(aa) - np.pi) < 0.05
+
+    def test_relative_rotation_is_left_multiply(self):
+        from scipy.spatial.transform import Rotation as R
+
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef import (
+            relative_rotation_axisangle,
+        )
+
+        rng = np.random.default_rng(0)
+        for _ in range(50):
+            q0 = rng.normal(size=4); q0 /= np.linalg.norm(q0)
+            q1 = rng.normal(size=4); q1 /= np.linalg.norm(q1)
+            dr = relative_rotation_axisangle(q0, q1)
+            # R1 == R_delta @ R0
+            lhs = R.from_quat(q1).as_matrix()
+            rhs = R.from_rotvec(dr).as_matrix() @ R.from_quat(q0).as_matrix()
+            assert np.abs(lhs - rhs).max() < 1e-9
+
+    def test_absolute_vs_delta_arm_slices(self):
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef import (
+            action_to_absolute_eef,
+            action_to_delta_eef,
+            quat2axisangle,
+            read_eef,
+        )
+
+        rng = np.random.default_rng(1)
+        a23 = rng.normal(size=23)
+        s_t = rng.normal(size=256)
+        s_t1 = rng.normal(size=256)
+        # absolute_eef arm_left[7:13] == [next_pos, axisangle(next_quat)]
+        abs_a = action_to_absolute_eef(a23, s_t, s_t1)
+        p1, q1 = read_eef(s_t1, "left")
+        assert np.allclose(abs_a[7:10], p1)
+        assert np.allclose(abs_a[10:13], quat2axisangle(q1))
+        # delta_eef arm_left dpos == p1 - p0
+        d_a = action_to_delta_eef(a23, s_t, s_t1)
+        p0, _ = read_eef(s_t, "left")
+        assert np.allclose(d_a[7:10], p1 - p0)
+        # both 21-dim; base/trunk/grippers copied from the recorded action
+        for out in (abs_a, d_a):
+            assert out.shape == (21,)
+            assert np.allclose(out[0:7], a23[0:7])
+            assert out[13] == a23[14] and out[20] == a23[22]
+
+    def test_abs_eef_state_token_layout(self):
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef import (
+            quat2axisangle,
+            read_eef,
+        )
+        from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+            extract_state_from_proprio,
+            resolve_state_token,
+        )
+
+        assert resolve_state_token("comet") == "abs_joint_old"
+        assert resolve_state_token("align") == "abs_joint"
+        rng = np.random.default_rng(2)
+        s = rng.normal(size=256)
+        e = extract_state_from_proprio(s, "abs_eef")
+        assert e.shape[-1] == 21
+        p, q = read_eef(s, "left")
+        assert np.allclose(e[7:10], p)
+        assert np.allclose(e[10:13], quat2axisangle(q))
+        # legacy tokens still 23-dim
+        assert extract_state_from_proprio(s, "comet").shape[-1] == 23
+        assert extract_state_from_proprio(s, "align").shape[-1] == 23
+
+
 class TestControlModeConstants:
     def test_modes_and_dims(self):
-        assert CONTROL_MODES == ("joint_absolute", "eef_delta_pose")
+        assert CONTROL_MODES == (
+            "joint_absolute",
+            "absolute_eef",
+            "delta_eef",
+            "eef_delta_pose",
+        )
         assert CONTROL_MODE_ACTION_ENV_DIM == {
             "joint_absolute": 23,
+            "absolute_eef": 21,
+            "delta_eef": 21,
             "eef_delta_pose": 21,
         }
 
-    def test_delta_arm_dims_are_six_each(self):
+    def test_eef_arm_dims_are_six_each(self):
         # 21 = base(3) + trunk(4) + arm_left_eef(6) + gripper(1)
         #      + arm_right_eef(6) + gripper(1)
         fixed = 3 + 4 + 1 + 1
-        assert CONTROL_MODE_ACTION_ENV_DIM["eef_delta_pose"] - fixed == 12  # 6 + 6
+        for mode in ("absolute_eef", "delta_eef", "eef_delta_pose"):
+            assert CONTROL_MODE_ACTION_ENV_DIM[mode] - fixed == 12  # 6 + 6
 
 
 class TestNormStatsManifestGuard:
