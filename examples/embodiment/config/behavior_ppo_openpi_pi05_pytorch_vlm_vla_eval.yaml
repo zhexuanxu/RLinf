@@ -123,7 +123,6 @@ actor:
     add_value_head: False
     num_images_in_input: 3
     proprio_dim: 32
-    action_dim: 23
     num_action_chunks: 32
     openpi:
       action_env_dim: ${actor.model.action_dim}
@@ -140,7 +139,7 @@ actor:
       discrete_state_input: false
       # Reference (comet) state order — must match the norm stats at
       # {assets_dir}/{asset_id} (both grippers at the tail).
-      state_order: comet
+      state_token: comet
       # Robot action space (see model/pi0_5_pytorch.yaml). This config evaluates
       # the original 23-dim absolute-joint controller.
       control_mode: joint_absolute

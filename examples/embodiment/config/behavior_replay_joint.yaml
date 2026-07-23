@@ -150,7 +150,6 @@ actor:
     add_value_head: False
     num_images_in_input: 3
     proprio_dim: 32
-    action_dim: 23
     num_action_chunks: 32
     openpi:
       action_env_dim: ${actor.model.action_dim}
@@ -158,7 +157,7 @@ actor:
       asset_id: turn_on_radio_reorder
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
       discrete_state_input: true
-      state_order: align
+      state_token: align
       control_mode: joint_absolute
   optim:
     lr: 1.0e-4

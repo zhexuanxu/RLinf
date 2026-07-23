@@ -13,9 +13,11 @@ is_lora: False
 lora_rank: 32
 
 # Action and chunk settings (BEHAVIOR pi05). `num_action_chunks` is the Pi0
-# action_horizon.
+# action_horizon. The semantic action_dim is DERIVED from openpi.control_mode via
+# openpi.control_mode_action_dims below, so control_mode is the single switch (no
+# separate action_dim edit per mode).
 num_action_chunks: 32
-action_dim: 23
+action_dim: ${actor.model.openpi.control_mode_action_dims.${actor.model.openpi.control_mode}}
 use_proprio: True
 
 # Number of flow-matching denoising steps for eval action sampling. The model is
@@ -46,19 +48,24 @@ openpi:
   # prompt; false uses image + text only. pi0 suffix-state injection is a
   # different model structure and is not selected by this pi0_5 template.
   discrete_state_input: true
-  # Proprio->state channel ordering used by extract_state_from_proprio.
-  # "comet": reference / pretrained-checkpoint order (both grippers at the tail,
-  # left gripper at index 21). "align": action-aligned order (left gripper moved
-  # to index 14). MUST match the state_order used to generate norm_stats.json.
-  state_order: comet
-  # Robot action space the dataset/eval controller use. "joint_absolute"
-  # (default): the 23-dim base(3)+trunk(4)+arm_left(7)+gripper_left(1)+
-  # arm_right(7)+gripper_right(1) vector with absolute joint targets for the
-  # manipulators. "eef_delta_pose": both arms become 6-DoF base-frame
-  # end-effector deltas (OmniGibson InverseKinematicsController, pose_delta_ori),
-  # giving a 21-dim vector. validate_embodied_cfg maps this onto the R1Pro arm
+  # Prompt state channel layout. Canonical key: state_token (abs_joint_old /
+  # abs_joint / abs_eef); the legacy state_order (comet / align) still resolves.
+  # abs_eef makes the state arms base-frame [pos, axisangle], consistent with the
+  # eef action space. MUST match the state_token the norm stats were built with.
+  state_token: abs_joint_old
+  # Robot action space (single switch). "joint_absolute": 23-dim absolute joints.
+  # "absolute_eef": arms become 6-DoF base-frame ABSOLUTE EEF pose [pos,axisangle]
+  # (OmniGibson IK absolute_pose) -> 21-dim. "delta_eef": arms are state-to-state
+  # EEF deltas (IK pose_delta_ori) -> 21-dim. "eef_delta_pose": legacy FK-based
+  # delta -> 21-dim. validate_embodied_cfg maps EEF modes onto the R1Pro arm
   # controllers, so eval need only set this field (not hand-edit controller_config).
   control_mode: joint_absolute
+  # control_mode -> semantic action_dim map (action_dim above interpolates this).
+  control_mode_action_dims:
+    joint_absolute: 23
+    absolute_eef: 21
+    delta_eef: 21
+    eef_delta_pose: 21
   # Placeholders — set the real norm-stats + tokenizer locations in the eval
   # experiment config.
   assets_dir: "/path/to/assets"

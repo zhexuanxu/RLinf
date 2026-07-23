@@ -36,6 +36,23 @@ algorithm:
 env:
   group_name: "EnvGroup"
 
+  train:
+    total_num_envs: 8
+    max_episode_steps: 4096
+    max_steps_per_rollout_epoch: 4096
+    video_cfg:
+      save_video: True
+      video_base_dir: ${runner.logger.log_path}/video/train
+      fps: 15
+  eval:
+    total_num_envs: 8
+    max_episode_steps: 4096
+    max_steps_per_rollout_epoch: 4096
+    video_cfg:
+      save_video: True
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 15
+
 rollout:
   pipeline_stage_num: 1
   model:
@@ -53,7 +70,6 @@ actor:
     # Delta-EEF is a 21-dim action space; the model still pads to
     # openpi.model_action_dim (32). validate_embodied_cfg maps control_mode onto
     # the R1Pro arm controllers (IK pose_delta_ori) so the env action space is 21.
-    action_dim: 21
     add_value_head: True
     openpi:
       # Single-switch routing: base assets point at the original joint stats; the
@@ -65,7 +81,7 @@ actor:
       asset_id_eef_delta: turn_on_radio_eef_delta
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
       discrete_state_input: true
-      state_order: align
+      state_token: align
       control_mode: eef_delta_pose
 
   optim:

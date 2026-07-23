@@ -116,7 +116,6 @@ actor:
     model_path: /mnt/public/xzxuan/models/pi05_base_pytorch_new
     # Delta-EEF is a 21-dim action space (both arms 6-DoF EEF deltas). The model
     # still pads to openpi.model_action_dim (32); only the meaningful width is 21.
-    action_dim: 21
     openpi:
       # Single-switch routing (see data: above). Base assets_dir/asset_id point at
       # the ORIGINAL 50-task joint stats; the *_eef_delta fields point at the
@@ -128,7 +127,7 @@ actor:
       asset_id_eef_delta: 50tasks_eef_delta
       # State is still the recorded 23-dim proprio; "align" pairs with the
       # delta-EEF stats generated with --state-order align.
-      state_order: align
+      state_token: align
       # Delta end-effector control (21-dim). See model/pi0_5_pytorch.yaml.
       control_mode: eef_delta_pose
       paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
