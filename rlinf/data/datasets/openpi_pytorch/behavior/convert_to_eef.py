@@ -44,14 +44,9 @@ importing this module never pulls in torch / OmniGibson / Isaac.
 from __future__ import annotations
 
 import numpy as np
+from scipy.spatial.transform import Rotation as _R
 
-from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
-    mat2axisangle,
-    quat2mat_xyzw,
-    relative_rotation_axisangle,
-)
-
-# Base-frame EEF pose slices inside the 256-dim proprio observation.state.
+# EEF pose slices inside the 256-dim proprio observation.state (base frame).
 # Verified to match the analytical URDF FK (0.0 mm / 0.0 deg) on real frames.
 EEF_STATE = {
     "left_pos": slice(186, 189),
@@ -74,8 +69,23 @@ OLD_ACTION_DIM = 23
 
 
 def quat2axisangle(quat_xyzw: np.ndarray) -> np.ndarray:
-    """(...,4) xyzw quaternion -> (...,3) axis-angle, via the vendored xyzw math."""
-    return mat2axisangle(quat2mat_xyzw(np.asarray(quat_xyzw, dtype=np.float64)))
+    """(...,4) xyzw quaternion -> (...,3) axis-angle, EXACTLY as OmniGibson does it
+    (``transform_utils.quat2axisangle`` = ``scipy Rotation.from_quat(q).as_rotvec()``).
+
+    Using scipy (not the FK module's mat2axisangle) is deliberate: mat2axisangle is
+    inaccurate at the +/-pi singularity, which the R1Pro downward-gripper
+    orientation sits on -- scipy is robust there, and it is the exact inverse of the
+    controller's ``axisangle2quat`` so the absolute EEF orientation round-trips."""
+    return _R.from_quat(np.asarray(quat_xyzw, dtype=np.float64)).as_rotvec()
+
+
+def relative_rotation_axisangle(q0_xyzw: np.ndarray, q1_xyzw: np.ndarray) -> np.ndarray:
+    """Base-frame delta axis-angle ``R_delta = R1 @ R0^-1`` (the value the IK
+    ``pose_delta_ori`` controller inverts: ``R1 = R_delta @ R0``), via scipy so it
+    matches OmniGibson and is robust at the singularity."""
+    r0 = _R.from_quat(np.asarray(q0_xyzw, dtype=np.float64))
+    r1 = _R.from_quat(np.asarray(q1_xyzw, dtype=np.float64))
+    return (r1 * r0.inv()).as_rotvec()
 
 
 def read_eef(state256: np.ndarray, arm: str):
