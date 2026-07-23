@@ -38,8 +38,8 @@ data:
   # delta-EEF paths (task-0000 -eef-delta-t0 root) via resolve_behavior_paths;
   # joint_absolute uses the base fields above. Both predeclared so flipping only
   # control_mode routes the dataset.
-  train_data_paths_eef_delta: /path/to/2025-challenge-demos-eef-delta-t0
-  behavior_dataset_root_eef_delta: /path/to/2025-challenge-demos-eef-delta-t0
+  train_data_paths_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta-t0
+  behavior_dataset_root_eef_delta: /mnt/public/xzxuan/data/2025-challenge-demos-eef-delta-t0
   repo_id: "behavior-1k/2025-challenge-demos"
   modalities: ["rgb"]
   num_workers: 8
@@ -77,7 +77,7 @@ actor:
       # Delta-EEF stats selected when control_mode=eef_delta_pose (shared
       # resolve_norm_stats_asset contract with eval). Base assets_dir/asset_id
       # stay the joint stats; control_mode picks between them.
-      assets_dir_eef_delta: /path/to/assets
+      assets_dir_eef_delta: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
       asset_id_eef_delta: turn_on_radio_eef_delta
       # PaliGemma SentencePiece tokenizer model (resolved from YAML, not hardcoded
       # in code).

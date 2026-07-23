@@ -744,21 +744,30 @@ class TestShippedConfigSingleSwitch:
 
     def test_original_sft_configs_flip_both_modes(self):
         # The exact R7-R9 gap: each ORIGINAL required SFT config must route the
-        # dataset AND stats on a control_mode-only flip. Composed in BOTH modes,
-        # asserting (dim, dataset root, stats asset). Would FAIL if the R11
-        # *_eef_delta fields were removed.
+        # dataset AND stats on a control_mode-only flip, and the resolved delta
+        # artifacts must pass the loader's REAL validators (not just have the right
+        # suffix). Would FAIL if the *_eef_delta fields point at placeholders.
+        import os
+
         from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
             resolve_behavior_paths,
+            validate_converted_dataset,
+        )
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
         )
 
-        # name -> (delta dataset-root suffix, delta stats asset, joint stats asset)
+        NS = "/mnt/public/xzxuan/repos/RLinf/outputs/norm_stats"
+        T0 = "/mnt/public/xzxuan/data/2025-challenge-demos-eef-delta-t0"
+        ALL = "/mnt/public/xzxuan/data/2025-challenge-demos-eef-delta"
+        # name -> (delta root, delta assets_dir, delta asset_id, joint asset_id)
         matrix = {
-            "behavior_pi05_vla": ("eef-delta-t0", "turn_on_radio_eef_delta", "behavior-1k/2025-challenge-demos"),
-            "behavior_pi05_vlm_vla": ("eef-delta-t0", "turn_on_radio_eef_delta", "turn_on_radio_reorder"),
-            "behavior_50tasks_pi05_vla": ("2025-challenge-demos-eef-delta", "50tasks_eef_delta", "50tasks_reorder"),
-            "behavior_50tasks_pi05_vlm_vla": ("2025-challenge-demos-eef-delta", "50tasks_eef_delta", "50tasks_reorder"),
+            "behavior_pi05_vla": (T0, NS, "turn_on_radio_eef_delta", "behavior-1k/2025-challenge-demos"),
+            "behavior_pi05_vlm_vla": (T0, NS, "turn_on_radio_eef_delta", "turn_on_radio_reorder"),
+            "behavior_50tasks_pi05_vla": (ALL, NS, "50tasks_eef_delta", "50tasks_reorder"),
+            "behavior_50tasks_pi05_vlm_vla": (ALL, NS, "50tasks_eef_delta", "50tasks_reorder"),
         }
-        for name, (root_suffix, delta_asset, joint_asset) in matrix.items():
+        for name, (droot, dassets, dasset, joint_asset) in matrix.items():
             cj = self._compose_mode(self.SFT_DIR, name, "joint_absolute")
             assert int(cj.actor.model.action_dim) == 23, name
             rj = resolve_behavior_paths(cj.data, cj.actor.model.openpi, "joint_absolute")
@@ -771,11 +780,20 @@ class TestShippedConfigSingleSwitch:
             assert int(cd.actor.model.action_dim) == 21, name
             assert int(cd.actor.model.openpi.action_env_dim) == 21, name
             rd = resolve_behavior_paths(cd.data, cd.actor.model.openpi, "eef_delta_pose")
-            assert rd["behavior_dataset_root"].rstrip("/").endswith(root_suffix), (
-                name,
-                rd["behavior_dataset_root"],
-            )
-            assert rd["asset_id"] == delta_asset, name
+            # Exact resolved artifacts, not just a suffix (catches placeholder roots
+            # and a placeholder assets_dir).
+            assert rd["behavior_dataset_root"].rstrip("/") == droot, (name, rd["behavior_dataset_root"])
+            assert rd["assets_dir"].rstrip("/") == dassets, (name, rd["assets_dir"])
+            assert rd["asset_id"] == dasset, name
+            # And the resolved artifacts must pass the SAME validators the loader
+            # runs: skip only if the real artifact is genuinely absent on this box.
+            if os.path.isdir(droot) and os.path.isdir(os.path.join(dassets, dasset)):
+                validate_norm_stats_for_control_mode(
+                    rd["assets_dir"], rd["asset_id"], "eef_delta_pose", 21, model_action_dim=32
+                )
+                validate_converted_dataset(
+                    rd["behavior_dataset_root"], "eef_delta_pose", list(cd.data.tasks)
+                )
 
     def test_original_eval_configs_flip_both_modes(self):
         # Each ORIGINAL eval/replay config must route the stats AND map the arm
