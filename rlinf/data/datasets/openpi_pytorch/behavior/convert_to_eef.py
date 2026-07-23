@@ -158,3 +158,111 @@ def convert_episode_actions(
         t1 = min(t + 1, f - 1)
         out[t] = fn(a[t], s[t], s[t1])
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Dataset-level conversion (reuses the LeRobot machinery in convert_to_eef_delta:
+# videos/meta symlinks, meta regeneration, provenance). State-based, no FK.
+# --------------------------------------------------------------------------- #
+def convert_dataset(
+    src_root: str,
+    dst_root: str,
+    task_names: list,
+    mode: str,
+    *,
+    converter_version: str = "1",
+    omnigibson_version: str = "unknown",
+    overwrite: bool = False,
+    progress_every: int = 0,
+) -> dict:
+    """Convert the selected tasks of a BEHAVIOR LeRobot dataset to ``absolute_eef``
+    or ``delta_eef`` (state-based, no FK). Symlinks videos/ + per-task episode meta,
+    regenerates meta with 21-dim action stats, writes ``eef_delta_provenance.json``.
+    """
+    if mode not in ("absolute_eef", "delta_eef"):
+        raise ValueError(f"mode must be 'absolute_eef' or 'delta_eef', got {mode!r}.")
+    from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+        _convert_dataset_impl,
+    )
+
+    controller = (
+        {"arms": "InverseKinematicsController", "mode": "absolute_pose",
+         "command_input_limits": None, "command_output_limits": None}
+        if mode == "absolute_eef"
+        else {"arms": "InverseKinematicsController", "mode": "pose_delta_ori",
+              "command_input_limits": None, "command_output_limits": None}
+    )
+    conversion_source = (
+        "arm = [p_{t+1}, quat2axisangle(q_{t+1})] read from proprio state (no FK)"
+        if mode == "absolute_eef"
+        else "arm = [p_{t+1}-p_t, relative_rotation_axisangle(q_t,q_{t+1})] from state (no FK)"
+    )
+    provenance = {
+        "control_mode": mode,
+        "action_env_dim": EEF_ACTION_DIM,
+        "model_action_dim": 32,
+        "source_action_dim": OLD_ACTION_DIM,
+        "controller": controller,
+        "conversion_source": conversion_source,
+        "orientation_convention": "axisangle (scipy Rotation, OmniGibson-consistent)",
+        "eef_state_slices": {k: [s.start, s.stop] for k, s in EEF_STATE.items()},
+        "converter_version": converter_version,
+        "omnigibson_version": omnigibson_version,
+    }
+    return _convert_dataset_impl(
+        src_root,
+        dst_root,
+        task_names,
+        lambda a23, s256: convert_episode_actions(a23, s256, mode),
+        provenance,
+        overwrite=overwrite,
+        progress_every=progress_every,
+    )
+
+
+def _all_task_names(src_root: str) -> list:
+    import json
+
+    names = []
+    with open(f"{src_root}/meta/tasks.jsonl") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                names.append(json.loads(line)["task_name"])
+    if not names:
+        raise ValueError(f"No tasks found in {src_root}/meta/tasks.jsonl.")
+    return names
+
+
+def main() -> None:
+    import argparse
+
+    p = argparse.ArgumentParser(
+        description="Convert a BEHAVIOR R1Pro LeRobot dataset from 23-dim joint "
+        "actions to 21-dim EEF actions (state-based, no FK): absolute_eef "
+        "([p_{t+1}, axisangle(q_{t+1})]) or delta_eef ([p_{t+1}-p_t, relrot]).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--src-root", required=True, help="Original 23-dim joint dataset root.")
+    p.add_argument("--dst-root", required=True, help="Destination EEF dataset root (outside src).")
+    p.add_argument("--mode", required=True, choices=("absolute_eef", "delta_eef"))
+    p.add_argument("--tasks", nargs="*", default=None, help="Task name(s); omit for ALL.")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--omnigibson-version", default="unknown")
+    p.add_argument("--converter-version", default="1")
+    p.add_argument("--progress-every", type=int, default=200)
+    args = p.parse_args()
+
+    task_names = args.tasks if args.tasks else _all_task_names(args.src_root)
+    print(f"[convert-eef:{args.mode}] {len(task_names)} task(s): {args.src_root} -> {args.dst_root}", flush=True)
+    r = convert_dataset(
+        args.src_root, args.dst_root, task_names, args.mode,
+        converter_version=args.converter_version,
+        omnigibson_version=args.omnigibson_version,
+        overwrite=args.overwrite, progress_every=args.progress_every,
+    )
+    print(f"[convert-eef:{args.mode}] DONE: {r['episodes']} episodes, {r['frames']} frames -> {r['dst_root']}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

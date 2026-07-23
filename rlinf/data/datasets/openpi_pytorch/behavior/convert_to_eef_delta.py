@@ -705,6 +705,146 @@ def _task_indices_for_names(src_root, task_names):
     return {t: name_to_idx[t] for t in task_names}
 
 
+def _convert_dataset_impl(
+    src_root: str,
+    dst_root: str,
+    task_names: list,
+    episode_convert_fn,
+    provenance: dict,
+    *,
+    overwrite: bool = False,
+    progress_every: int = 0,
+) -> dict:
+    """Core LeRobot dataset converter shared by the FK-based and state-based EEF
+    paths. ``episode_convert_fn(action23, state256) -> action21 (float)`` supplies
+    the per-episode action transform; ``provenance`` is written verbatim to
+    ``meta/eef_delta_provenance.json``. Symlinks videos/ and per-task episode meta
+    (never copies), regenerates meta filtered to the converted tasks with recomputed
+    21-dim action stats, and refuses in-place / nested conversion.
+    """
+    import json
+    import os
+    import shutil
+    import time
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    src_root = os.path.abspath(src_root)
+    dst_root = os.path.abspath(dst_root)
+    if dst_root == src_root or dst_root.startswith(src_root + os.sep):
+        raise ValueError(
+            f"Refusing in-place / nested conversion: dst_root ({dst_root}) must "
+            f"be outside src_root ({src_root})."
+        )
+    if os.path.exists(dst_root):
+        if not overwrite:
+            raise FileExistsError(f"dst_root exists: {dst_root} (pass overwrite=True).")
+        shutil.rmtree(dst_root)
+
+    task_idx = _task_indices_for_names(src_root, task_names)
+    selected_task_indices = set(task_idx.values())
+
+    os.makedirs(f"{dst_root}/meta", exist_ok=True)
+    os.makedirs(f"{dst_root}/data", exist_ok=True)
+    # Reuse videos by symlink — never a second physical copy (they are large).
+    os.symlink(f"{src_root}/videos", f"{dst_root}/videos")
+    # Per-episode meta (meta/episodes/task-XXXX/episode_*.json) is action-
+    # independent env-config metadata that the LeRobot loader asserts exists.
+    src_ep_meta = f"{src_root}/meta/episodes"
+    if os.path.isdir(src_ep_meta):
+        os.makedirs(f"{dst_root}/meta/episodes", exist_ok=True)
+        for tidx in sorted(selected_task_indices):
+            task_dir = f"task-{tidx:04d}"
+            src_task = f"{src_ep_meta}/{task_dir}"
+            if os.path.isdir(src_task):
+                os.symlink(src_task, f"{dst_root}/meta/episodes/{task_dir}")
+
+    info = json.load(open(f"{src_root}/meta/info.json"))
+    chunks_size = int(info.get("chunks_size", 10000))
+
+    sel_episodes = []
+    with open(f"{src_root}/meta/episodes.jsonl") as fh:
+        for line in fh:
+            d = json.loads(line)
+            if d["episode_index"] // chunks_size in selected_task_indices:
+                sel_episodes.append(d)
+    sel_ep_set = {d["episode_index"] for d in sel_episodes}
+
+    new_action_stats = {}
+    total_frames = 0
+    data_tmpl = info["data_path"]
+    total_eps = len(sel_episodes)
+    t0 = time.time()
+    for i, d in enumerate(sel_episodes, 1):
+        ei = d["episode_index"]
+        chunk = ei // chunks_size
+        rel = data_tmpl.format(episode_chunk=chunk, episode_index=ei)
+        os.makedirs(os.path.dirname(f"{dst_root}/{rel}"), exist_ok=True)
+
+        table = pq.read_table(f"{src_root}/{rel}")
+        cols = table.column_names
+        pdf = table.to_pandas()
+        act23 = np.stack([np.asarray(a, dtype=np.float64) for a in pdf["action"]])
+        st256 = np.stack([np.asarray(s, dtype=np.float64) for s in pdf["observation.state"]])
+        act21 = np.asarray(episode_convert_fn(act23, st256), dtype=np.float32)
+        pdf["action"] = list(act21)
+        out_table = pa.Table.from_pandas(pdf[cols], preserve_index=False)
+        pq.write_table(out_table, f"{dst_root}/{rel}")
+
+        new_action_stats[ei] = action_stats(act21)
+        total_frames += int(d.get("length", act21.shape[0]))
+
+        if progress_every and (i % progress_every == 0 or i == total_eps):
+            elapsed = time.time() - t0
+            rate = i / elapsed if elapsed > 0 else 0.0
+            eta_h = (total_eps - i) / rate / 3600.0 if rate > 0 else 0.0
+            print(
+                f"[convert] {i}/{total_eps} episodes, {total_frames} frames, "
+                f"{rate:.2f} eps/s, elapsed {elapsed / 3600.0:.2f} h, "
+                f"ETA {eta_h:.2f} h",
+                flush=True,
+            )
+
+    with open(f"{src_root}/meta/episodes_stats.jsonl") as fin, open(
+        f"{dst_root}/meta/episodes_stats.jsonl", "w"
+    ) as fout:
+        for line in fin:
+            rec = json.loads(line)
+            if rec["episode_index"] in sel_ep_set:
+                rec["stats"]["action"] = new_action_stats[rec["episode_index"]]
+                fout.write(json.dumps(rec) + "\n")
+
+    with open(f"{dst_root}/meta/episodes.jsonl", "w") as fout:
+        for d in sel_episodes:
+            fout.write(json.dumps(d) + "\n")
+    with open(f"{src_root}/meta/tasks.jsonl") as fin, open(
+        f"{dst_root}/meta/tasks.jsonl", "w"
+    ) as fout:
+        for line in fin:
+            if json.loads(line)["task_index"] in selected_task_indices:
+                fout.write(line if line.endswith("\n") else line + "\n")
+
+    info["features"]["action"]["shape"] = [NEW_ACTION_DIM]
+    info["total_episodes"] = len(sel_episodes)
+    info["total_frames"] = total_frames
+    info["total_tasks"] = len(selected_task_indices)
+    if "total_videos" in info:
+        num_video_keys = len(info.get("video_keys") or []) or (
+            sum(1 for f in info.get("features", {}).values() if f.get("dtype") == "video")
+        )
+        info["total_videos"] = len(sel_episodes) * num_video_keys
+    info["total_chunks"] = len(selected_task_indices)
+    json.dump(info, open(f"{dst_root}/meta/info.json", "w"), indent=4)
+
+    prov = dict(provenance)
+    prov.setdefault("tasks", list(task_names))
+    prov.setdefault("task_indices", task_idx)
+    prov.setdefault("source_root", src_root)
+    json.dump(prov, open(f"{dst_root}/meta/eef_delta_provenance.json", "w"), indent=2)
+    return {"episodes": len(sel_episodes), "frames": total_frames, "dst_root": dst_root}
+
+
 def convert_dataset(
     src_root: str,
     dst_root: str,
@@ -727,140 +867,7 @@ def convert_dataset(
     converted episodes (and once at the end). 0 (default) stays silent, so
     existing callers and tests are unchanged.
     """
-    import json
-    import os
-    import shutil
-    import time
-
-    import pyarrow.parquet as pq
-
-    src_root = os.path.abspath(src_root)
-    dst_root = os.path.abspath(dst_root)
-    if dst_root == src_root or dst_root.startswith(src_root + os.sep):
-        raise ValueError(
-            f"Refusing in-place / nested conversion: dst_root ({dst_root}) must "
-            f"be outside src_root ({src_root})."
-        )
-    if os.path.exists(dst_root):
-        if not overwrite:
-            raise FileExistsError(f"dst_root exists: {dst_root} (pass overwrite=True).")
-        shutil.rmtree(dst_root)
-
     fk = UrdfArmFK(urdf_path)
-    task_idx = _task_indices_for_names(src_root, task_names)
-    selected_task_indices = set(task_idx.values())
-
-    os.makedirs(f"{dst_root}/meta", exist_ok=True)
-    os.makedirs(f"{dst_root}/data", exist_ok=True)
-    # Reuse videos by symlink — never a second physical copy (they are large).
-    os.symlink(f"{src_root}/videos", f"{dst_root}/videos")
-    # Per-episode meta (meta/episodes/task-XXXX/episode_*.json) is action-
-    # independent env-config metadata that the LeRobot loader asserts exists.
-    # Symlink the selected tasks' per-episode meta dirs (small JSON, unchanged by
-    # the action conversion) rather than copy.
-    src_ep_meta = f"{src_root}/meta/episodes"
-    if os.path.isdir(src_ep_meta):
-        os.makedirs(f"{dst_root}/meta/episodes", exist_ok=True)
-        for tidx in sorted(_task_indices_for_names(src_root, task_names).values()):
-            task_dir = f"task-{tidx:04d}"
-            src_task = f"{src_ep_meta}/{task_dir}"
-            if os.path.isdir(src_task):
-                os.symlink(src_task, f"{dst_root}/meta/episodes/{task_dir}")
-
-    info = json.load(open(f"{src_root}/meta/info.json"))
-    chunks_size = int(info.get("chunks_size", 10000))
-
-    # Filter episodes.jsonl / episodes_stats.jsonl to the selected tasks.
-    sel_episodes = []
-    with open(f"{src_root}/meta/episodes.jsonl") as fh:
-        for line in fh:
-            d = json.loads(line)
-            if d["episode_index"] // chunks_size in selected_task_indices:
-                sel_episodes.append(d)
-    sel_ep_set = {d["episode_index"] for d in sel_episodes}
-
-    # Convert each episode's parquet, collect new action stats.
-    new_action_stats = {}
-    total_frames = 0
-    data_tmpl = info["data_path"]
-    total_eps = len(sel_episodes)
-    t0 = time.time()
-    for i, d in enumerate(sel_episodes, 1):
-        ei = d["episode_index"]
-        chunk = ei // chunks_size
-        rel = data_tmpl.format(episode_chunk=chunk, episode_index=ei)
-        src_parquet = f"{src_root}/{rel}"
-        dst_parquet = f"{dst_root}/{rel}"
-        os.makedirs(os.path.dirname(dst_parquet), exist_ok=True)
-
-        table = pq.read_table(src_parquet)
-        cols = table.column_names
-        pdf = table.to_pandas()
-        act23 = np.stack([np.asarray(a, dtype=np.float64) for a in pdf["action"]])
-        st256 = np.stack([np.asarray(s, dtype=np.float64) for s in pdf["observation.state"]])
-        act21 = convert_episode_actions(act23, st256, fk).astype(np.float32)
-        pdf["action"] = list(act21)
-        # Preserve original column order and schema (only action changes width).
-        import pyarrow as pa
-
-        out_table = pa.Table.from_pandas(pdf[cols], preserve_index=False)
-        pq.write_table(out_table, dst_parquet)
-
-        new_action_stats[ei] = action_stats(act21)
-        total_frames += int(d.get("length", act21.shape[0]))
-
-        if progress_every and (i % progress_every == 0 or i == total_eps):
-            elapsed = time.time() - t0
-            rate = i / elapsed if elapsed > 0 else 0.0
-            eta_h = (total_eps - i) / rate / 3600.0 if rate > 0 else 0.0
-            print(
-                f"[convert] {i}/{total_eps} episodes, {total_frames} frames, "
-                f"{rate:.2f} eps/s, elapsed {elapsed / 3600.0:.2f} h, "
-                f"ETA {eta_h:.2f} h",
-                flush=True,
-            )
-
-    # Regenerate meta/episodes_stats.jsonl: copy each selected episode's stats,
-    # replacing only the "action" entry (state and image stats are unchanged).
-    with open(f"{src_root}/meta/episodes_stats.jsonl") as fin, open(
-        f"{dst_root}/meta/episodes_stats.jsonl", "w"
-    ) as fout:
-        for line in fin:
-            rec = json.loads(line)
-            if rec["episode_index"] in sel_ep_set:
-                rec["stats"]["action"] = new_action_stats[rec["episode_index"]]
-                fout.write(json.dumps(rec) + "\n")
-
-    # episodes.jsonl (filtered), tasks.jsonl (filtered), info.json (action 21).
-    with open(f"{dst_root}/meta/episodes.jsonl", "w") as fout:
-        for d in sel_episodes:
-            fout.write(json.dumps(d) + "\n")
-    with open(f"{src_root}/meta/tasks.jsonl") as fin, open(
-        f"{dst_root}/meta/tasks.jsonl", "w"
-    ) as fout:
-        for line in fin:
-            if json.loads(line)["task_index"] in selected_task_indices:
-                fout.write(line if line.endswith("\n") else line + "\n")
-
-    info["features"]["action"]["shape"] = [NEW_ACTION_DIM]
-    info["total_episodes"] = len(sel_episodes)
-    info["total_frames"] = total_frames
-    info["total_tasks"] = len(selected_task_indices)
-    # Recompute total_videos for the filtered task set (one clip per video key
-    # per episode) so the metadata matches the selected episodes rather than the
-    # full source dataset. The clips themselves are reused via the videos/ symlink.
-    if "total_videos" in info:
-        num_video_keys = len(info.get("video_keys") or []) or (
-            sum(
-                1
-                for f in info.get("features", {}).values()
-                if f.get("dtype") == "video"
-            )
-        )
-        info["total_videos"] = len(sel_episodes) * num_video_keys
-    info["total_chunks"] = len(selected_task_indices)
-    json.dump(info, open(f"{dst_root}/meta/info.json", "w"), indent=4)
-
     provenance = {
         "control_mode": "eef_delta_pose",
         "action_env_dim": NEW_ACTION_DIM,
@@ -874,15 +881,19 @@ def convert_dataset(
         "cspace_joints": CSPACE_JOINTS,
         "eef_offset_pos": EEF_OFFSET_POS.tolist(),
         "eef_offset_quat_xyzw": EEF_OFFSET_QUAT_XYZW.tolist(),
-        "tasks": list(task_names),
-        "task_indices": task_idx,
         "converter_version": converter_version,
         "omnigibson_version": omnigibson_version,
         "urdf_path": urdf_path,
-        "source_root": src_root,
     }
-    json.dump(provenance, open(f"{dst_root}/meta/eef_delta_provenance.json", "w"), indent=2)
-    return {"episodes": len(sel_episodes), "frames": total_frames, "dst_root": dst_root}
+    return _convert_dataset_impl(
+        src_root,
+        dst_root,
+        task_names,
+        lambda a23, s256: convert_episode_actions(a23, s256, fk),
+        provenance,
+        overwrite=overwrite,
+        progress_every=progress_every,
+    )
 
 
 # --------------------------------------------------------------------------- #
