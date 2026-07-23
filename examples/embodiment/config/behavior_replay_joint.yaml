@@ -111,7 +111,7 @@ env:
     omni_config:
       env:
         action_frequency: 30
-        physics_frequency: 120
+        physics_frequency: 240
         rendering_frequency: 30
       task:
         activity_instance_dir: ${oc.env:OMNIGIBSON_DATA_PATH}/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances

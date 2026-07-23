@@ -27,9 +27,9 @@ policy_wrapper: null
 omni_config:
   env:
     env_wrapper: rgb
-    action_frequency: 60
+    action_frequency: 30
     physics_frequency: 120
-    rendering_frequency: 60
+    rendering_frequency: 30
     device: null
     automatic_reset: False
     flatten_obs_space: False
