@@ -149,7 +149,7 @@ class TestControlModeConstants:
 
 
 class TestNormStatsManifestGuard:
-    def _write_asset(self, tmp_path, control_mode, action_env_dim):
+    def _write_asset(self, tmp_path, control_mode, action_env_dim, state_token="__unset__"):
         import json
 
         d = tmp_path / "asset"
@@ -165,6 +165,8 @@ class TestNormStatsManifestGuard:
                 "control_mode": control_mode,
                 "action_env_dim": action_env_dim,
             }
+            if state_token != "__unset__":
+                payload["metadata"]["state_token"] = state_token
         (d / "norm_stats.json").write_text(json.dumps(payload))
         return str(tmp_path), "asset"
 
@@ -211,6 +213,159 @@ class TestNormStatsManifestGuard:
         ad, aid = self._write_asset(tmp_path, None, None)
         with pytest.raises(ValueError):
             validate_norm_stats_for_control_mode(ad, aid, "eef_delta_pose", 21)
+
+    def test_state_token_mismatch_rejected(self, tmp_path):
+        # An abs_eef run pointed at an abs_joint (align) asset must be rejected: the
+        # loader would extract the EEF state layout but normalize with joint stats.
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        ad, aid = self._write_asset(tmp_path, "absolute_eef", 21, state_token="align")
+        with pytest.raises(ValueError, match="state_token"):
+            validate_norm_stats_for_control_mode(
+                ad, aid, "absolute_eef", 21, state_token="abs_eef"
+            )
+
+    def test_state_token_match_passes_through_aliases(self, tmp_path):
+        # Legacy alias 'align' in the manifest must compare EQUAL to canonical
+        # 'abs_joint' (resolve_state_token normalizes both sides).
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        ad, aid = self._write_asset(tmp_path, "eef_delta_pose", 21, state_token="align")
+        validate_norm_stats_for_control_mode(
+            ad, aid, "eef_delta_pose", 21, state_token="abs_joint"
+        )
+
+    def test_state_token_absent_in_manifest_is_backcompat(self, tmp_path):
+        # An older asset whose manifest records no state token is accepted even when
+        # the run passes a state_token (cannot check what was not recorded).
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        ad, aid = self._write_asset(tmp_path, "eef_delta_pose", 21)  # no state_token
+        validate_norm_stats_for_control_mode(
+            ad, aid, "eef_delta_pose", 21, state_token="abs_eef"
+        )
+
+    def test_real_shipped_asset_rejects_wrong_state_token(self):
+        # Real-asset coverage (not a synthetic tmp manifest): the shipped
+        # turn_on_radio_eef_delta stats were built with the align layout, so a run
+        # that extracts the comet layout must be rejected rather than silently
+        # normalizing a comet-ordered state with align stats.
+        import os
+
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        ad = "/mnt/public/xzxuan/repos/RLinf/outputs/norm_stats"
+        aid = "turn_on_radio_eef_delta"
+        if not os.path.isdir(os.path.join(ad, aid)):
+            pytest.skip("shipped eef_delta stats asset not present on this box")
+        # Matching layout passes; the cross-layout run is rejected.
+        validate_norm_stats_for_control_mode(ad, aid, "eef_delta_pose", 21, state_token="align")
+        with pytest.raises(ValueError, match="state_token"):
+            validate_norm_stats_for_control_mode(
+                ad, aid, "eef_delta_pose", 21, state_token="comet"
+            )
+
+
+class TestAbsEefStateStatsFromFrames:
+    """abs_eef STATE stats must be computed from RAW frames, not by mapping the
+    aggregated 256-dim summary stats through the nonlinear quat2axisangle."""
+
+    def _write_dataset(self, tmp_path, frames256):
+        import json
+
+        pa = pytest.importorskip("pyarrow")
+        pq = pytest.importorskip("pyarrow.parquet")
+        pytest.importorskip("pandas")
+        import pandas as pd
+
+        root = tmp_path / "ds"
+        (root / "meta").mkdir(parents=True)
+        (root / "data" / "chunk-0000").mkdir(parents=True)
+        info = {
+            "chunks_size": 10000,
+            "data_path": "data/chunk-{episode_chunk:04d}/episode_{episode_index:08d}.parquet",
+        }
+        (root / "meta" / "info.json").write_text(json.dumps(info))
+        # Single episode (episode_index 5 -> chunk 0), so aggregate_feature_stats
+        # over one episode is the identity and the per-frame reference is exact.
+        (root / "meta" / "episodes.jsonl").write_text(
+            json.dumps({"episode_index": 5, "length": len(frames256)}) + "\n"
+        )
+        df = pd.DataFrame({"observation.state": [list(map(float, v)) for v in frames256]})
+        pq.write_table(pa.Table.from_pandas(df, preserve_index=False),
+                       str(root / "data" / "chunk-0000" / "episode_00000005.parquet"))
+        return str(root)
+
+    def _frames_with_spread_quats(self, n=64):
+        # 256-dim proprio frames; the two arm-quaternion slices carry random unit
+        # quaternions spread widely so mean(axisangle) != axisangle(mean_quat).
+        rng = np.random.default_rng(0)
+        frames = rng.standard_normal((n, 256))
+        for sl in (slice(189, 193), slice(228, 232)):  # eef_left_quat / eef_right_quat
+            q = rng.standard_normal((n, 4))
+            q /= np.linalg.norm(q, axis=1, keepdims=True)
+            frames[:, sl] = q
+        return frames
+
+    def test_raw_frame_stats_match_per_frame_reference(self, tmp_path):
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            action_stats,
+            compute_extracted_state_stats_from_frames,
+        )
+        from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+            extract_state_from_proprio,
+        )
+
+        frames = self._frames_with_spread_quats()
+        root = self._write_dataset(tmp_path, frames)
+
+        got = compute_extracted_state_stats_from_frames(root, "abs_eef")
+        # Exact reference: extract every frame, take stats directly (one episode).
+        ref = action_stats(np.asarray(extract_state_from_proprio(frames, "abs_eef")))
+        for k in ("mean", "std", "q01", "q99"):
+            np.testing.assert_allclose(
+                np.asarray(got[k]), np.asarray(ref[k]), rtol=1e-9, atol=1e-9,
+                err_msg=f"raw-frame stat {k} must equal the per-frame reference",
+            )
+        assert len(got["mean"]) == 21  # abs_eef meaningful length
+
+    def test_raw_frame_stats_differ_from_summary_mapping_on_orientation(self, tmp_path):
+        # The bug: mapping the aggregated 256-dim summary through
+        # extract_state_from_proprio corrupts the 6 axis-angle dims. The correct
+        # (raw-frame) stats must differ there, while the position dims agree.
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            compute_extracted_state_stats_from_frames,
+        )
+        from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+            extract_state_from_proprio,
+        )
+
+        frames = self._frames_with_spread_quats()
+        root = self._write_dataset(tmp_path, frames)
+        got = compute_extracted_state_stats_from_frames(root, "abs_eef")
+
+        # Reproduce the OLD (buggy) summary-mapping for the mean.
+        wrong_mean = np.asarray(
+            extract_state_from_proprio(frames.mean(axis=0), "abs_eef")
+        )
+        ax = [10, 11, 12, 17, 18, 19]  # axis-angle dims (nonlinear)
+        pos = [7, 8, 9, 14, 15, 16]  # position dims (linear index-select)
+        got_mean = np.asarray(got["mean"])
+        assert np.abs(got_mean[ax] - wrong_mean[ax]).max() > 1e-2, (
+            "orientation stats must differ from the summary-mapping (the bug)"
+        )
+        np.testing.assert_allclose(
+            got_mean[pos], wrong_mean[pos], rtol=1e-9, atol=1e-9,
+            err_msg="position dims are linear and must match the summary mapping",
+        )
 
 
 class TestControlModeResolver:
@@ -787,9 +942,17 @@ class TestShippedConfigSingleSwitch:
             assert rd["asset_id"] == dasset, name
             # And the resolved artifacts must pass the SAME validators the loader
             # runs: skip only if the real artifact is genuinely absent on this box.
+            # And the resolved artifacts must pass the SAME validators the loader
+            # runs: skip only if the real artifact is genuinely absent on this box.
+            # (state_token is NOT asserted here: the legacy eef_delta asset was built
+            # with the align layout, while a comet base config keeps state_token=comet
+            # -- that cross-layout tension is a legacy-mode limitation, and the
+            # state-token guard itself is covered by TestNormStatsManifestGuard and the
+            # abs_eef shipped-config test.)
             if os.path.isdir(droot) and os.path.isdir(os.path.join(dassets, dasset)):
                 validate_norm_stats_for_control_mode(
-                    rd["assets_dir"], rd["asset_id"], "eef_delta_pose", 21, model_action_dim=32
+                    rd["assets_dir"], rd["asset_id"], "eef_delta_pose", 21,
+                    model_action_dim=32,
                 )
                 validate_converted_dataset(
                     rd["behavior_dataset_root"], "eef_delta_pose", list(cd.data.tasks)
@@ -964,7 +1127,8 @@ class TestStateBasedEefShippedConfigs:
                 os.path.join(r["assets_dir"], r["asset_id"])
             ):
                 validate_norm_stats_for_control_mode(
-                    r["assets_dir"], r["asset_id"], mode, 21, model_action_dim=32
+                    r["assets_dir"], r["asset_id"], mode, 21, model_action_dim=32,
+                    state_token=str(op.state_token),
                 )
                 validate_converted_dataset(
                     r["behavior_dataset_root"], mode, list(cfg.data.tasks)

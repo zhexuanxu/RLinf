@@ -47,7 +47,11 @@ frames, this script:
    (the mean of a sum equals the sum of the means), but only approximate for the
    gripper ``std``/``q01``/``q99`` (the two finger channels are summed). This is
    the same trade-off the upstream openpi producer accepts to build the canonical
-   asset.
+   asset. The ``abs_eef`` state layout is different: its arm channels are
+   ``quat2axisangle(quat)``, a NONLINEAR map, so mapping the aggregated summary
+   stats would be meaningless. For ``--state-token abs_eef`` the STATE stats are
+   therefore computed from RAW frames (extract each frame, then aggregate with the
+   same count-weighted method as the actions); the action stats are unaffected.
 
 Environment
 -----------
@@ -224,7 +228,35 @@ def compute_norm_stats(
             f"action length {expected_action_dim} for control_mode={control_mode!r}."
         )
 
+    from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+        resolve_state_token,
+    )
+
     norm_stats: dict[str, dict[str, list[float]]] = {"state": {}, "actions": {}}
+    if resolve_state_token(state_order) == "abs_eef":
+        # abs_eef maps each arm quaternion through quat2axisangle -- a NONLINEAR
+        # transform -- so mapping the AGGREGATED 256-dim summary stats through
+        # extract_state_from_proprio (quat2axisangle(mean_quat), and axis-angle of a
+        # std/quantile quaternion) is meaningless. Compute the STATE stats from RAW
+        # frames instead (extract per frame, then aggregate); the ACTION stats still
+        # come from the converted-dataset episode/meta aggregation above.
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            compute_extracted_state_stats_from_frames,
+        )
+
+        state_frame_stats = compute_extracted_state_stats_from_frames(
+            dataset_root, state_order, tasks=tasks, episodes=episodes
+        )
+        for key in _STAT_KEYS:
+            state_vec = np.asarray(state_frame_stats[key])
+            action_vec = np.asarray(stats[_ACTION_SRC_KEY][key])
+            norm_stats["state"][key] = _pad_to_dim(state_vec, action_dim).tolist()
+            norm_stats["actions"][key] = _pad_to_dim(action_vec, action_dim).tolist()
+        return norm_stats
+
+    # Linear joint layouts (abs_joint_old / abs_joint): index-selection + gripper
+    # sum, so mapping the aggregated summary stats is exact (mean) / the documented
+    # gripper approximation (std/q01/q99); no raw-frame read needed.
     for key in _STAT_KEYS:
         state_vec = extract_state_from_proprio(
             np.asarray(stats[_STATE_SRC_KEY][key]), state_order

@@ -173,18 +173,20 @@ def get_model(cfg, torch_dtype=None):
 
     norm_stats = load_norm_stats(assets_dir, asset_id)
     # Reject a stats asset whose manifest disagrees with the run's control mode /
-    # action dim, so a 21-dim delta action can never be normalized against a
-    # 23-dim joint stats file.
+    # action dim / state layout, so a 21-dim delta action can never be normalized
+    # against a 23-dim joint stats file, nor an abs_eef run against an abs_joint
+    # asset (state layouts are not interchangeable).
+    state_order = _get_state_order(model_cfg)
     validate_norm_stats_for_control_mode(
         assets_dir, asset_id, control_mode, action_env_dim,
         model_action_dim=int(pi0_config.action_dim),
+        state_token=state_order,
     )
     tokenizer = PaligemmaTokenizer(
         model_cfg.paligemma_tokenizer, max_len=pi0_config.max_token_len
     )
     # The eval processor is selected by env (``env_type`` resolved above;
     # ``openpi.env`` defaults to "behavior", the only env registered today).
-    state_order = _get_state_order(model_cfg)
     processor = get_eval_processer(
         env_type,
         norm_stats,

@@ -695,6 +695,7 @@ def build_behavior_sft_dataloader(
     validate_norm_stats_for_control_mode(
         assets_dir, asset_id, control_mode, expected_env_dim,
         model_action_dim=int(model_cfg.openpi.model_action_dim),
+        state_token=state_order,
     )
     # Reject a dataset root that does not match the control mode: for
     # eef_delta_pose the root must be a converted delta-EEF dataset (action

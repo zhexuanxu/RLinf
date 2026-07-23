@@ -513,6 +513,80 @@ def aggregate_feature_stats(stats_ft_list: list) -> dict:
     }
 
 
+def compute_extracted_state_stats_from_frames(
+    dataset_root: str,
+    state_token: str,
+    tasks: list | None = None,
+    episodes: list | None = None,
+) -> dict:
+    """Aggregate stats of the EXTRACTED policy state, read from RAW frames.
+
+    Mirrors the action-stats pipeline (per-episode :func:`action_stats` ->
+    :func:`aggregate_feature_stats`) but for ``observation.state`` mapped through
+    ``extract_state_from_proprio`` **per frame**. This is REQUIRED for a nonlinear
+    state layout: ``abs_eef`` applies ``quat2axisangle`` to each arm quaternion, so
+    aggregating the raw 256-dim ``observation.state`` summary stats and THEN mapping
+    them (``quat2axisangle(mean_quat)``) is meaningless — the orientation dims come
+    out as the axis-angle of a mean/std/quantile quaternion, not the mean/std/
+    quantile of the per-frame axis-angles. Extracting each frame first and
+    aggregating the results is correct (and is also exact for the linear joint
+    layouts, though those keep the cheaper summary-mapping fast path).
+
+    ``tasks`` / ``episodes`` restrict which episodes are aggregated (mirroring
+    :func:`compute_norm_stats`); omit both to aggregate every episode in the
+    dataset (matching ``--from-episodes-stats``). Only the ``observation.state``
+    column is read. Returns ``{min/max/mean/std/q01/q99/count}`` for the extracted
+    state (meaningful length, unpadded).
+    """
+    import json
+
+    import pyarrow.parquet as pq
+
+    from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+        extract_state_from_proprio,
+    )
+
+    info = json.load(open(f"{dataset_root}/meta/info.json"))
+    chunks_size = int(info.get("chunks_size", 10000))
+    data_tmpl = info["data_path"]
+
+    selected_task_indices = None
+    if tasks:
+        selected_task_indices = set(
+            _task_indices_for_names(dataset_root, list(tasks)).values()
+        )
+    episode_filter = {int(e) for e in episodes} if episodes else None
+
+    per_episode = []
+    with open(f"{dataset_root}/meta/episodes.jsonl") as fh:
+        for line in fh:
+            d = json.loads(line)
+            ei = int(d["episode_index"])
+            if episode_filter is not None and ei not in episode_filter:
+                continue
+            if (
+                selected_task_indices is not None
+                and ei // chunks_size not in selected_task_indices
+            ):
+                continue
+            rel = data_tmpl.format(episode_chunk=ei // chunks_size, episode_index=ei)
+            col = pq.read_table(
+                f"{dataset_root}/{rel}", columns=["observation.state"]
+            ).to_pandas()["observation.state"]
+            st256 = np.stack([np.asarray(s, dtype=np.float64) for s in col])
+            extracted = np.asarray(
+                extract_state_from_proprio(st256, state_token), dtype=np.float64
+            )
+            per_episode.append(action_stats(extracted))
+
+    if not per_episode:
+        raise ValueError(
+            f"no episodes matched for extracted-state stats in {dataset_root} "
+            f"(tasks={tasks}, episodes={episodes}); check --tasks/--episodes."
+        )
+    return aggregate_feature_stats(per_episode)
+
+
 def aggregate_episode_stats_from_jsonl(
     episodes_stats_path: str, feature_keys=("action", "observation.state")
 ) -> dict:

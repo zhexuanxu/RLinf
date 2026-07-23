@@ -99,7 +99,12 @@ def load_norm_stats_manifest(assets_dir, asset_id) -> dict | None:
 
 
 def validate_norm_stats_for_control_mode(
-    assets_dir, asset_id, control_mode: str, action_env_dim: int, model_action_dim=None
+    assets_dir,
+    asset_id,
+    control_mode: str,
+    action_env_dim: int,
+    model_action_dim=None,
+    state_token: str | None = None,
 ) -> None:
     """Reject a norm-stats asset whose manifest disagrees with the run.
 
@@ -115,6 +120,14 @@ def validate_norm_stats_for_control_mode(
     ``norm_stats.state.*`` arrays must be padded to that model dim -- so the
     meaningful env dim (e.g. 21) and the padded model/stat dim (e.g. 32) are both
     enforced on the real arrays, not just the manifest (AC-7).
+
+    When ``state_token`` is given, the manifest's recorded state layout (the
+    ``state_token`` field, or the legacy ``state_order`` field) must resolve to the
+    same canonical token. This guards against pointing an ``abs_eef`` run at an
+    ``abs_joint`` asset (or vice versa): the loader would extract one prompt-state
+    layout while normalizing it with another layout's stats, silently corrupting
+    the state. A manifest that records no state token is accepted (back-compat with
+    assets built before the field existed).
     """
     manifest = load_norm_stats_manifest(assets_dir, asset_id)
     if manifest is None:
@@ -141,6 +154,23 @@ def validate_norm_stats_for_control_mode(
             f"length {m_dim}, but this run expects {action_env_dim} "
             f"(control_mode={control_mode!r})."
         )
+    if state_token is not None:
+        m_state = manifest.get("state_token", manifest.get("state_order"))
+        if m_state is not None:
+            # Normalize both sides through the canonical resolver so the legacy
+            # comet/align aliases compare equal to abs_joint_old/abs_joint.
+            from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+                resolve_state_token,
+            )
+
+            if resolve_state_token(str(m_state)) != resolve_state_token(str(state_token)):
+                raise ValueError(
+                    f"norm-stats asset {assets_dir}/{asset_id} was built with "
+                    f"state_token={m_state!r}, but this run uses state_token="
+                    f"{state_token!r} (a different prompt-state layout). Point at "
+                    f"the matching asset or rebuild the stats with the run's "
+                    f"state_token."
+                )
     if model_action_dim is not None:
         m_model_dim = manifest.get("model_action_dim")
         if m_model_dim is not None and int(m_model_dim) != int(model_action_dim):
