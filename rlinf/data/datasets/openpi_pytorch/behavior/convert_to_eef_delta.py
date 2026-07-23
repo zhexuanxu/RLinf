@@ -562,14 +562,12 @@ def compute_extracted_state_stats_from_frames(
         for line in fh:
             d = json.loads(line)
             ei = int(d["episode_index"])
+            chunk = ei // chunks_size
             if episode_filter is not None and ei not in episode_filter:
                 continue
-            if (
-                selected_task_indices is not None
-                and ei // chunks_size not in selected_task_indices
-            ):
+            if selected_task_indices is not None and chunk not in selected_task_indices:
                 continue
-            rel = data_tmpl.format(episode_chunk=ei // chunks_size, episode_index=ei)
+            rel = data_tmpl.format(episode_chunk=chunk, episode_index=ei)
             col = pq.read_table(
                 f"{dataset_root}/{rel}", columns=["observation.state"]
             ).to_pandas()["observation.state"]

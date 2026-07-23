@@ -165,6 +165,7 @@ def compute_norm_stats(
     from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
         CONTROL_MODE_ACTION_ENV_DIM,
         CONTROL_MODES,
+        resolve_state_token,
     )
 
     if control_mode not in CONTROL_MODES:
@@ -227,10 +228,6 @@ def compute_norm_stats(
             f"action_dim (pad target {action_dim}) must be >= the meaningful "
             f"action length {expected_action_dim} for control_mode={control_mode!r}."
         )
-
-    from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
-        resolve_state_token,
-    )
 
     norm_stats: dict[str, dict[str, list[float]]] = {"state": {}, "actions": {}}
     if resolve_state_token(state_order) == "abs_eef":
