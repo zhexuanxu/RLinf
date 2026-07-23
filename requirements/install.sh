@@ -74,7 +74,7 @@ GITHUB_PREFIX=""
 NO_ROOT=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
-SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "gr00t_n1d6" "dexbotic" "starvla" "lingbotvla" "dreamzero" "qwen3_vl" "abot_m0")
+SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "openpi_pytorch" "gr00t" "gr00t_n1d6" "dexbotic" "starvla" "lingbotvla" "dreamzero" "qwen3_vl" "abot_m0")
 SUPPORTED_ENVS=("behavior" "maniskill_libero" "libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "franka-dexhand" "frankasim" "robotwin" "habitat" "opensora" "wan" "genesis" "xsquare_turtle2" "liberopro" "liberoplus" "roboverse" "embodichain" "d4rl" "dosw1" "gim_arm" "dummy")
 
 
@@ -604,7 +604,13 @@ apply_torch_override() {
 
     PYPROJECT_BACKUP="${PYPROJECT_FILE}.rlinf-torch-bak.$$"
     cp "$PYPROJECT_FILE" "$PYPROJECT_BACKUP"
-    trap 'restore_pyproject' EXIT INT TERM HUP
+    # A single bash EXIT trap is in effect, so this replaces setup_mirror's
+    # `trap 'unset_mirror'`. Chain unset_mirror here so mirror cleanup (the global
+    # git url.insteadOf) still runs on every exit path when --use-mirror is combined
+    # with a pyproject-rewrite trigger (--torch / ROCm / Ascend / torch>2.6). Both
+    # handlers are internally guarded (restore_pyproject no-ops without a backup;
+    # unset_mirror no-ops when USE_MIRRORS=0), so running both is always safe.
+    trap 'restore_pyproject; unset_mirror' EXIT INT TERM HUP
 
     if [ "$PLATFORM_RELAX_TORCHCODEC" -eq 1 ]; then
         # The pyproject.toml `torchcodec==0.2` override only has wheels for
@@ -1929,7 +1935,9 @@ main() {
                 openvla-oft)
                     install_openvla_oft_model
                     ;;
-                openpi)
+                openpi | openpi_pytorch)
+                    # openpi_pytorch (SupportedModel in rlinf/config.py) is the
+                    # pi0.5 PyTorch path; it reuses the OpenPI dependency env.
                     install_openpi_model
                     ;;
                 starvla)
