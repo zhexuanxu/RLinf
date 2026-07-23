@@ -995,7 +995,17 @@ def apply_behavior_control_mode(cfg):
             f"{expected_env_dim} (the model still pads to "
             f"openpi.model_action_dim)."
         )
-    if control_mode == "eef_delta_pose":
+    # EEF control modes map both arms onto the OmniGibson IK controller. The IK
+    # `mode` differs: absolute_eef re-anchors to an absolute base-frame pose
+    # (absolute_pose); delta_eef / legacy eef_delta_pose apply a base-frame delta
+    # (pose_delta_ori). Replace the full arm dicts (no stale JointController keys).
+    _IK_MODE = {
+        "absolute_eef": "absolute_pose",
+        "delta_eef": "pose_delta_ori",
+        "eef_delta_pose": "pose_delta_ori",
+    }
+    if control_mode in _IK_MODE:
+        ik_mode = _IK_MODE[control_mode]
         for env_split in ("train", "eval"):
             env_cfg = cfg.env.get(env_split)
             if env_cfg is None or env_cfg.get("omni_config") is None:
@@ -1004,7 +1014,7 @@ def apply_behavior_control_mode(cfg):
             for arm in ("arm_left", "arm_right"):
                 controller_config[arm] = {
                     "name": "InverseKinematicsController",
-                    "mode": "pose_delta_ori",
+                    "mode": ik_mode,
                     "command_input_limits": None,
                     "command_output_limits": None,
                 }

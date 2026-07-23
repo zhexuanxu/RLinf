@@ -50,6 +50,7 @@ from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
     CONTROL_MODES,
     STATE_ORDERS,
     BehaviorInputs,
+    resolve_state_token,
 )
 from rlinf.models.embodiment.openpi_pytorch.utils.image_tools import resize_with_pad
 from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
@@ -634,12 +635,13 @@ def build_behavior_sft_dataloader(
             "actor.model.openpi.discrete_state_input must be a boolean, got "
             f"{discrete_state_input!r}."
         )
-    state_order = str(model_cfg.openpi.get("state_order", "comet"))
-    if state_order not in STATE_ORDERS:
-        raise ValueError(
-            f"actor.model.openpi.state_order must be one of {STATE_ORDERS}, got "
-            f"{state_order!r}."
-        )
+    # Prompt state channel layout. Canonical key is openpi.state_token
+    # (abs_joint_old / abs_joint / abs_eef); the legacy openpi.state_order
+    # (comet / align) still resolves. resolve_state_token normalizes + validates.
+    raw_state_token = model_cfg.openpi.get(
+        "state_token", model_cfg.openpi.get("state_order", "abs_joint_old")
+    )
+    state_order = resolve_state_token(str(raw_state_token))
     # Robot action space. "joint_absolute" is the original 23-dim absolute-joint
     # dataset; "eef_delta_pose" is the 21-dim delta-EEF converted dataset. The
     # field is REQUIRED for BEHAVIOR pi0.5 SFT (every shipped template declares

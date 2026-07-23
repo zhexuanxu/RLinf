@@ -50,18 +50,17 @@ def _get_discrete_state_input(model_cfg) -> bool:
 
 
 def _get_state_order(model_cfg) -> str:
-    """Read and validate the proprio->state channel ordering from YAML."""
+    """Read + validate the proprio->state channel layout from YAML.
+
+    Canonical key is ``openpi.state_token`` (abs_joint_old / abs_joint / abs_eef);
+    the legacy ``openpi.state_order`` (comet / align) still resolves.
+    """
     from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
-        STATE_ORDERS,
+        resolve_state_token,
     )
 
-    value = str(model_cfg.get("state_order", "comet"))
-    if value not in STATE_ORDERS:
-        raise ValueError(
-            f"actor.model.openpi.state_order must be one of {STATE_ORDERS}, got "
-            f"{value!r}."
-        )
-    return value
+    value = model_cfg.get("state_token", model_cfg.get("state_order", "abs_joint_old"))
+    return resolve_state_token(str(value))
 
 
 def get_model(cfg, torch_dtype=None):

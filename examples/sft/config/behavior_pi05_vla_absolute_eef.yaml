@@ -1,0 +1,109 @@
+defaults:
+  - model/pi0_5_pytorch@actor.model
+  - training_backend/fsdp@actor.fsdp_config
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor,env,rollout: all
+
+runner:
+  task_type: sft
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "sft_behavior_pi05_vla_absolute_eef"
+    logger_backends: ["tensorboard"]
+
+  max_epochs: 20
+  max_steps: 30000
+  val_check_interval: -1
+  save_interval: 1000
+
+data:
+  # Single-switch routing: base fields point at the ORIGINAL joint dataset; the
+  # *_absolute_eef fields point at the converted absolute-EEF dataset. control_mode
+  # (actor.model.openpi.control_mode) selects which set the loader reads via
+  # resolve_behavior_paths. Both predeclared so flipping control_mode routes the
+  # dataset. The converted dataset is produced by convert_to_eef.py --mode absolute_eef.
+  train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
+  behavior_dataset_root: /mnt/public/xzxuan/data/2025-challenge-demos
+  train_data_paths_absolute_eef: /mnt/public/xzxuan/data/2025-challenge-demos-absolute-eef-t0
+  behavior_dataset_root_absolute_eef: /mnt/public/xzxuan/data/2025-challenge-demos-absolute-eef-t0
+  repo_id: "behavior-1k/2025-challenge-demos"
+  modalities: ["rgb"]
+  num_workers: 8
+  hf_cache_dir: /mnt/public/xzxuan/.cache/hf_datasets_absolute_eef
+  fine_grained_level: 0
+  tolerance_s: 1.0e-4
+  tasks: ["turning_on_radio"]
+
+algorithm:
+  adv_type: gae
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 32
+  eval_batch_size: 1
+  global_batch_size: 256
+  seed: 42
+
+  model:
+    model_path: /mnt/public/xzxuan/models/pi05_base_pytorch_new
+    # absolute_eef is a 21-dim action space (both arms 6-DoF base-frame absolute
+    # EEF pose [pos, axisangle]). Derived from control_mode via the template's
+    # control_mode_action_dims map, so no explicit action_dim override here.
+    openpi:
+      # Single-switch routing (see data: above). Base assets_dir/asset_id point at
+      # the ORIGINAL joint task-0000 stats; the *_absolute_eef fields point at the
+      # absolute-EEF stats (compute_norm_stats.py --control-mode absolute_eef
+      # --state-token abs_eef). control_mode selects which set.
+      assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id: turn_on_radio_reorder
+      assets_dir_absolute_eef: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id_absolute_eef: turn_on_radio_absolute_eef
+      paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
+      discrete_state_input: true
+      # EEF state token: arms as base-frame [pos, axisangle], consistent with the
+      # absolute_eef action space. Stats were generated with --state-token abs_eef.
+      state_token: abs_eef
+      # Absolute end-effector control (21-dim). See model/pi0_5_pytorch.yaml.
+      control_mode: absolute_eef
+
+  optim:
+    lr: 2.5e-5
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 1e-10
+    clip_grad: 1.0
+    total_training_steps: 30000
+    lr_warmup_steps: 1000
+    lr_scheduler: "openpi_cosine"
+    num_cycles: 0.5
+    min_lr: 0.0
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    use_orig_params: True
+    gradient_checkpointing: True
+    mixed_precision:
+      param_dtype: bf16
+      reduce_dtype: fp32
+      buffer_dtype: fp32
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False

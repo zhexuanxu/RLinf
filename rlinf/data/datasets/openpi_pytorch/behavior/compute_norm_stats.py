@@ -277,19 +277,22 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--state-order",
-        choices=("comet", "align"),
-        default="comet",
-        help="Proprio->state channel ordering. 'comet' = reference/checkpoint "
-        "order (both grippers at the tail); 'align' = action-aligned order "
-        "(left gripper at index 14). MUST match actor.model.openpi.state_order.",
+        "--state-token",
+        dest="state_token",
+        default="abs_joint_old",
+        help="Proprio->state channel layout (canonical state_token, legacy "
+        "state_order aliases resolve): 'abs_joint_old'(==comet) both grippers at "
+        "tail; 'abs_joint'(==align) action-aligned; 'abs_eef' arms as base-frame "
+        "EEF [pos, axisangle]. Also accepts 'comet'/'align'. MUST match "
+        "actor.model.openpi.state_token.",
     )
     parser.add_argument(
         "--control-mode",
-        choices=("joint_absolute", "eef_delta_pose"),
+        choices=("joint_absolute", "absolute_eef", "delta_eef", "eef_delta_pose"),
         default="joint_absolute",
         help="Action space. 'joint_absolute' uses the recorded 23-dim joint "
-        "action; 'eef_delta_pose' expects --dataset-root to be a converted "
-        "delta-EEF dataset with 21-dim action stats.",
+        "action; the EEF modes (absolute_eef / delta_eef / legacy eef_delta_pose) "
+        "expect --dataset-root to be a converted 21-dim EEF dataset.",
     )
     parser.add_argument(
         "--from-episodes-stats",
@@ -297,7 +300,7 @@ def _parse_args() -> argparse.Namespace:
         help="Aggregate meta/episodes_stats.jsonl directly with a faithful numpy "
         "re-implementation of OmniGibson's aggregate_stats (no OmniGibson import). "
         "Aggregates ALL episodes in the file. Recommended for a converted "
-        "delta-EEF dataset (its episodes_stats is already filtered to the "
+        "EEF dataset (its episodes_stats is already filtered to the "
         "converted tasks).",
     )
     parser.add_argument(
@@ -341,7 +344,7 @@ def main() -> None:
         tasks=args.tasks,
         episodes=args.episodes,
         action_dim=args.action_dim,
-        state_order=args.state_order,
+        state_order=args.state_token,
         control_mode=args.control_mode,
         from_episodes_stats=args.from_episodes_stats,
     )
@@ -361,7 +364,7 @@ def main() -> None:
         "control_mode": args.control_mode,
         "action_env_dim": CONTROL_MODE_ACTION_ENV_DIM[args.control_mode],
         "model_action_dim": args.action_dim,
-        "state_order": args.state_order,
+        "state_token": args.state_token,
         "tasks": manifest_tasks,
         "dataset_root": args.dataset_root,
     }
