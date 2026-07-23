@@ -32,6 +32,7 @@ from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_data_loader import
 from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_dataset import (
     TASK_NAMES_TO_INDICES,
     BehaviorSftDataset,
+    partition_chunk_indices,
 )
 from rlinf.data.datasets.openpi_pytorch.behavior.skill_language import (
     behavior_task_names,
@@ -190,3 +191,56 @@ class TestValidateTaskNames:
     def test_registry_is_single_source_of_truth(self):
         # The helper's notion of "known" is exactly TASK_NAMES_TO_INDICES.
         assert set(behavior_task_names()) == set(TASK_NAMES_TO_INDICES)
+
+
+def _make_chunk_selector(chunks, *, rank, world_size, shuffle=True):
+    """Bind ``_select_streaming_chunk`` to a stub with the attributes it reads."""
+    stub = types.SimpleNamespace(
+        chunks=list(chunks),
+        shuffle=shuffle,
+        seed=0,
+        _active_chunks=None,
+        _dist_rank=rank,
+        _dist_world_size=world_size,
+    )
+    return stub, BehaviorSftDataset._select_streaming_chunk.__get__(stub)
+
+
+class TestStreamingChunkPartition:
+    """Empty (rank, worker) partitions must not crash the streaming selector."""
+
+    def test_partition_is_empty_when_consumers_exceed_chunks(self):
+        # global_worker_id (=rank*num_workers+worker_id) >= num_chunks -> empty range.
+        assert partition_chunk_indices(1, rank=3, world_size=4, worker_id=0, num_workers=1) == []
+        # Union over all consumers still covers every chunk when chunks >= consumers.
+        got = set()
+        for r in range(4):
+            got |= set(partition_chunk_indices(8, rank=r, world_size=4, worker_id=0, num_workers=1))
+        assert got == set(range(8))
+
+    @pytest.mark.parametrize("shuffle", [True, False])
+    def test_empty_partition_falls_back_to_full_chunks(self, shuffle):
+        # 1 chunk, 4 ranks -> rank 3 gets an empty partition. Before the fix this
+        # raised ValueError (rng.integers(0, 0)) / IndexError; now it streams the
+        # full chunk set for that worker instead of crashing.
+        chunk = (0, 10, 0)
+        stub, select = _make_chunk_selector([chunk], rank=3, world_size=4, shuffle=shuffle)
+        select()  # must not raise
+        assert stub._active_chunks == [chunk]
+        assert stub.current_streaming_chunk_idx == 0
+        assert stub.current_streaming_frame_idx == chunk[0]
+
+    def test_nonempty_partition_is_unchanged(self):
+        # rank 0 / world 1 -> the worker owns every chunk (no fallback path taken).
+        chunks = [(0, 10, 0), (10, 20, 10)]
+        stub, select = _make_chunk_selector(chunks, rank=0, world_size=1, shuffle=False)
+        select()
+        assert stub._active_chunks == chunks
+        assert stub.current_streaming_frame_idx == 0
+
+    def test_truly_empty_dataset_fails_loud(self):
+        # No chunks at all is a real misconfiguration (empty dataset), not a
+        # degenerate-sharding case -> a clear error, not a silent fallback.
+        stub, select = _make_chunk_selector([], rank=0, world_size=1)
+        with pytest.raises(ValueError, match="no keyframe chunks"):
+            select()

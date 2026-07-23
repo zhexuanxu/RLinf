@@ -850,6 +850,32 @@ class BehaviorSftDataset(LeRobotDataset):
                 num_workers=num_workers,
             )
             worker_chunks = [self.chunks[i] for i in indices]
+            if not worker_chunks:
+                # Degenerate sharding: fewer keyframe chunks than the
+                # world_size*num_workers consumers, so this (rank, worker) pair got
+                # an empty partition (global_worker_id >= len(chunks)). Without this
+                # guard the shuffle path hits rng.integers(0, 0) -> ValueError and
+                # the non-shuffle path indexes an empty list. A truly empty dataset
+                # (no chunks at all) is a real misconfiguration -> fail loud;
+                # otherwise stream the full chunk set for this worker so small
+                # subsets/fixtures or many ranks*workers keep training (at the cost
+                # of cross-worker overlap, unavoidable when consumers > chunks).
+                if not self.chunks:
+                    raise ValueError(
+                        "BehaviorSftDataset has no keyframe chunks to stream (empty "
+                        "dataset); check data.tasks / task filtering."
+                    )
+                logger.warning(
+                    "BehaviorSftDataset: (rank=%d, worker=%d) got an empty chunk "
+                    "partition (%d keyframe chunks < world_size*num_workers=%d); "
+                    "streaming the full chunk set for this worker. Reduce "
+                    "num_workers or ranks to restore disjoint sharding.",
+                    rank,
+                    worker_id,
+                    len(self.chunks),
+                    world_size * num_workers,
+                )
+                worker_chunks = list(self.chunks)
             if self.shuffle:
                 rng = np.random.default_rng(self.seed + global_worker_id)
                 rng.shuffle(worker_chunks)
