@@ -910,3 +910,113 @@ class TestShippedConfigSingleSwitch:
         cfg.actor.model.openpi.action_env_dim = 23
         with pytest.raises(ValueError):
             apply_behavior_control_mode(cfg)
+
+
+class TestStateBasedEefShippedConfigs:
+    """Shipped-config coverage for the state-based EEF modes (absolute_eef /
+    delta_eef): the task-0000 SFT configs route to the real converted dataset +
+    stats (and pass the loader's validators), and the absolute_eef eval config
+    validates + maps arms to clean IK absolute_pose. Ray-free."""
+
+    SFT_DIR = "examples/sft/config"
+    EMB_DIR = "examples/embodiment/config"
+
+    def _compose(self, cfg_dir, name):
+        import os
+
+        from hydra import compose, initialize_config_dir
+        from omegaconf import OmegaConf
+
+        os.environ.setdefault("EMBODIED_PATH", os.path.abspath("examples/embodiment"))
+        os.environ.setdefault("OMNIGIBSON_DATA_PATH", "/tmp/og_data_placeholder")
+        with initialize_config_dir(version_base="1.1", config_dir=os.path.abspath(cfg_dir)):
+            cfg = compose(config_name=name)
+        OmegaConf.resolve(cfg)
+        return cfg
+
+    def test_state_based_sft_configs_route_and_validate(self):
+        import os
+
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_behavior_paths,
+            validate_converted_dataset,
+        )
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        # name -> (mode, dataset-root substr, stats asset)
+        cases = [
+            ("behavior_pi05_vla_absolute_eef", "absolute_eef", "absolute-eef-t0", "turn_on_radio_absolute_eef"),
+            ("behavior_pi05_vla_delta_eef", "delta_eef", "delta-eef-t0", "turn_on_radio_delta_eef"),
+        ]
+        for name, mode, root_substr, asset in cases:
+            cfg = self._compose(self.SFT_DIR, name)
+            op = cfg.actor.model.openpi
+            assert op.control_mode == mode
+            assert int(cfg.actor.model.action_dim) == 21
+            assert int(op.action_env_dim) == 21
+            assert op.state_token == "abs_eef"
+            r = resolve_behavior_paths(cfg.data, op, mode)
+            assert root_substr in r["behavior_dataset_root"], (name, r["behavior_dataset_root"])
+            assert r["asset_id"] == asset, name
+            if os.path.isdir(r["behavior_dataset_root"]) and os.path.isdir(
+                os.path.join(r["assets_dir"], r["asset_id"])
+            ):
+                validate_norm_stats_for_control_mode(
+                    r["assets_dir"], r["asset_id"], mode, 21, model_action_dim=32
+                )
+                validate_converted_dataset(
+                    r["behavior_dataset_root"], mode, list(cfg.data.tasks)
+                )
+
+    def test_absolute_eef_eval_config_maps_ik_absolute_pose(self):
+        from rlinf.config import apply_behavior_control_mode
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_norm_stats_asset,
+        )
+
+        cfg = self._compose(self.EMB_DIR, "behavior_ppo_openpi_pi05_pytorch_absolute_eef_eval")
+        op = cfg.actor.model.openpi
+        assert op.control_mode == "absolute_eef"
+        assert int(cfg.actor.model.action_dim) == 21
+        assert int(cfg.env.eval.total_num_envs) > 0  # validate_cfg precondition
+        assert resolve_norm_stats_asset(op, "absolute_eef")[1] == "turn_on_radio_absolute_eef"
+        apply_behavior_control_mode(cfg)
+        arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
+        assert arm.name == "InverseKinematicsController"
+        assert arm.mode == "absolute_pose"
+        for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
+            assert stale not in arm
+
+    def test_delta_eef_config_maps_ik_pose_delta_ori(self):
+        from rlinf.config import apply_behavior_control_mode
+
+        # delta_eef arms map to pose_delta_ori (like eef_delta_pose); build a minimal
+        # env cfg through apply_behavior_control_mode from the SFT config's mode.
+        from omegaconf import OmegaConf
+
+        joint_arm = {"name": "JointController", "motor_type": "position", "use_delta_commands": False}
+        robot = {
+            "type": "R1Pro",
+            "controller_config": {
+                "base": {"name": "HolonomicBaseJointController"},
+                "trunk": {"name": "JointController", "use_delta_commands": False},
+                "arm_left": dict(joint_arm),
+                "arm_right": dict(joint_arm),
+                "gripper_left": {"name": "MultiFingerGripperController"},
+                "gripper_right": {"name": "MultiFingerGripperController"},
+            },
+        }
+        env_split = {"omni_config": {"robots": [robot]}}
+        cfg = OmegaConf.create(
+            {
+                "actor": {"model": {"action_dim": 21, "openpi": {"control_mode": "delta_eef", "action_env_dim": 21}}},
+                "env": {"train": dict(env_split), "eval": dict(env_split)},
+            }
+        )
+        apply_behavior_control_mode(cfg)
+        arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
+        assert arm.name == "InverseKinematicsController"
+        assert arm.mode == "pose_delta_ori"
+        assert "motor_type" not in arm
