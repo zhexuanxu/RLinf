@@ -678,3 +678,148 @@ class TestSetupOmniCfgControllerMerge:
         assert cc.arm_left.pos_kp == 300  # override applied
         assert cc.arm_left.motor_type == "position"  # base key preserved
 
+
+
+class TestShippedConfigSingleSwitch:
+    """task10 audit: compose the REAL shipped BEHAVIOR pi0.5 configs and prove
+    control_mode is the single switch -- it derives action_dim/action_env_dim and
+    (via resolve_behavior_paths / apply_behavior_control_mode) selects the dataset,
+    stats asset, and eval arm controller. Ray-free (compose + pure helpers only)."""
+
+    SFT_DIR = "examples/sft/config"
+    EMB_DIR = "examples/embodiment/config"
+    _EXPECT_DIM = {
+        "joint_absolute": 23,
+        "absolute_eef": 21,
+        "delta_eef": 21,
+        "eef_delta_pose": 21,
+    }
+
+    def _compose(self, cfg_dir, name):
+        import os
+
+        from hydra import compose, initialize_config_dir
+        from omegaconf import OmegaConf
+
+        # eval/replay configs reference ${oc.env:EMBODIED_PATH} in their searchpath.
+        os.environ.setdefault(
+            "EMBODIED_PATH", os.path.abspath("examples/embodiment")
+        )
+        os.environ.setdefault("OMNIGIBSON_DATA_PATH", "/tmp/og_data_placeholder")
+        with initialize_config_dir(
+            version_base="1.1", config_dir=os.path.abspath(cfg_dir)
+        ):
+            cfg = compose(config_name=name)
+        OmegaConf.resolve(cfg)
+        return cfg
+
+    def test_all_shipped_configs_derive_action_dim_from_mode(self):
+        import glob
+        import os
+
+        names = [
+            (self.SFT_DIR, os.path.basename(f)[:-5])
+            for f in glob.glob(f"{self.SFT_DIR}/behavior_*.yaml")
+        ] + [
+            (self.EMB_DIR, os.path.basename(f)[:-5])
+            for f in (
+                glob.glob(f"{self.EMB_DIR}/behavior_ppo_openpi_pi05_pytorch_*.yaml")
+                + glob.glob(f"{self.EMB_DIR}/behavior_replay_*.yaml")
+            )
+        ]
+        assert names, "no shipped BEHAVIOR pi0.5 configs found"
+        for cfg_dir, name in names:
+            cfg = self._compose(cfg_dir, name)
+            mode = cfg.actor.model.openpi.control_mode
+            exp = self._EXPECT_DIM[mode]
+            assert int(cfg.actor.model.action_dim) == exp, (name, mode)
+            assert int(cfg.actor.model.openpi.action_env_dim) == exp, (name, mode)
+
+    def test_sft_flip_routes_dataset_and_stats(self):
+        # A dual-declared delta SFT config: flipping only control_mode flips the
+        # semantic dim AND the dataset root + stats asset.
+        from omegaconf import OmegaConf
+
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_behavior_paths,
+        )
+
+        cfg = self._compose(self.SFT_DIR, "behavior_50tasks_pi05_vla_eef_delta")
+        op = cfg.actor.model.openpi
+        d = resolve_behavior_paths(cfg.data, op, "eef_delta_pose")
+        assert d["behavior_dataset_root"].endswith("2025-challenge-demos-eef-delta")
+        assert d["asset_id"] == "50tasks_eef_delta"
+        j = resolve_behavior_paths(cfg.data, op, "joint_absolute")
+        assert j["behavior_dataset_root"].endswith("2025-challenge-demos")
+        assert j["asset_id"] == "50tasks_reorder"
+        # absolute_eef path must be declared to be selectable (else clear error)
+        import pytest
+
+        OmegaConf.set_struct(cfg, False)
+        with pytest.raises(ValueError):
+            resolve_behavior_paths(cfg.data, op, "absolute_eef")
+
+    def test_absolute_eef_config_routes_and_maps(self):
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_behavior_paths,
+        )
+
+        cfg = self._compose(self.SFT_DIR, "behavior_pi05_vla_absolute_eef")
+        op = cfg.actor.model.openpi
+        assert op.control_mode == "absolute_eef"
+        assert int(cfg.actor.model.action_dim) == 21
+        assert op.state_token == "abs_eef"
+        d = resolve_behavior_paths(cfg.data, op, "absolute_eef")
+        assert "absolute-eef" in d["behavior_dataset_root"]
+        assert d["asset_id"] == "turn_on_radio_absolute_eef"
+
+    def test_eval_configs_map_arms_by_mode(self):
+        from rlinf.config import apply_behavior_control_mode
+
+        # eef_delta eval -> IK pose_delta_ori (clean); joint eval -> JointController.
+        for name, mode, arm_name, arm_mode in (
+            (
+                "behavior_ppo_openpi_pi05_pytorch_eef_delta_eval",
+                "eef_delta_pose",
+                "InverseKinematicsController",
+                "pose_delta_ori",
+            ),
+            (
+                "behavior_ppo_openpi_pi05_pytorch_eval",
+                "joint_absolute",
+                "JointController",
+                None,
+            ),
+        ):
+            cfg = self._compose(self.EMB_DIR, name)
+            assert cfg.actor.model.openpi.control_mode == mode
+            # validate_cfg's total_num_envs>0 precondition must hold (the bug)
+            assert int(cfg.env.eval.total_num_envs) > 0, name
+            apply_behavior_control_mode(cfg)
+            arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
+            assert arm.name == arm_name, name
+            if arm_mode is not None:
+                assert arm.get("mode") == arm_mode
+                for stale in (
+                    "motor_type",
+                    "pos_kp",
+                    "use_impedances",
+                    "use_delta_commands",
+                ):
+                    assert stale not in arm, (name, stale)
+            else:
+                assert "motor_type" in arm  # JointController keeps its keys
+
+    def test_unknown_control_mode_rejected(self):
+        import pytest
+        from omegaconf import OmegaConf
+
+        from rlinf.config import apply_behavior_control_mode
+
+        cfg = self._compose(self.EMB_DIR, "behavior_ppo_openpi_pi05_pytorch_eval")
+        OmegaConf.set_struct(cfg, False)
+        cfg.actor.model.openpi.control_mode = "banana"
+        cfg.actor.model.action_dim = 23
+        cfg.actor.model.openpi.action_env_dim = 23
+        with pytest.raises(ValueError):
+            apply_behavior_control_mode(cfg)
