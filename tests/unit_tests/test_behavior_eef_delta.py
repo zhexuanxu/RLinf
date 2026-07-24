@@ -66,8 +66,10 @@ class TestStateBasedEefConversion:
 
         rng = np.random.default_rng(0)
         for _ in range(50):
-            q0 = rng.normal(size=4); q0 /= np.linalg.norm(q0)
-            q1 = rng.normal(size=4); q1 /= np.linalg.norm(q1)
+            q0 = rng.normal(size=4)
+            q0 /= np.linalg.norm(q0)
+            q1 = rng.normal(size=4)
+            q1 /= np.linalg.norm(q1)
             dr = relative_rotation_axisangle(q0, q1)
             # R1 == R_delta @ R0
             lhs = R.from_quat(q1).as_matrix()
@@ -129,12 +131,14 @@ class TestControlModeConstants:
     def test_modes_and_dims(self):
         assert CONTROL_MODES == (
             "joint_absolute",
+            "delta_joint",
             "absolute_eef",
             "delta_eef",
             "eef_delta_pose",
         )
         assert CONTROL_MODE_ACTION_ENV_DIM == {
             "joint_absolute": 23,
+            "delta_joint": 23,
             "absolute_eef": 21,
             "delta_eef": 21,
             "eef_delta_pose": 21,
@@ -147,9 +151,128 @@ class TestControlModeConstants:
         for mode in ("absolute_eef", "delta_eef", "eef_delta_pose"):
             assert CONTROL_MODE_ACTION_ENV_DIM[mode] - fixed == 12  # 6 + 6
 
+    def test_joint_arm_dims_are_seven_each(self):
+        # 23 = base(3) + trunk(4) + arm_left(7) + gripper(1)
+        #      + arm_right(7) + gripper(1); delta_joint shares joint_absolute's width
+        fixed = 3 + 4 + 1 + 1
+        for mode in ("joint_absolute", "delta_joint"):
+            assert CONTROL_MODE_ACTION_ENV_DIM[mode] - fixed == 14  # 7 + 7
+        from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
+            EEF_CONTROL_MODES,
+        )
+
+        assert "delta_joint" not in EEF_CONTROL_MODES  # arms are joint, not EEF
+
+
+class TestDeltaJointConverter:
+    """State-to-state joint-delta converter + the 23-dim-with-provenance validator.
+
+    delta_joint shares joint_absolute's 23-dim width but is a CONVERTED dataset with
+    provenance, so the validators need explicit cases distinguishing the two."""
+
+    def test_action_math_arms_delta_rest_passthrough(self):
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_delta_joint import (
+            action_to_delta_joint,
+            convert_episode_actions,
+        )
+
+        rng = np.random.default_rng(0)
+        a = rng.standard_normal(23)
+        s0 = rng.standard_normal(256)
+        s1 = rng.standard_normal(256)
+        out = action_to_delta_joint(a, s0, s1)
+        assert out.shape == (23,)
+        # base/trunk/grippers passthrough from the recorded action
+        assert np.allclose(out[0:3], a[0:3]) and np.allclose(out[3:7], a[3:7])
+        assert out[14] == a[14] and out[22] == a[22]
+        # arms = achieved-qpos state-to-state delta (proprio slices 158:165 / 197:204)
+        assert np.allclose(out[7:14], s1[158:165] - s0[158:165])
+        assert np.allclose(out[15:22], s1[197:204] - s0[197:204])
+        # whole episode: last frame holds (delta 0)
+        A = rng.standard_normal((4, 23))
+        S = rng.standard_normal((4, 256))
+        ep = convert_episode_actions(A, S)
+        assert ep.shape == (4, 23)
+        assert np.allclose(ep[-1, 7:14], 0.0) and np.allclose(ep[-1, 15:22], 0.0)
+        assert np.allclose(ep[0, 7:14], S[1, 158:165] - S[0, 158:165])
+
+    def _write_dataset(
+        self, tmp_path, action_dim=23, control_mode="delta_joint", with_prov=True
+    ):
+        import json
+
+        pa = pytest.importorskip("pyarrow")
+        pq = pytest.importorskip("pyarrow.parquet")
+        pytest.importorskip("pandas")
+        import pandas as pd
+
+        root = tmp_path / "ds"
+        (root / "meta").mkdir(parents=True)
+        (root / "data" / "chunk-0000").mkdir(parents=True)
+        (root / "meta" / "info.json").write_text(
+            json.dumps({"features": {"action": {"shape": [action_dim]}}})
+        )
+        if with_prov:
+            (root / "meta" / "eef_delta_provenance.json").write_text(
+                json.dumps(
+                    {
+                        "control_mode": control_mode,
+                        "action_env_dim": action_dim,
+                        "tasks": ["turning_on_radio"],
+                    }
+                )
+            )
+        df = pd.DataFrame({"action": [[0.0] * action_dim for _ in range(3)]})
+        pq.write_table(
+            pa.Table.from_pandas(df, preserve_index=False),
+            str(root / "data" / "chunk-0000" / "ep.parquet"),
+        )
+        return str(root)
+
+    def test_validate_accepts_delta_joint_23dim_with_provenance(self, tmp_path):
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            validate_converted_dataset,
+        )
+
+        root = self._write_dataset(tmp_path, 23, "delta_joint", True)
+        prov = validate_converted_dataset(root, "delta_joint", ["turning_on_radio"])
+        assert prov["control_mode"] == "delta_joint"
+
+    @pytest.mark.parametrize(
+        ("action_dim", "control_mode", "with_prov"),
+        [
+            (21, "delta_joint", True),  # wrong width (delta_joint is 23)
+            (23, "delta_joint", False),  # converted mode requires provenance
+            (23, "joint_absolute", True),  # provenance says a different mode
+        ],
+    )
+    def test_validate_rejects_bad_delta_joint(
+        self, tmp_path, action_dim, control_mode, with_prov
+    ):
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            validate_converted_dataset,
+        )
+
+        root = self._write_dataset(tmp_path, action_dim, control_mode, with_prov)
+        with pytest.raises(ValueError):
+            validate_converted_dataset(root, "delta_joint")
+
+    def test_joint_absolute_rejects_converted_delta_joint_dataset(self, tmp_path):
+        # A converted 23-dim delta_joint dataset carries provenance; joint_absolute
+        # must refuse it (else the model would drive absolute joints with deltas).
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            validate_converted_dataset,
+        )
+
+        root = self._write_dataset(tmp_path, 23, "delta_joint", True)
+        with pytest.raises(ValueError):
+            validate_converted_dataset(root, "joint_absolute")
+
 
 class TestNormStatsManifestGuard:
-    def _write_asset(self, tmp_path, control_mode, action_env_dim, state_token="__unset__"):
+    def _write_asset(
+        self, tmp_path, control_mode, action_env_dim, state_token="__unset__"
+    ):
         import json
 
         d = tmp_path / "asset"
@@ -194,7 +317,9 @@ class TestNormStatsManifestGuard:
             ("eef_delta_pose", 23, "eef_delta_pose", 21),
         ],
     )
-    def test_mismatch_rejected(self, tmp_path, asset_mode, asset_dim, run_mode, run_dim):
+    def test_mismatch_rejected(
+        self, tmp_path, asset_mode, asset_dim, run_mode, run_dim
+    ):
         from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
             validate_norm_stats_for_control_mode,
         )
@@ -267,7 +392,9 @@ class TestNormStatsManifestGuard:
         if not os.path.isdir(os.path.join(ad, aid)):
             pytest.skip("shipped eef_delta stats asset not present on this box")
         # Matching layout passes; the cross-layout run is rejected.
-        validate_norm_stats_for_control_mode(ad, aid, "eef_delta_pose", 21, state_token="align")
+        validate_norm_stats_for_control_mode(
+            ad, aid, "eef_delta_pose", 21, state_token="align"
+        )
         with pytest.raises(ValueError, match="state_token"):
             validate_norm_stats_for_control_mode(
                 ad, aid, "eef_delta_pose", 21, state_token="comet"
@@ -299,9 +426,13 @@ class TestAbsEefStateStatsFromFrames:
         (root / "meta" / "episodes.jsonl").write_text(
             json.dumps({"episode_index": 5, "length": len(frames256)}) + "\n"
         )
-        df = pd.DataFrame({"observation.state": [list(map(float, v)) for v in frames256]})
-        pq.write_table(pa.Table.from_pandas(df, preserve_index=False),
-                       str(root / "data" / "chunk-0000" / "episode_00000005.parquet"))
+        df = pd.DataFrame(
+            {"observation.state": [list(map(float, v)) for v in frames256]}
+        )
+        pq.write_table(
+            pa.Table.from_pandas(df, preserve_index=False),
+            str(root / "data" / "chunk-0000" / "episode_00000005.parquet"),
+        )
         return str(root)
 
     def _frames_with_spread_quats(self, n=64):
@@ -332,7 +463,10 @@ class TestAbsEefStateStatsFromFrames:
         ref = action_stats(np.asarray(extract_state_from_proprio(frames, "abs_eef")))
         for k in ("mean", "std", "q01", "q99"):
             np.testing.assert_allclose(
-                np.asarray(got[k]), np.asarray(ref[k]), rtol=1e-9, atol=1e-9,
+                np.asarray(got[k]),
+                np.asarray(ref[k]),
+                rtol=1e-9,
+                atol=1e-9,
                 err_msg=f"raw-frame stat {k} must equal the per-frame reference",
             )
         assert len(got["mean"]) == 21  # abs_eef meaningful length
@@ -363,7 +497,10 @@ class TestAbsEefStateStatsFromFrames:
             "orientation stats must differ from the summary-mapping (the bug)"
         )
         np.testing.assert_allclose(
-            got_mean[pos], wrong_mean[pos], rtol=1e-9, atol=1e-9,
+            got_mean[pos],
+            wrong_mean[pos],
+            rtol=1e-9,
+            atol=1e-9,
             err_msg="position dims are linear and must match the summary mapping",
         )
 
@@ -435,7 +572,11 @@ class TestControlModeResolver:
             }
         )
         op = OmegaConf.create(
-            {"assets_dir": "/a", "asset_id": "joint", "asset_id_eef_delta": "delta_asset"}
+            {
+                "assets_dir": "/a",
+                "asset_id": "joint",
+                "asset_id_eef_delta": "delta_asset",
+            }
         )
         r = cvt.resolve_behavior_paths(data, op, "joint_absolute")
         assert r["behavior_dataset_root"] == "/orig"
@@ -456,8 +597,10 @@ class TestNormStatsManifestTaskList:
         meta = tmp_path / "meta"
         meta.mkdir()
         (meta / "tasks.jsonl").write_text(
-            json.dumps({"task_index": 0, "task_name": "turning_on_radio"}) + "\n"
-            + json.dumps({"task_index": 1, "task_name": "picking_up_trash"}) + "\n"
+            json.dumps({"task_index": 0, "task_name": "turning_on_radio"})
+            + "\n"
+            + json.dumps({"task_index": 1, "task_name": "picking_up_trash"})
+            + "\n"
         )
         assert _dataset_task_names(str(tmp_path)) == [
             "turning_on_radio",
@@ -495,8 +638,10 @@ class TestConverterHelpers:
         meta = tmp_path / "meta"
         meta.mkdir()
         (meta / "tasks.jsonl").write_text(
-            json.dumps({"task_index": 0, "task_name": "turning_on_radio"}) + "\n"
-            + json.dumps({"task_index": 1, "task_name": "picking_up_trash"}) + "\n"
+            json.dumps({"task_index": 0, "task_name": "turning_on_radio"})
+            + "\n"
+            + json.dumps({"task_index": 1, "task_name": "picking_up_trash"})
+            + "\n"
         )
         idx = cvt._task_indices_for_names(str(tmp_path), ["turning_on_radio"])
         assert idx == {"turning_on_radio": 0}
@@ -588,9 +733,11 @@ class TestConverterMath:
             qt /= np.linalg.norm(qt)
             dori = cvt.relative_rotation_axisangle(qc, qt)
             # R_delta @ R_cur must equal R_tgt
-            r_delta = cvt.quat2mat_xyzw(cvt.axisangle_to_quat(dori)) if hasattr(
-                cvt, "axisangle_to_quat"
-            ) else _rotvec_to_mat(dori)
+            r_delta = (
+                cvt.quat2mat_xyzw(cvt.axisangle_to_quat(dori))
+                if hasattr(cvt, "axisangle_to_quat")
+                else _rotvec_to_mat(dori)
+            )
             applied = r_delta @ cvt.quat2mat_xyzw(qc)
             target = cvt.quat2mat_xyzw(qt)
             assert np.abs(applied - target).max() < 1e-6
@@ -709,6 +856,35 @@ class TestEvalControllerMappingAndDecode:
         with pytest.raises(ValueError):
             apply_behavior_control_mode(self._behavior_cfg("eef_delta_pose", 23))
 
+    def test_delta_joint_flips_arms_to_delta_jointcontroller(self):
+        # delta_joint keeps the arms on JointController but flips use_delta_commands
+        # to True (a JOINT delta, NOT IK); base/trunk/grippers are unchanged. This
+        # is the only mode with a delta JointController -- distinct from the EEF/IK
+        # delta modes.
+        from rlinf.config import apply_behavior_control_mode
+
+        cfg = self._behavior_cfg("delta_joint", 23)
+        apply_behavior_control_mode(cfg)
+        for split in ("train", "eval"):
+            cc = cfg.env[split].omni_config.robots[0].controller_config
+            for arm in ("arm_left", "arm_right"):
+                assert cc[arm].name == "JointController"
+                assert cc[arm].use_delta_commands is True
+                assert cc[arm].motor_type == "position"
+                assert cc[arm].command_input_limits is None
+            # base/trunk/grippers untouched (trunk stays absolute)
+            assert cc.trunk.use_delta_commands is False
+            assert cc.base.name == "HolonomicBaseJointController"
+
+    def test_delta_joint_dim_mismatch_rejected(self):
+        # delta_joint is 23-dim; a 21-dim action_dim must be rejected.
+        import pytest
+
+        from rlinf.config import apply_behavior_control_mode
+
+        with pytest.raises(ValueError):
+            apply_behavior_control_mode(self._behavior_cfg("delta_joint", 21))
+
     def test_behavior_eval_processor_decodes_to_21(self):
         # Decode a normalized [B, chunk, 32] model action through the real
         # BehaviorEvalProcessor and assert the env action is [B, chunk, 21].
@@ -757,8 +933,15 @@ class TestSetupOmniCfgControllerMerge:
                     {
                         "name": "robot_r1",
                         "controller_config": {
-                            "base": {"name": "HolonomicBaseJointController", "vel_kp": 150},
-                            "trunk": {"name": "JointController", "motor_type": "position", "pos_kp": 150},
+                            "base": {
+                                "name": "HolonomicBaseJointController",
+                                "vel_kp": 150,
+                            },
+                            "trunk": {
+                                "name": "JointController",
+                                "motor_type": "position",
+                                "pos_kp": 150,
+                            },
                             "arm_left": {
                                 "name": "JointController",
                                 "motor_type": "position",
@@ -810,8 +993,15 @@ class TestSetupOmniCfgControllerMerge:
         for arm in ("arm_left", "arm_right"):
             assert cc[arm].name == "InverseKinematicsController"
             assert cc[arm].mode == "pose_delta_ori"
-            for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
-                assert stale not in cc[arm], f"{stale} leaked into {arm}: {dict(cc[arm])}"
+            for stale in (
+                "motor_type",
+                "pos_kp",
+                "use_impedances",
+                "use_delta_commands",
+            ):
+                assert stale not in cc[arm], (
+                    f"{stale} leaked into {arm}: {dict(cc[arm])}"
+                )
         # A group whose class is unchanged keeps its deep-merged joint keys.
         assert cc.trunk.name == "JointController" and "motor_type" in cc.trunk
         # Non-controller robot defaults survive the merge.
@@ -825,14 +1015,17 @@ class TestSetupOmniCfgControllerMerge:
         base = self._base()
         # Joint override (same class) should preserve base keys + apply the override.
         override = OmegaConf.create(
-            {"controller_config": {"arm_left": {"name": "JointController", "pos_kp": 300}}}
+            {
+                "controller_config": {
+                    "arm_left": {"name": "JointController", "pos_kp": 300}
+                }
+            }
         )
         merge_robot_override(base, override)
         cc = base.robots[0].controller_config
         assert cc.arm_left.name == "JointController"
         assert cc.arm_left.pos_kp == 300  # override applied
         assert cc.arm_left.motor_type == "position"  # base key preserved
-
 
 
 class TestShippedConfigSingleSwitch:
@@ -845,6 +1038,7 @@ class TestShippedConfigSingleSwitch:
     EMB_DIR = "examples/embodiment/config"
     _EXPECT_DIM = {
         "joint_absolute": 23,
+        "delta_joint": 23,
         "absolute_eef": 21,
         "delta_eef": 21,
         "eef_delta_pose": 21,
@@ -857,9 +1051,7 @@ class TestShippedConfigSingleSwitch:
         from omegaconf import OmegaConf
 
         # eval/replay configs reference ${oc.env:EMBODIED_PATH} in their searchpath.
-        os.environ.setdefault(
-            "EMBODIED_PATH", os.path.abspath("examples/embodiment")
-        )
+        os.environ.setdefault("EMBODIED_PATH", os.path.abspath("examples/embodiment"))
         os.environ.setdefault("OMNIGIBSON_DATA_PATH", "/tmp/og_data_placeholder")
         with initialize_config_dir(
             version_base="1.1", config_dir=os.path.abspath(cfg_dir)
@@ -917,27 +1109,56 @@ class TestShippedConfigSingleSwitch:
         ALL = "/mnt/public/xzxuan/data/2025-challenge-demos-eef-delta"
         # name -> (delta root, delta assets_dir, delta asset_id, joint asset_id)
         matrix = {
-            "behavior_pi05_vla": (T0, NS, "turn_on_radio_eef_delta", "behavior-1k/2025-challenge-demos"),
-            "behavior_pi05_vlm_vla": (T0, NS, "turn_on_radio_eef_delta", "turn_on_radio_reorder"),
-            "behavior_50tasks_pi05_vla": (ALL, NS, "50tasks_eef_delta", "50tasks_reorder"),
-            "behavior_50tasks_pi05_vlm_vla": (ALL, NS, "50tasks_eef_delta", "50tasks_reorder"),
+            "behavior_pi05_vla": (
+                T0,
+                NS,
+                "turn_on_radio_eef_delta",
+                "behavior-1k/2025-challenge-demos",
+            ),
+            "behavior_pi05_vlm_vla": (
+                T0,
+                NS,
+                "turn_on_radio_eef_delta",
+                "turn_on_radio_reorder",
+            ),
+            "behavior_50tasks_pi05_vla": (
+                ALL,
+                NS,
+                "50tasks_eef_delta",
+                "50tasks_reorder",
+            ),
+            "behavior_50tasks_pi05_vlm_vla": (
+                ALL,
+                NS,
+                "50tasks_eef_delta",
+                "50tasks_reorder",
+            ),
         }
         for name, (droot, dassets, dasset, joint_asset) in matrix.items():
             cj = self._compose_mode(self.SFT_DIR, name, "joint_absolute")
             assert int(cj.actor.model.action_dim) == 23, name
-            rj = resolve_behavior_paths(cj.data, cj.actor.model.openpi, "joint_absolute")
+            rj = resolve_behavior_paths(
+                cj.data, cj.actor.model.openpi, "joint_absolute"
+            )
             assert rj["asset_id"] == joint_asset, name
-            assert not rj["behavior_dataset_root"].rstrip("/").endswith(
-                ("eef-delta", "eef-delta-t0")
+            assert (
+                not rj["behavior_dataset_root"]
+                .rstrip("/")
+                .endswith(("eef-delta", "eef-delta-t0"))
             )
 
             cd = self._compose_mode(self.SFT_DIR, name, "eef_delta_pose")
             assert int(cd.actor.model.action_dim) == 21, name
             assert int(cd.actor.model.openpi.action_env_dim) == 21, name
-            rd = resolve_behavior_paths(cd.data, cd.actor.model.openpi, "eef_delta_pose")
+            rd = resolve_behavior_paths(
+                cd.data, cd.actor.model.openpi, "eef_delta_pose"
+            )
             # Exact resolved artifacts, not just a suffix (catches placeholder roots
             # and a placeholder assets_dir).
-            assert rd["behavior_dataset_root"].rstrip("/") == droot, (name, rd["behavior_dataset_root"])
+            assert rd["behavior_dataset_root"].rstrip("/") == droot, (
+                name,
+                rd["behavior_dataset_root"],
+            )
             assert rd["assets_dir"].rstrip("/") == dassets, (name, rd["assets_dir"])
             assert rd["asset_id"] == dasset, name
             # And the resolved artifacts must pass the SAME validators the loader
@@ -951,7 +1172,10 @@ class TestShippedConfigSingleSwitch:
             # abs_eef shipped-config test.)
             if os.path.isdir(droot) and os.path.isdir(os.path.join(dassets, dasset)):
                 validate_norm_stats_for_control_mode(
-                    rd["assets_dir"], rd["asset_id"], "eef_delta_pose", 21,
+                    rd["assets_dir"],
+                    rd["asset_id"],
+                    "eef_delta_pose",
+                    21,
                     model_action_dim=32,
                 )
                 validate_converted_dataset(
@@ -976,7 +1200,10 @@ class TestShippedConfigSingleSwitch:
         for name, joint_asset in matrix.items():
             cj = self._compose_mode(self.EMB_DIR, name, "joint_absolute")
             assert int(cj.actor.model.action_dim) == 23, name
-            assert resolve_norm_stats_asset(cj.actor.model.openpi, "joint_absolute")[1] == joint_asset
+            assert (
+                resolve_norm_stats_asset(cj.actor.model.openpi, "joint_absolute")[1]
+                == joint_asset
+            )
             apply_behavior_control_mode(cj)
             armj = cj.env.eval.omni_config.robots[0].controller_config.arm_left
             assert armj.name == "JointController", name
@@ -989,8 +1216,16 @@ class TestShippedConfigSingleSwitch:
             ), name
             apply_behavior_control_mode(cd)
             armd = cd.env.eval.omni_config.robots[0].controller_config.arm_left
-            assert armd.name == "InverseKinematicsController" and armd.mode == "pose_delta_ori"
-            for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
+            assert (
+                armd.name == "InverseKinematicsController"
+                and armd.mode == "pose_delta_ori"
+            )
+            for stale in (
+                "motor_type",
+                "pos_kp",
+                "use_impedances",
+                "use_delta_commands",
+            ):
                 assert stale not in armd, (name, stale)
 
     def test_dedicated_delta_sft_flip_routes(self):
@@ -1092,7 +1327,9 @@ class TestStateBasedEefShippedConfigs:
 
         os.environ.setdefault("EMBODIED_PATH", os.path.abspath("examples/embodiment"))
         os.environ.setdefault("OMNIGIBSON_DATA_PATH", "/tmp/og_data_placeholder")
-        with initialize_config_dir(version_base="1.1", config_dir=os.path.abspath(cfg_dir)):
+        with initialize_config_dir(
+            version_base="1.1", config_dir=os.path.abspath(cfg_dir)
+        ):
             cfg = compose(config_name=name)
         OmegaConf.resolve(cfg)
         return cfg
@@ -1110,8 +1347,18 @@ class TestStateBasedEefShippedConfigs:
 
         # name -> (mode, dataset-root substr, stats asset)
         cases = [
-            ("behavior_pi05_vla_absolute_eef", "absolute_eef", "absolute-eef-t0", "turn_on_radio_absolute_eef"),
-            ("behavior_pi05_vla_delta_eef", "delta_eef", "delta-eef-t0", "turn_on_radio_delta_eef"),
+            (
+                "behavior_pi05_vla_absolute_eef",
+                "absolute_eef",
+                "absolute-eef-t0",
+                "turn_on_radio_absolute_eef",
+            ),
+            (
+                "behavior_pi05_vla_delta_eef",
+                "delta_eef",
+                "delta-eef-t0",
+                "turn_on_radio_delta_eef",
+            ),
         ]
         for name, mode, root_substr, asset in cases:
             cfg = self._compose(self.SFT_DIR, name)
@@ -1121,18 +1368,65 @@ class TestStateBasedEefShippedConfigs:
             assert int(op.action_env_dim) == 21
             assert op.state_token == "abs_eef"
             r = resolve_behavior_paths(cfg.data, op, mode)
-            assert root_substr in r["behavior_dataset_root"], (name, r["behavior_dataset_root"])
+            assert root_substr in r["behavior_dataset_root"], (
+                name,
+                r["behavior_dataset_root"],
+            )
             assert r["asset_id"] == asset, name
             if os.path.isdir(r["behavior_dataset_root"]) and os.path.isdir(
                 os.path.join(r["assets_dir"], r["asset_id"])
             ):
                 validate_norm_stats_for_control_mode(
-                    r["assets_dir"], r["asset_id"], mode, 21, model_action_dim=32,
+                    r["assets_dir"],
+                    r["asset_id"],
+                    mode,
+                    21,
+                    model_action_dim=32,
                     state_token=str(op.state_token),
                 )
                 validate_converted_dataset(
                     r["behavior_dataset_root"], mode, list(cfg.data.tasks)
                 )
+
+    def test_delta_joint_sft_config_routes_and_validates(self):
+        # delta_joint is the joint-space sibling: 23-dim, abs_joint prompt state,
+        # routed to the converted -delta-joint-t0 dataset + turn_on_radio_delta_joint
+        # stats. Runs the loader's REAL validators when the artifacts exist.
+        import os
+
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_behavior_paths,
+            validate_converted_dataset,
+        )
+        from rlinf.models.embodiment.openpi_pytorch.utils.normalize import (
+            validate_norm_stats_for_control_mode,
+        )
+
+        cfg = self._compose(self.SFT_DIR, "behavior_pi05_vla_delta_joint")
+        op = cfg.actor.model.openpi
+        assert op.control_mode == "delta_joint"
+        assert int(cfg.actor.model.action_dim) == 23
+        assert int(op.action_env_dim) == 23
+        assert op.state_token == "abs_joint"
+        r = resolve_behavior_paths(cfg.data, op, "delta_joint")
+        assert "delta-joint-t0" in r["behavior_dataset_root"], r[
+            "behavior_dataset_root"
+        ]
+        assert r["asset_id"] == "turn_on_radio_delta_joint"
+        if os.path.isdir(r["behavior_dataset_root"]) and os.path.isdir(
+            os.path.join(r["assets_dir"], r["asset_id"])
+        ):
+            validate_norm_stats_for_control_mode(
+                r["assets_dir"],
+                r["asset_id"],
+                "delta_joint",
+                23,
+                model_action_dim=32,
+                state_token="abs_joint",
+            )
+            validate_converted_dataset(
+                r["behavior_dataset_root"], "delta_joint", list(cfg.data.tasks)
+            )
 
     # The shipped single-node BEHAVIOR eval configs target an 8-GPU node with the
     # default `actor,env,rollout: all` placement, so actor_world_size == 8 and
@@ -1164,8 +1458,18 @@ class TestStateBasedEefShippedConfigs:
         # validate_cfg enforces (missed by a total_num_envs-only check), THEN the
         # IK controller mapping. Would FAIL on the pre-R14 global=1/micro=1 sizing.
         cases = [
-            ("behavior_ppo_openpi_pi05_pytorch_absolute_eef_eval", "absolute_eef", "turn_on_radio_absolute_eef", "absolute_pose"),
-            ("behavior_ppo_openpi_pi05_pytorch_eef_delta_eval", "eef_delta_pose", "turn_on_radio_eef_delta", "pose_delta_ori"),
+            (
+                "behavior_ppo_openpi_pi05_pytorch_absolute_eef_eval",
+                "absolute_eef",
+                "turn_on_radio_absolute_eef",
+                "absolute_pose",
+            ),
+            (
+                "behavior_ppo_openpi_pi05_pytorch_eef_delta_eval",
+                "eef_delta_pose",
+                "turn_on_radio_eef_delta",
+                "pose_delta_ori",
+            ),
         ]
         for name, mode, stats, arm_mode in cases:
             cfg = self._compose(self.EMB_DIR, name)
@@ -1180,8 +1484,59 @@ class TestStateBasedEefShippedConfigs:
             arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
             assert arm.name == "InverseKinematicsController", name
             assert arm.mode == arm_mode, name
-            for stale in ("motor_type", "pos_kp", "use_impedances", "use_delta_commands"):
+            for stale in (
+                "motor_type",
+                "pos_kp",
+                "use_impedances",
+                "use_delta_commands",
+            ):
                 assert stale not in arm, (name, stale)
+
+    def test_delta_joint_and_delta_eef_eval_configs(self):
+        # The two NEW eval configs that align the four modes: delta_eef (21-dim, IK
+        # pose_delta_ori) and delta_joint (23-dim, JointController use_delta_commands).
+        # Assert the FSDP batch/placement invariant, stats routing, and controller.
+        from rlinf.config import apply_behavior_control_mode
+        from rlinf.data.datasets.openpi_pytorch.behavior.convert_to_eef_delta import (
+            resolve_norm_stats_asset,
+        )
+
+        # delta_eef eval -> IK pose_delta_ori, 21-dim
+        cfg = self._compose(
+            self.EMB_DIR, "behavior_ppo_openpi_pi05_pytorch_delta_eef_eval"
+        )
+        op = cfg.actor.model.openpi
+        assert op.control_mode == "delta_eef"
+        assert int(cfg.actor.model.action_dim) == 21
+        assert int(cfg.env.eval.total_num_envs) > 0
+        self._assert_actor_batch_divisible(cfg, "delta_eef_eval")
+        assert resolve_norm_stats_asset(op, "delta_eef")[1] == "turn_on_radio_delta_eef"
+        apply_behavior_control_mode(cfg)
+        arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
+        assert (
+            arm.name == "InverseKinematicsController" and arm.mode == "pose_delta_ori"
+        )
+
+        # delta_joint eval -> JointController use_delta_commands, 23-dim
+        cfg = self._compose(
+            self.EMB_DIR, "behavior_ppo_openpi_pi05_pytorch_delta_joint_eval"
+        )
+        op = cfg.actor.model.openpi
+        assert op.control_mode == "delta_joint"
+        assert int(cfg.actor.model.action_dim) == 23
+        assert op.state_token == "abs_joint"
+        assert int(cfg.env.eval.total_num_envs) > 0
+        self._assert_actor_batch_divisible(cfg, "delta_joint_eval")
+        assert (
+            resolve_norm_stats_asset(op, "delta_joint")[1]
+            == "turn_on_radio_delta_joint"
+        )
+        apply_behavior_control_mode(cfg)
+        arm = cfg.env.eval.omni_config.robots[0].controller_config.arm_left
+        assert arm.name == "JointController" and arm.use_delta_commands is True
+        # base/trunk/grippers untouched
+        cc = cfg.env.eval.omni_config.robots[0].controller_config
+        assert cc.trunk.use_delta_commands is False
 
     def test_delta_eef_config_maps_ik_pose_delta_ori(self):
         from rlinf.config import apply_behavior_control_mode
@@ -1190,7 +1545,11 @@ class TestStateBasedEefShippedConfigs:
         # env cfg through apply_behavior_control_mode from the SFT config's mode.
         from omegaconf import OmegaConf
 
-        joint_arm = {"name": "JointController", "motor_type": "position", "use_delta_commands": False}
+        joint_arm = {
+            "name": "JointController",
+            "motor_type": "position",
+            "use_delta_commands": False,
+        }
         robot = {
             "type": "R1Pro",
             "controller_config": {
@@ -1205,7 +1564,12 @@ class TestStateBasedEefShippedConfigs:
         env_split = {"omni_config": {"robots": [robot]}}
         cfg = OmegaConf.create(
             {
-                "actor": {"model": {"action_dim": 21, "openpi": {"control_mode": "delta_eef", "action_env_dim": 21}}},
+                "actor": {
+                    "model": {
+                        "action_dim": 21,
+                        "openpi": {"control_mode": "delta_eef", "action_env_dim": 21},
+                    }
+                },
                 "env": {"train": dict(env_split), "eval": dict(env_split)},
             }
         )

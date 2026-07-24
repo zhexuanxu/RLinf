@@ -317,11 +317,18 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--control-mode",
-        choices=("joint_absolute", "absolute_eef", "delta_eef", "eef_delta_pose"),
+        choices=(
+            "joint_absolute",
+            "delta_joint",
+            "absolute_eef",
+            "delta_eef",
+            "eef_delta_pose",
+        ),
         default="joint_absolute",
         help="Action space. 'joint_absolute' uses the recorded 23-dim joint "
-        "action; the EEF modes (absolute_eef / delta_eef / legacy eef_delta_pose) "
-        "expect --dataset-root to be a converted 21-dim EEF dataset.",
+        "action; 'delta_joint' a converted 23-dim joint-delta dataset; the EEF "
+        "modes (absolute_eef / delta_eef / legacy eef_delta_pose) a converted "
+        "21-dim EEF dataset (via --dataset-root).",
     )
     parser.add_argument(
         "--from-episodes-stats",

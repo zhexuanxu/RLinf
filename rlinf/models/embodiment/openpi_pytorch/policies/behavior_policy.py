@@ -89,26 +89,34 @@ def resolve_state_token(value: str) -> str:
 # base(3, velocity) + trunk(4, abs joint) + grippers(1 each, smooth); they differ
 # only in the two arm slices:
 #   "joint_absolute": each arm is 7 absolute joint-position targets -> 23-dim action
+#   "delta_joint":    each arm is a 7-DoF state-to-state joint delta
+#                     (qpos_{t+1} - qpos_t) -> 23-dim (JointController use_delta_commands).
 #   "absolute_eef":   each arm is a 6-DoF base-frame ABSOLUTE EEF pose (pos+axisangle)
 #                     -> 21-dim action (OmniGibson IK absolute_pose; re-anchors).
 #   "delta_eef":      each arm is a 6-DoF base-frame EEF delta (state-to-state
 #                     [dpos, relrot axisangle]) -> 21-dim (OmniGibson IK pose_delta_ori).
 #   "eef_delta_pose": LEGACY FK-based delta (the original all-50 artifact); kept
 #                     working -> 21-dim (IK pose_delta_ori). Superseded by delta_eef.
-CONTROL_MODES = ("joint_absolute", "absolute_eef", "delta_eef", "eef_delta_pose")
+CONTROL_MODES = (
+    "joint_absolute",
+    "delta_joint",
+    "absolute_eef",
+    "delta_eef",
+    "eef_delta_pose",
+)
 
 # Semantic env action dimension per control mode (BEFORE padding to the model's
 # model_action_dim). Fixed slices base(3)+trunk(4)+gripper_left(1)+gripper_right(1)
-# = 9; each arm adds 7 (absolute joint) or 6 (any EEF mode).
+# = 9; each arm adds 7 (absolute or delta joint) or 6 (any EEF mode).
 CONTROL_MODE_ACTION_ENV_DIM = {
     "joint_absolute": 23,  # 9 + 7 + 7
+    "delta_joint": 23,  # 9 + 7 + 7 (arms are joint deltas)
     "absolute_eef": 21,  # 9 + 6 + 6
     "delta_eef": 21,  # 9 + 6 + 6
     "eef_delta_pose": 21,  # 9 + 6 + 6 (legacy)
 }
 # EEF-based control modes (arms are 6-DoF EEF, not joint).
 EEF_CONTROL_MODES = ("absolute_eef", "delta_eef", "eef_delta_pose")
-
 
 
 def extract_state_from_proprio(

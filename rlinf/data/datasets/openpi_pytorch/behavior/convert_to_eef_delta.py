@@ -91,11 +91,14 @@ NEW_ACTION_DIM = 21
 OLD_ACTION_DIM = 23
 
 # Per-control-mode config field suffix for single-switch routing. A BEHAVIOR
-# config predeclares base (joint) fields + one suffixed set per EEF mode it
+# config predeclares base (joint) fields + one suffixed set per converted mode it
 # supports; control_mode picks the suffix. joint_absolute uses the base fields
-# (no suffix). Kept here so resolve_behavior_paths / validate_converted_dataset
-# and the SFT loader / eval factory agree on one mapping.
+# (no suffix) -- it is the original, un-converted 23-dim dataset. delta_joint is a
+# CONVERTED 23-dim dataset (arms are joint deltas), so it needs its own suffix even
+# though it shares joint_absolute's width. Kept here so resolve_behavior_paths /
+# validate_converted_dataset and the SFT loader / eval factory agree on one mapping.
 _MODE_FIELD_SUFFIX = {
+    "delta_joint": "_delta_joint",  # converted 23-dim joint-delta dataset
     "absolute_eef": "_absolute_eef",
     "delta_eef": "_delta_eef",
     "eef_delta_pose": "_eef_delta",  # legacy FK path
@@ -439,7 +442,11 @@ def convert_episode_actions(
 
     # cspace vectors (F,15): trunk + left arm + right arm.
     q_target = np.concatenate(
-        [action23[:, _ACT["trunk"]], action23[:, _ACT["arm_left"]], action23[:, _ACT["arm_right"]]],
+        [
+            action23[:, _ACT["trunk"]],
+            action23[:, _ACT["arm_left"]],
+            action23[:, _ACT["arm_right"]],
+        ],
         axis=1,
     )
     q_current = np.concatenate(
@@ -492,7 +499,9 @@ def aggregate_feature_stats(stats_ft_list: list) -> dict:
     heavy OmniGibson/Isaac stack just to read ``meta/**``.
     """
     means = np.stack([np.asarray(s["mean"], dtype=np.float64) for s in stats_ft_list])
-    variances = np.stack([np.asarray(s["std"], dtype=np.float64) ** 2 for s in stats_ft_list])
+    variances = np.stack(
+        [np.asarray(s["std"], dtype=np.float64) ** 2 for s in stats_ft_list]
+    )
     counts = np.stack([np.asarray(s["count"], dtype=np.float64) for s in stats_ft_list])
     q01 = np.stack([np.asarray(s["q01"], dtype=np.float64) for s in stats_ft_list])
     q99 = np.stack([np.asarray(s["q99"], dtype=np.float64) for s in stats_ft_list])
@@ -503,8 +512,14 @@ def aggregate_feature_stats(stats_ft_list: list) -> dict:
     delta = means - total_mean
     total_var = ((variances + delta**2) * counts).sum(axis=0) / total_count
     return {
-        "min": np.min(np.stack([np.asarray(s["min"], dtype=np.float64) for s in stats_ft_list]), axis=0),
-        "max": np.max(np.stack([np.asarray(s["max"], dtype=np.float64) for s in stats_ft_list]), axis=0),
+        "min": np.min(
+            np.stack([np.asarray(s["min"], dtype=np.float64) for s in stats_ft_list]),
+            axis=0,
+        ),
+        "max": np.max(
+            np.stack([np.asarray(s["max"], dtype=np.float64) for s in stats_ft_list]),
+            axis=0,
+        ),
         "mean": total_mean,
         "std": np.sqrt(total_var),
         "q01": np.percentile(q01, 1, axis=0),
@@ -600,7 +615,9 @@ def aggregate_episode_stats_from_jsonl(
             rec = json.loads(line)
             for k in feature_keys:
                 per_feature[k].append(rec["stats"][k])
-    return {k: aggregate_feature_stats(v) for k, v in per_feature.items() if per_feature[k]}
+    return {
+        k: aggregate_feature_stats(v) for k, v in per_feature.items() if per_feature[k]
+    }
 
 
 def validate_converted_dataset(
@@ -608,14 +625,16 @@ def validate_converted_dataset(
 ) -> dict:
     """Validate a dataset root is consistent with the selected control mode.
 
-    For ``eef_delta_pose`` this requires ``dataset_root`` to be a converted
-    delta-EEF dataset: ``meta/info.json`` action shape must equal 21, a
-    ``meta/eef_delta_provenance.json`` must be present with matching
-    ``control_mode`` / ``action_env_dim`` (and, when ``tasks`` is given, its task
-    set must cover the requested tasks). For ``joint_absolute`` it requires the
-    original 23-dim action shape and rejects a delta provenance file. Returns the
-    provenance dict (or ``None`` for joint mode). Raises ``ValueError`` on any
-    mismatch so a mode/dataset mix-up fails before streaming.
+    For the converted modes this requires ``dataset_root`` to be a converted
+    dataset with a matching ``meta/eef_delta_provenance.json`` (matching
+    ``control_mode`` / ``action_env_dim``, and when ``tasks`` is given a covering
+    task set): the EEF modes (absolute_eef / delta_eef / eef_delta_pose) require a
+    21-dim action shape, and ``delta_joint`` requires a 23-dim shape. For
+    ``joint_absolute`` it requires the original 23-dim action shape and REJECTS a
+    provenance file (so the converted 23-dim ``delta_joint`` dataset can never be
+    read as raw joint). Returns the provenance dict (or ``None`` for joint mode).
+    Raises ``ValueError`` on any mismatch so a mode/dataset mix-up fails before
+    streaming.
     """
     import json
     import os
@@ -643,18 +662,22 @@ def validate_converted_dataset(
             )
         return None
 
-    # Any EEF mode (absolute_eef / delta_eef / legacy eef_delta_pose): 21-dim,
-    # with a provenance file whose control_mode matches the requested mode.
-    if action_len != NEW_ACTION_DIM:
+    # Converted, provenance-carrying modes. The EEF modes (absolute_eef / delta_eef
+    # / legacy eef_delta_pose) are 21-dim; delta_joint is a converted 23-dim
+    # joint-delta dataset (same width as joint_absolute but WITH a provenance file,
+    # so the joint_absolute branch above correctly rejects it). The provenance
+    # control_mode + action_env_dim must match the requested mode.
+    expected_dim = OLD_ACTION_DIM if control_mode == "delta_joint" else NEW_ACTION_DIM
+    if action_len != expected_dim:
         raise ValueError(
-            f"control_mode={control_mode} expects a {NEW_ACTION_DIM}-dim action "
+            f"control_mode={control_mode} expects a {expected_dim}-dim action "
             f"dataset, but {dataset_root} has action shape {action_shape}. Point "
             f"at the converted {control_mode} dataset."
         )
     if not has_prov:
         raise ValueError(
             f"control_mode={control_mode} but {dataset_root} has no "
-            f"meta/eef_delta_provenance.json; it is not a converted EEF dataset."
+            f"meta/eef_delta_provenance.json; it is not a converted dataset."
         )
     prov = json.load(open(prov_path))
     if prov.get("control_mode") != control_mode:
@@ -662,10 +685,10 @@ def validate_converted_dataset(
             f"{prov_path} control_mode={prov.get('control_mode')!r}, expected "
             f"{control_mode!r} (the dataset was converted for a different mode)."
         )
-    if int(prov.get("action_env_dim", -1)) != NEW_ACTION_DIM:
+    if int(prov.get("action_env_dim", -1)) != expected_dim:
         raise ValueError(
             f"{prov_path} action_env_dim={prov.get('action_env_dim')}, expected "
-            f"{NEW_ACTION_DIM}."
+            f"{expected_dim}."
         )
     if tasks:
         prov_tasks = set(prov.get("tasks") or [])
@@ -686,11 +709,11 @@ def validate_converted_dataset(
 
         row = pq.read_table(sample[0], columns=["action"]).to_pandas()["action"].iloc[0]
         row_len = len(np.asarray(row))
-        if row_len != NEW_ACTION_DIM:
+        if row_len != expected_dim:
             raise ValueError(
                 f"converted dataset {dataset_root} parquet action width is "
                 f"{row_len} (sampled {os.path.basename(sample[0])}), expected "
-                f"{NEW_ACTION_DIM} for {control_mode}."
+                f"{expected_dim} for {control_mode}."
             )
     return prov
 
@@ -785,7 +808,9 @@ def _task_indices_for_names(src_root, task_names):
             name_to_idx[d["task_name"]] = d["task_index"]
     missing = [t for t in task_names if t not in name_to_idx]
     if missing:
-        raise ValueError(f"Unknown task name(s) {missing}; not in {src_root}/meta/tasks.jsonl.")
+        raise ValueError(
+            f"Unknown task name(s) {missing}; not in {src_root}/meta/tasks.jsonl."
+        )
     return {t: name_to_idx[t] for t in task_names}
 
 
@@ -796,15 +821,18 @@ def _convert_dataset_impl(
     episode_convert_fn,
     provenance: dict,
     *,
+    action_env_dim: int = NEW_ACTION_DIM,
     overwrite: bool = False,
     progress_every: int = 0,
 ) -> dict:
-    """Core LeRobot dataset converter shared by the FK-based and state-based EEF
-    paths. ``episode_convert_fn(action23, state256) -> action21 (float)`` supplies
-    the per-episode action transform; ``provenance`` is written verbatim to
+    """Core LeRobot dataset converter shared by the FK-based / state-based EEF paths
+    and the state-based delta-joint path. ``episode_convert_fn(action23, state256) ->
+    actionN (float)`` supplies the per-episode action transform; ``action_env_dim`` is
+    the converted action width (21 for the EEF modes, 23 for delta_joint) and is
+    written into ``meta/info.json``. ``provenance`` is written verbatim to
     ``meta/eef_delta_provenance.json``. Symlinks videos/ and per-task episode meta
     (never copies), regenerates meta filtered to the converted tasks with recomputed
-    21-dim action stats, and refuses in-place / nested conversion.
+    action stats, and refuses in-place / nested conversion.
     """
     import json
     import os
@@ -870,8 +898,15 @@ def _convert_dataset_impl(
         cols = table.column_names
         pdf = table.to_pandas()
         act23 = np.stack([np.asarray(a, dtype=np.float64) for a in pdf["action"]])
-        st256 = np.stack([np.asarray(s, dtype=np.float64) for s in pdf["observation.state"]])
+        st256 = np.stack(
+            [np.asarray(s, dtype=np.float64) for s in pdf["observation.state"]]
+        )
         act21 = np.asarray(episode_convert_fn(act23, st256), dtype=np.float32)
+        if act21.shape[1] != action_env_dim:
+            raise ValueError(
+                f"episode_convert_fn produced action width {act21.shape[1]}, "
+                f"expected action_env_dim={action_env_dim} (episode {ei})."
+            )
         pdf["action"] = list(act21)
         out_table = pa.Table.from_pandas(pdf[cols], preserve_index=False)
         pq.write_table(out_table, f"{dst_root}/{rel}")
@@ -890,9 +925,10 @@ def _convert_dataset_impl(
                 flush=True,
             )
 
-    with open(f"{src_root}/meta/episodes_stats.jsonl") as fin, open(
-        f"{dst_root}/meta/episodes_stats.jsonl", "w"
-    ) as fout:
+    with (
+        open(f"{src_root}/meta/episodes_stats.jsonl") as fin,
+        open(f"{dst_root}/meta/episodes_stats.jsonl", "w") as fout,
+    ):
         for line in fin:
             rec = json.loads(line)
             if rec["episode_index"] in sel_ep_set:
@@ -902,20 +938,25 @@ def _convert_dataset_impl(
     with open(f"{dst_root}/meta/episodes.jsonl", "w") as fout:
         for d in sel_episodes:
             fout.write(json.dumps(d) + "\n")
-    with open(f"{src_root}/meta/tasks.jsonl") as fin, open(
-        f"{dst_root}/meta/tasks.jsonl", "w"
-    ) as fout:
+    with (
+        open(f"{src_root}/meta/tasks.jsonl") as fin,
+        open(f"{dst_root}/meta/tasks.jsonl", "w") as fout,
+    ):
         for line in fin:
             if json.loads(line)["task_index"] in selected_task_indices:
                 fout.write(line if line.endswith("\n") else line + "\n")
 
-    info["features"]["action"]["shape"] = [NEW_ACTION_DIM]
+    info["features"]["action"]["shape"] = [action_env_dim]
     info["total_episodes"] = len(sel_episodes)
     info["total_frames"] = total_frames
     info["total_tasks"] = len(selected_task_indices)
     if "total_videos" in info:
         num_video_keys = len(info.get("video_keys") or []) or (
-            sum(1 for f in info.get("features", {}).values() if f.get("dtype") == "video")
+            sum(
+                1
+                for f in info.get("features", {}).values()
+                if f.get("dtype") == "video"
+            )
         )
         info["total_videos"] = len(sel_episodes) * num_video_keys
     info["total_chunks"] = len(selected_task_indices)
@@ -957,10 +998,14 @@ def convert_dataset(
         "action_env_dim": NEW_ACTION_DIM,
         "model_action_dim": 32,
         "source_action_dim": OLD_ACTION_DIM,
-        "controller": {"arms": "InverseKinematicsController", "mode": "pose_delta_ori",
-                       "command_input_limits": None, "command_output_limits": None},
+        "controller": {
+            "arms": "InverseKinematicsController",
+            "mode": "pose_delta_ori",
+            "command_input_limits": None,
+            "command_output_limits": None,
+        },
         "conversion_source": "dpos=FK(action_target)-FK(state_achieved); "
-                             "dori=quat2axisangle(mat2quat(R_target @ R_current.T))",
+        "dori=quat2axisangle(mat2quat(R_target @ R_current.T))",
         "orientation_convention": "exact_relative_rotation_axisangle_base_frame_left_multiply",
         "cspace_joints": CSPACE_JOINTS,
         "eef_offset_pos": EEF_OFFSET_POS.tolist(),

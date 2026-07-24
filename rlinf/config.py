@@ -959,11 +959,12 @@ def apply_behavior_control_mode(cfg):
 
     Extracted from :func:`validate_embodied_cfg` so it can be unit-tested without
     a Ray ``Cluster``. Requires ``actor.model.openpi.control_mode``, checks the
-    semantic action dim matches the mode (23 joint / 21 delta, distinct from the
-    padded ``model_action_dim``), and for ``eef_delta_pose`` rewrites both arm
-    controllers in ``env.{train,eval}.omni_config`` to OmniGibson's IK
-    (``pose_delta_ori``, raw metric deltas) so the env applies exactly the 21-dim
-    vector the SFT data encodes. Base, trunk, and grippers are unchanged.
+    semantic action dim matches the mode (23 joint / 21 EEF, distinct from the
+    padded ``model_action_dim``). For the EEF modes it rewrites both arm controllers
+    in ``env.{train,eval}.omni_config`` to OmniGibson's IK (``pose_delta_ori`` /
+    ``absolute_pose``); for ``delta_joint`` it flips both arm JointControllers to
+    ``use_delta_commands: True``. Either way the env applies exactly the vector the
+    SFT data encodes. Base, trunk, and grippers are unchanged.
     """
     # behavior_policy only imports numpy, so this is cheap during validation.
     from rlinf.models.embodiment.openpi_pytorch.policies.behavior_policy import (
@@ -1017,6 +1018,28 @@ def apply_behavior_control_mode(cfg):
                     "mode": ik_mode,
                     "command_input_limits": None,
                     "command_output_limits": None,
+                }
+    elif control_mode == "delta_joint":
+        # delta_joint keeps the arms on OmniGibson's JointController but flips them
+        # to delta commands: the model outputs a 7-DoF joint delta and the controller
+        # applies q_target = q_current + delta (raw radians, null limits), matching
+        # the state-to-state qpos_{t+1}-qpos_t the SFT data encodes. Base, trunk, and
+        # grippers are unchanged. Write the full JointController dict (mirrors the base
+        # R1Pro arm config with use_delta_commands: True) so no stale keys survive.
+        for env_split in ("train", "eval"):
+            env_cfg = cfg.env.get(env_split)
+            if env_cfg is None or env_cfg.get("omni_config") is None:
+                continue
+            controller_config = env_cfg.omni_config.robots[0].controller_config
+            for arm in ("arm_left", "arm_right"):
+                controller_config[arm] = {
+                    "name": "JointController",
+                    "motor_type": "position",
+                    "pos_kp": 150,
+                    "command_input_limits": None,
+                    "command_output_limits": None,
+                    "use_impedances": False,
+                    "use_delta_commands": True,
                 }
     return cfg
 

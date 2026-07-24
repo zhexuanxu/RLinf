@@ -1,0 +1,103 @@
+defaults:
+  - env/behavior_r1pro@env.train
+  - env/behavior_r1pro@env.eval
+  - model/pi0_5_pytorch@actor.model
+  - training_backend/fsdp@actor.fsdp_config
+  - weight_syncer/patch_syncer@weight_syncer
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor,env,rollout: all
+
+runner:
+  task_type: embodied
+  only_eval: True
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "behavior_ppo_openpi_pi05_pytorch_delta_joint_eval"
+    logger_backends: ["tensorboard"]
+  val_check_interval: 1
+
+algorithm:
+  adv_type: gae
+  loss_type: actor_critic
+  eval_rollout_epoch: 8
+
+env:
+  group_name: "EnvGroup"
+
+  train:
+    total_num_envs: 8
+    max_episode_steps: 4096
+    max_steps_per_rollout_epoch: 4096
+    video_cfg:
+      save_video: True
+      video_base_dir: ${runner.logger.log_path}/video/train
+      fps: 15
+  eval:
+    total_num_envs: 8
+    max_episode_steps: 4096
+    max_steps_per_rollout_epoch: 4096
+    video_cfg:
+      save_video: True
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 15
+
+rollout:
+  pipeline_stage_num: 1
+  model:
+    model_path: /mnt/public/xzxuan/repos/RLinf/outputs/sft_ckpt/delta_joint_task0
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 4
+  eval_batch_size: 1
+  global_batch_size: 64
+  seed: 42
+  model:
+    model_path: ${rollout.model.model_path}
+    # delta_joint is a 23-dim action space (both arms 7-DoF state-to-state joint
+    # deltas qpos_{t+1}-qpos_t; base/trunk/grippers passthrough); the model still
+    # pads to openpi.model_action_dim (32). validate_embodied_cfg flips both arm
+    # JointControllers to use_delta_commands: True so the env applies the 23-dim
+    # delta the SFT data encodes (q_target = q_current + delta, raw radians).
+    add_value_head: True
+    openpi:
+      # Single-switch routing: base assets point at the original joint stats; the
+      # *_delta_joint assets point at the delta-joint stats. control_mode selects
+      # (shared resolve_norm_stats_asset contract with the SFT loader).
+      assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id: turn_on_radio_reorder
+      assets_dir_delta_joint: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id_delta_joint: turn_on_radio_delta_joint
+      paligemma_tokenizer: /mnt/public/xzxuan/models/paligemma_tokenizer/paligemma_tokenizer.model
+      discrete_state_input: true
+      # Absolute joint state token (same as absolute_joint) — the delta is only in
+      # the ACTION. Stats built with --state-token abs_joint.
+      state_token: abs_joint
+      control_mode: delta_joint
+
+  optim:
+    lr: 2.5e-5
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    use_orig_params: True
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False

@@ -136,8 +136,8 @@ def validate_norm_stats_for_control_mode(
         raise ValueError(
             f"norm-stats asset {assets_dir}/{asset_id} has no metadata manifest, "
             f"but control_mode={control_mode!r} requires one (a manifest-less "
-            f"asset is a legacy joint_absolute stats file). Point at the "
-            f"delta-EEF stats asset produced by compute_norm_stats.py "
+            f"asset is a legacy joint_absolute stats file). Point at the converted "
+            f"stats asset produced by compute_norm_stats.py "
             f"--control-mode {control_mode}."
         )
     m_mode = manifest.get("control_mode")
@@ -163,7 +163,9 @@ def validate_norm_stats_for_control_mode(
                 resolve_state_token,
             )
 
-            if resolve_state_token(str(m_state)) != resolve_state_token(str(state_token)):
+            if resolve_state_token(str(m_state)) != resolve_state_token(
+                str(state_token)
+            ):
                 raise ValueError(
                     f"norm-stats asset {assets_dir}/{asset_id} was built with "
                     f"state_token={m_state!r}, but this run uses state_token="

@@ -63,6 +63,7 @@ openpi:
   # control_mode -> semantic action_dim map (action_dim above interpolates this).
   control_mode_action_dims:
     joint_absolute: 23
+    delta_joint: 23
     absolute_eef: 21
     delta_eef: 21
     eef_delta_pose: 21
