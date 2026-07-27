@@ -1,206 +1,213 @@
 Supervised Fine-Tuning with PyTorch OpenPI (Pi0.5) on BEHAVIOR
 ==============================================================
 
-This page explains how to run **supervised fine-tuning (SFT)** of the
-self-contained **PyTorch OpenPI Pi0.5** flow-matching VLA on the
-**BEHAVIOR-1K** task with the RLinf framework. The model is a pure-PyTorch
-re-implementation of the Pi0.5 architecture (dual-expert Gemma + SigLIP with a
-flow-matching action head), registered in RLinf under
-``model_type: openpi_pytorch``. SFT is typically the first stage before
-reinforcement learning: the model imitates high-quality demonstrations so that
-RL can continue optimization from a strong prior.
+.. figure:: https://raw.githubusercontent.com/RLinf/misc/main/pic/pi0_icon.jpg
+   :align: center
+   :width: 45%
 
-Contents
-----------
+   The π₀ model family used for PyTorch OpenPI SFT. Source: `Physical
+   Intelligence <https://www.physicalintelligence.company/blog/pi0>`_.
 
-- What the PyTorch OpenPI SFT flow is and how it is configured
-- The precision contract used by the FSDP optimizer and mixed-precision compute
-- The streaming BEHAVIOR data-loader keys and norm-stats / tokenizer settings
-- How to launch training and convert the resulting checkpoints for evaluation
+Fine-tune the numerically aligned PyTorch π₀.₅ implementation on BEHAVIOR
+demonstrations. You can train the action-only VLA or the full VLM-to-VLA model,
+which first predicts a subtask and then conditions the action expert on that
+prediction.
 
+Overview
+--------
 
-What it is
-----------
+Choose a single-task or 50-task recipe and train from the same π₀.₅ base model.
 
-The ``openpi_pytorch`` model is a self-contained PyTorch port of the Pi0.5
-flow-matching VLA. **It is worth emphasizing that** the PyTorch implementation
-shipped in the official openpi repository is *not* numerically aligned with its
-JAX reference, whereas this port is numerically aligned with the JAX
-implementation. Unlike the JAX/LeRobot-backed OpenPI path (see
-:doc:`sft_openpi`), it builds the model shape directly from a small set of
-config fields (no ``config.json`` is read at construction time) and is wired for
-BEHAVIOR-1K out of the box. During SFT the policy is trained to predict the
-32-step, 23-dim action chunk for the dual-arm R1 Pro robot from the BEHAVIOR
-demonstrations, using the flow-matching denoising objective.
+.. grid:: 2 4 4 4
+   :gutter: 2
 
+   .. grid-item-card:: Models
+      :text-align: center
 
-Configuration
--------------
+      π₀.₅ VLA · π₀.₅ VLM-to-VLA
 
-The example is split into a reusable, path-free **model template** and an
-**experiment config** that supplies the filesystem paths:
+   .. grid-item-card:: Methods
+      :text-align: center
 
-- Experiment config: ``examples/sft/config/behavior_pi05_vla.yaml``
-- Model template: ``examples/sft/config/model/pi0_5_pytorch.yaml``
+      Flow matching · language CE
 
-The experiment config pulls in the model template through Hydra ``defaults``:
+   .. grid-item-card:: Data
+      :text-align: center
 
-.. code:: yaml
+      BEHAVIOR task 0 · all 50 tasks
 
-   defaults:
-     - model/pi0_5_pytorch@actor.model
-     - training_backend/fsdp@actor.fsdp_config
-     - override hydra/job_logging: stdout
+   .. grid-item-card:: Hardware
+      :text-align: center
 
-Precision contract
-~~~~~~~~~~~~~~~~~~~
+      FSDP · bf16 compute
 
-The PyTorch OpenPI SFT recipe deliberately separates the **load dtype** from the
-**compute dtype**:
+| **You'll do:** prepare data and stats → select a config → launch SFT → convert the checkpoint for evaluation.
+| **Prerequisites:** :doc:`Installation </rst_source/start/installation>` · a new-format π₀.₅ base checkpoint · BEHAVIOR demonstrations.
 
-- The model template sets ``actor.model.precision: fp32`` (in
-  ``pi0_5_pytorch.yaml``). The fp32 weights are loaded as the **FSDP optimizer
-  master**, so warmup-LR updates are not lost to bf16 rounding.
-- FSDP ``MixedPrecision`` computes in bf16 while keeping the gradient all-reduce
-  and buffers in fp32:
+Tasks
+~~~~~
 
-  .. code:: yaml
+.. list-table::
+   :header-rows: 1
+   :widths: 24 30 46
 
-     actor:
-       fsdp_config:
-         gradient_checkpointing: True
-         mixed_precision:
-           param_dtype: bf16     # FSDP compute dtype
-           reduce_dtype: fp32    # grad all-reduce stays fp32
-           buffer_dtype: fp32
+   * - Recipe
+     - Config
+     - Supervision
+   * - Action-only
+     - ``behavior_pi05_vla``
+     - Main-task prompt and a 32-step action chunk.
+   * - Single-task VLM-to-VLA
+     - ``behavior_pi05_vlm_vla``
+     - Main-task prompt, frame-local subtask response, and actions.
+   * - 50-task VLM-to-VLA
+     - ``behavior_50tasks_pi05_vlm_vla``
+     - Episode-specific subtask language across all 50 tasks and actions.
 
-  ``param_dtype`` is the FSDP **compute** dtype and is set explicitly to bf16
-  rather than being interpolated from ``actor.model.precision``: the load-dtype
-  selector and the compute dtype are independent knobs, so an fp32-master load
-  still computes in bf16.
-- Gradient checkpointing is enabled
-  (``actor.fsdp_config.gradient_checkpointing: True``) on the dual-expert Gemma +
-  SigLIP backbone to reduce activation memory.
-- The learning-rate schedule is a reference-exact warmup + cosine decay,
-  selected with ``actor.optim.lr_scheduler: openpi_cosine`` (warmup starts at
-  ``peak / (warmup + 1)`` and cosine-decays to ``min_lr`` over
-  ``total_training_steps``).
+Observation and Action
+~~~~~~~~~~~~~~~~~~~~~~
 
-Streaming data loader
-~~~~~~~~~~~~~~~~~~~~~~~
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
 
-The BEHAVIOR streaming loader reads all of its parameters directly from the
-``data:`` section (there are no hidden defaults):
+   * - Field
+     - Specification
+   * - Observation
+     - Head RGB, left/right wrist RGB, and R1 Pro proprioception.
+   * - Action
+     - A 32-step BEHAVIOR action chunk, padded to 32 model channels.
+   * - Reward
+     - Not used during SFT.
+   * - Prompt
+     - Main task; ``vlm_vla`` additionally supervises an episode-local subtask.
 
-.. code:: yaml
+Prepare the Data
+----------------
+
+Point both generic dataset fields at the selected LeRobot dataset:
+
+.. code-block:: yaml
 
    data:
      train_data_paths: /path/to/2025-challenge-demos
      behavior_dataset_root: /path/to/2025-challenge-demos
-     repo_id: "behavior-1k/2025-challenge-demos"
-     modalities: ["rgb"]
+     repo_id: behavior-1k/2025-challenge-demos
+     modalities: [rgb]
      num_workers: 8
-     fine_grained_level: 0
-     tolerance_s: 1.0e-4
-     tasks: ["turning_on_radio"]
-     use_skill: false
-     task_subtasks:
-       turning_on_radio:
-         - "move to radio"
-         - "pick up radio from coffee table"
-         - "press radio"
-         - "place radio on coffee table"
+     hf_cache_dir: /path/to/large-cache/hf_datasets
+     tasks: [turning_on_radio]
 
-Key data fields:
+For ``vlm_vla``, set ``fine_grained_level: 1``. The loader keeps the main task
+as ``prompt`` and resolves ``response`` from each episode's skill annotation.
+Frames outside the valid annotation interval are skipped before video decoding.
+The 50-task cache can require about 140 GB, so place ``hf_cache_dir`` on a large
+filesystem.
 
-- ``train_data_paths`` / ``behavior_dataset_root``: root of the BEHAVIOR
-  dataset (the latter defaults to the former).
-- ``repo_id``: BEHAVIOR demonstration repo id
-  (``behavior-1k/2025-challenge-demos``).
-- ``modalities``: input modalities consumed by the loader (e.g. ``["rgb"]``).
-- ``num_workers``: number of data-loader worker processes.
-- ``fine_grained_level`` and ``tolerance_s``: time-alignment controls for the
-  streaming reader.
-- ``tasks``: the BEHAVIOR task(s) to train on.
-- ``use_skill``: when ``false``, train on the main-task text; when ``true``,
-  train on the per-frame REFERENCE skill text selected from ``task_subtasks``.
-- ``task_subtasks``: per-task ordered skill labels used to build the
-  index-to-label mapping when ``use_skill: true``.
+.. warning::
 
-Norm stats and tokenizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+   Do not use a fixed per-task subtask list for 50-task training. Skill
+   sequences and object identifiers vary by episode.
 
-The normalization statistics and PaliGemma tokenizer live under
-``actor.model.openpi``:
+Configure the Model
+-------------------
 
-.. code:: yaml
+Download the Model
+~~~~~~~~~~~~~~~~~~
+
+Stage a new-format π₀.₅ PyTorch base checkpoint locally. The directory must
+contain ``model.safetensors`` and ``config.json``. Set ``model_path`` to that
+directory; the validation recipes in this repository use
+``/mnt/public/xzxuan/models/pi05_base_pytorch_new``.
+
+The path-free model template is
+``examples/sft/config/model/pi0_5_pytorch.yaml``. Set experiment paths and the
+full π₀.₅ behavior under ``actor.model``:
+
+.. code-block:: yaml
 
    actor:
      model:
        model_path: /path/to/pi05_base_pytorch_new
        openpi:
-         assets_dir: /path/to/assets
-         asset_id: "behavior-1k/2025-challenge-demos"
-         paligemma_tokenizer: /path/to/paligemma_tokenizer/paligemma_tokenizer.model
+         mode: vlm_vla
+         state_token: abs_joint_old
+         assets_dir: /path/to/norm-stats
+         asset_id: behavior
+         language_loss_weight: 1.0
+         action_loss_weight: 10.0
+         stop_gradient_to_vlm: false
+         max_new_tokens: 24
+         language_temperature: 0.0
 
-- ``assets_dir``: directory holding the quantile-normalization stats.
-- ``asset_id``: sub-path under ``assets_dir`` for this task's stats.
-- ``paligemma_tokenizer``: the PaliGemma SentencePiece tokenizer model
-  (resolved from YAML, not hardcoded in code).
+Use ``state_token: none`` for a state-free language prefix. Other values inject
+the normalized state as discretized language tokens. OpenPI downloads the
+PaliGemma tokenizer into its cache automatically; set ``OPENPI_DATA_HOME`` to
+choose a shared writable cache directory. The tokenizer raises when the task,
+state, and response exceed ``max_token_len``; it never truncates away response
+or EOS supervision. The 50-task config uses 288 tokens.
 
-The norm stats are resolved at ``{assets_dir}/{asset_id}/norm_stats.json``.
+Norm stats resolve from
+``{assets_dir}/{asset_id}/norm_stats.json``. SFT and evaluation must use stats
+from the same state/action representation.
 
-Filesystem paths
-~~~~~~~~~~~~~~~~~
+Precision
+~~~~~~~~~
 
-All filesystem paths are set directly in the config as ``/path/to/...``
-placeholders. Edit them in ``examples/sft/config/behavior_pi05_vla.yaml`` to
-point at your own staged assets:
+The SFT template loads fp32 optimizer-master parameters. FSDP computes in bf16,
+reduces gradients in fp32, and enables non-reentrant gradient checkpointing.
+Keep these load and compute dtypes independent so small warmup updates are not
+rounded away.
 
-- ``data.train_data_paths`` / ``data.behavior_dataset_root``: root of the
-  BEHAVIOR streaming dataset.
-- ``actor.model.model_path``: the new-format **fp32 base checkpoint** the
-  trainer loads.
-- ``actor.model.openpi.assets_dir``: the norm-stats directory.
-- ``actor.model.openpi.paligemma_tokenizer``: the PaliGemma SentencePiece
-  tokenizer model.
+Installation
+------------
 
+Install the OpenPI model and BEHAVIOR environment:
 
-Launch scripts
-----------------
+.. code-block:: bash
 
-Run the SFT helper with the BEHAVIOR Pi0.5 config name:
+   bash requirements/install.sh embodied --model openpi --env behavior
 
-.. code:: bash
+What this does: it installs the RLinf OpenPI fork, the BEHAVIOR runtime, and the
+dependencies used by the shared ``build_openpi_transforms`` pipeline.
 
-   # return to repo root
+Run It
+------
+
+Launch one of the SFT recipes from the repository root:
+
+.. code-block:: bash
+
    bash examples/sft/run_vla_sft.sh behavior_pi05_vla
+   bash examples/sft/run_vla_sft.sh behavior_pi05_vlm_vla
+   bash examples/sft/run_vla_sft.sh behavior_50tasks_pi05_vlm_vla
 
-The script forwards the config name to the SFT entry point and writes logs and
-checkpoints under the configured ``runner.logger.log_path``. Checkpoints are
-saved every ``runner.save_interval`` steps under
-``.../checkpoints/global_step_<N>/``.
+The first command trains the existing action-only model. The other commands
+train language and action losses together. Checkpoints are written beneath
+``runner.logger.log_path/checkpoints/global_step_<N>/``.
 
+Convert a Checkpoint
+--------------------
 
-Converting checkpoints for evaluation
--------------------------------------
+Convert an FSDP SFT checkpoint into the bare new-format layout used by
+evaluation:
 
-An SFT-trained checkpoint can be converted into the bare new-format ``Pi0``
-layout (the layout the evaluation loader expects) with the OpenPI checkpoint
-convertor:
-
-.. code:: bash
+.. code-block:: bash
 
    python -m rlinf.utils.ckpt_convertor.openpi.convert --mode sft2new \
-       --ckpt              /path/to/logs/.../checkpoints/global_step_30000 \
-       --input-norm-stats  /path/to/norm_stats.json \
-       --output-model      /path/to/pi05_sft_pytorch_new \
+       --ckpt /path/to/checkpoints/global_step_30000 \
+       --input-norm-stats /path/to/norm_stats.json \
+       --output-model /path/to/pi05_sft_pytorch_new \
        --output-norm-stats /path/to/pi05_sft_pytorch_new/physical-intelligence/behavior/norm_stats.json
 
-The ``sft2new`` mode strips the wrapper/FSDP key prefixes, casts floating-point
-tensors to bf16 (the new-format eval loader validates that every checkpoint
-tensor is bf16), and copies the norm-stats file verbatim. See the convertor
-package README at ``rlinf/utils/ckpt_convertor/openpi/README.md`` for the other
-conversion modes and full flag reference. The converted checkpoint can then be
-used to evaluate on BEHAVIOR; see :doc:`behavior` for the eval config and launch
-command.
+The converter removes wrapper/FSDP prefixes, casts model tensors to bf16, and
+copies the selected norm stats. Use the matching standalone workflow in
+:doc:`BEHAVIOR evaluation <../../evaluations/guides/behavior>`.
+
+Visualization and Results
+-------------------------
+
+Launch TensorBoard against ``runner.logger.log_path``. For ``vlm_vla``, inspect
+``action_loss``, ``language_loss``, and ``language_acc`` together with the total
+``loss``. See :doc:`Training metrics <../../reference/metrics>` for the shared
+logging contract.

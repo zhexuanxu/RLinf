@@ -26,10 +26,21 @@ from rlinf.models.embodiment.openpi_pytorch.openpi_action_model import (
 )
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.model import Observation
 from rlinf.models.embodiment.openpi_pytorch.pi0_model.pi0 import Pi0
+from rlinf.models.embodiment.openpi_pytorch.utils.tokenizer import (
+    PaligemmaTokenizer,
+)
 
 
 def _to_numpy(x):
-    return np.asarray(x.detach().cpu()) if torch.is_tensor(x) else x
+    if not torch.is_tensor(x):
+        return x
+    value = x.detach().cpu()
+    # NumPy has no native bfloat16 dtype. Model outputs use bf16 at eval, while
+    # the shared OpenPI transforms operate on NumPy arrays, so cross that
+    # boundary through float32.
+    if value.dtype == torch.bfloat16:
+        value = value.float()
+    return np.asarray(value)
 
 
 class OpenPiPytorchEvalActionModel(OpenPiPytorchActionModel):
@@ -56,6 +67,7 @@ class OpenPiPytorchEvalActionModel(OpenPiPytorchActionModel):
         action_chunk: int | None = None,
         config_name: str = "",
         state_indices: Sequence[int] | None = None,
+        subtask_tokenizer: PaligemmaTokenizer | None = None,
     ):
         super().__init__(
             pi0_model,
@@ -72,6 +84,7 @@ class OpenPiPytorchEvalActionModel(OpenPiPytorchActionModel):
         # Optional subset of the raw env state dim (openpi ``state_indices``).
         # ``None`` (the BEHAVIOR default) is an identity passthrough.
         self.state_indices = list(state_indices) if state_indices else None
+        self.subtask_tokenizer = subtask_tokenizer
 
         # openpi.transforms pipeline state (installed by :meth:`setup_wrappers`).
         self._input_transform_fn = None
@@ -274,6 +287,7 @@ class OpenPiPytorchEvalActionModel(OpenPiPytorchActionModel):
             tokenized_prompt_mask=_move(obs.tokenized_prompt_mask),
             token_ar_mask=_move(obs.token_ar_mask),
             token_loss_mask=_move(obs.token_loss_mask),
+            token_kv_cache_mask=_move(obs.token_kv_cache_mask),
             pcd_xyz=_move(obs.pcd_xyz),
         )
 
@@ -327,9 +341,24 @@ class OpenPiPytorchEvalActionModel(OpenPiPytorchActionModel):
         :class:`huggingface_worker.HuggingFaceWorker.predict` expects from an
         eval call.
         """
-        model_actions = self.model.sample_actions(
-            observation, num_steps=self.num_steps, noise=noise, rng=rng
-        )
+        generation = None
+        if getattr(self.model, "vlm_vla", False):
+            if self.subtask_tokenizer is None:
+                raise RuntimeError(
+                    "vlm_vla eval requires the subtask tokenizer installed by "
+                    "build_openpi_transforms()."
+                )
+            model_actions, generation = self.model.reason_and_sample_actions(
+                observation,
+                eos_token_id=self.subtask_tokenizer.eos_token_id,
+                num_steps=self.num_steps,
+                noise=noise,
+                rng=rng,
+            )
+        else:
+            model_actions = self.model.sample_actions(
+                observation, num_steps=self.num_steps, noise=noise, rng=rng
+            )
         env_outputs = self.output_transform(
             {"actions": model_actions, "state": observation.state}
         )
@@ -346,4 +375,16 @@ class OpenPiPytorchEvalActionModel(OpenPiPytorchActionModel):
                 "model_action": model_actions.reshape(B, -1).contiguous(),
             },
         }
+        if generation is not None:
+            tokens = generation["tokens"]
+            eos_steps = generation["eos_steps"]
+            texts = [
+                self.subtask_tokenizer.decode(
+                    tokens[row, : int(eos_steps[row].item())].tolist()
+                )
+                for row in range(B)
+            ]
+            result["generated_text"] = texts
+            result["generation_terminated"] = generation["terminated"].cpu()
+            result["forward_inputs"]["generated_token_ids"] = tokens.contiguous()
         return actions, result

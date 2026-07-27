@@ -1,0 +1,97 @@
+defaults:
+  - model/pi0_5_pytorch@actor.model
+  - hybrid_engines/fsdp@actor.fsdp_config
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor,env,rollout: all
+
+runner:
+  task_type: sft
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "sft_behavior_pi05_vlm_vla"
+    logger_backends: ["tensorboard"]
+  max_epochs: 20
+  max_steps: 30000
+  val_check_interval: -1
+  save_interval: 10000
+
+data:
+  train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
+  behavior_dataset_root: ${data.train_data_paths}
+  repo_id: "behavior-1k/2025-challenge-demos"
+  modalities: ["rgb"]
+  num_workers: 8
+  hf_cache_dir: /mnt/public/xzxuan/tmp/rlinf_e2e_openpi/hf_datasets
+  check_timestamp_sync: false
+  fine_grained_level: 1
+  enable_gap: false
+  tolerance_s: 1.0e-4
+  tasks: ["turning_on_radio"]
+  use_skill: false
+
+algorithm:
+  adv_type: gae
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 32
+  eval_batch_size: 1
+  global_batch_size: 256
+  seed: 42
+
+  model:
+    model_path: /mnt/public/xzxuan/models/pi05_base_pytorch_new
+    openpi:
+      assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id: turn_on_radio_old
+      mode: vlm_vla
+      state_token: none
+      language_loss_weight: 1.0
+      action_loss_weight: 10.0
+      stop_gradient_to_vlm: false
+      max_new_tokens: 24
+      language_temperature: 0.0
+
+  optim:
+    lr: 2.5e-5
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 1.0e-10
+    clip_grad: 1.0
+    total_training_steps: 30000
+    lr_warmup_steps: 1000
+    lr_scheduler: "openpi_cosine"
+    num_cycles: 0.5
+    min_lr: 0.0
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    use_orig_params: true
+    gradient_checkpointing: true
+    gradient_checkpointing_use_reentrant: false
+    mixed_precision:
+      param_dtype: bf16
+      reduce_dtype: fp32
+      buffer_dtype: fp32
+
+reward:
+  use_reward_model: false
+
+critic:
+  use_critic_model: false

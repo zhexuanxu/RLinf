@@ -272,26 +272,34 @@ OpenPI-Comet 作为示例来源：
 
 BEHAVIOR 评估同样支持新的 **自包含 PyTorch OpenPI** 代码（模型
 ``model_type: openpi_pytorch``；对应的 SFT 流程参见 :doc:`sft_openpi_pytorch`）。
-评估配置为：
+选择仅动作或先推理再执行的配置：
 
-- ``evaluations/behavior/behavior_openpi_pi05_pytorch_eval.yaml``
+- ``evaluations/behavior/behavior_openpi_pi05_pytorch_eval.yaml`` 运行现有的
+  VLA-only 路径。
+- ``evaluations/behavior/behavior_openpi_pi05_pytorch_vlm_vla_eval.yaml`` 先生成
+  子任务，再让动作专家基于生成 token 输出动作。
 
-该配置以纯评估模式运行（``runner.only_eval: True``），并消费 **新格式** 的
+两个配置均以纯评估模式运行（``runner.only_eval: True``），并消费 **新格式** 的
 PyTorch checkpoint，即由 OpenPI checkpoint 转换器
 （``ckpt_convertor.openpi`` 的 ``old2new`` / ``sft2new``）产出的 checkpoint。
-将模型路径以 ``/path/to/...`` 占位符的形式直接写在配置中：
+启动评估前，请设置或覆盖模型路径：
 
 - ``rollout.model.model_path``：新格式评估 checkpoint。
-- ``rollout.model.openpi.assets_dir``：存放 BEHAVIOR 归一化统计的目录。归一化统计在
-  ``{assets_dir}/{asset_id}/norm_stats.json`` 处解析。
-- ``rollout.model.openpi.paligemma_tokenizer``：PaliGemma SentencePiece tokenizer
-  模型。
+- VLM-to-VLA 示例预填了本地验收测试 checkpoint；在其他机器上运行时请替换该路径。
+- checkpoint 必须在 ``physical-intelligence/behavior/norm_stats.json`` 中包含
+  BEHAVIOR 归一化统计。
+- 两条路径都会自动将 PaliGemma tokenizer 下载到 OpenPI 缓存。可设置
+  ``OPENPI_DATA_HOME`` 来选择共享的可写缓存目录。
 
 .. code:: bash
 
    export ISAAC_PATH=/path/to/isaac-sim
    export OMNIGIBSON_DATA_PATH=/path/to/BEHAVIOR-1K-datasets
    bash evaluations/run_eval.sh behavior behavior_openpi_pi05_pytorch_eval
+   bash evaluations/run_eval.sh behavior behavior_openpi_pi05_pytorch_vlm_vla_eval
+
+VLM-to-VLA checkpoint 必须使用与评估一致的 prompt 约定。对于未使用离散状态 token
+训练的 checkpoint，设置 ``state_token: none``。
 
 .. note::
 

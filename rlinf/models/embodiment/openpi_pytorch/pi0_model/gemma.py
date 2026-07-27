@@ -36,6 +36,7 @@ import torch.utils.checkpoint
 
 from . import lora
 from .lora import FeedForward as LoRAFeedForward
+from .static_kv_cache import StaticKVCache, StaticLayerKV
 from .utils import _str_to_dtype, gelu_glu
 
 PALIGEMMA_VOCAB_SIZE = 257_152
@@ -203,6 +204,9 @@ class Attention(nn.Module):
     def __init__(self, configs: Sequence[Config]):
         super().__init__()
         self.expert_configs = configs
+        # When enabled, suffix queries see detached prefix K/V during a joint
+        # training pass. Prefix self-attention retains its normal gradients.
+        self.detach_prefix_kv = False
         self.num_heads = configs[0].num_heads
         self.num_kv_heads = configs[0].num_kv_heads
         self.head_dim = configs[0].head_dim
@@ -269,13 +273,52 @@ class Attention(nn.Module):
                 std=1.0 / math.sqrt(config.num_heads * config.head_dim),
             )
 
+    def _attend(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        attn_mask: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Apply masked grouped-query attention."""
+        num_kv_heads = self.num_kv_heads
+        num_query_groups = self.num_heads // num_kv_heads
+
+        q = q.reshape(
+            q.shape[0],
+            q.shape[1],
+            num_kv_heads,
+            num_query_groups,
+            self.head_dim,
+        )
+        k = k.reshape(k.shape[0], k.shape[1], num_kv_heads, self.head_dim)
+        v = v.reshape(v.shape[0], v.shape[1], num_kv_heads, self.head_dim)
+
+        logits = torch.einsum("BTKGH,BSKH->BKGTS", q.float(), k.float())
+        mask_for_logits = attn_mask[:, :, None, :, :].expand_as(logits).bool()
+        big_neg = torch.tensor(-2.3819763e38, dtype=logits.dtype, device=logits.device)
+        masked_logits = torch.where(mask_for_logits, logits, big_neg)
+        probs = F.softmax(masked_logits, dim=-1).to(dtype)
+
+        encoded = torch.einsum("BKGTS,BSKH->BTKGH", probs, v.to(dtype))
+        return encoded.reshape(
+            encoded.shape[0],
+            encoded.shape[1],
+            num_kv_heads * num_query_groups,
+            self.head_dim,
+        )
+
     def forward(
         self,
         xs: list[torch.Tensor | None],
         positions: torch.Tensor,
         attn_mask: torch.Tensor,
-        kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[list[torch.Tensor | None], tuple[torch.Tensor, torch.Tensor]]:
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | StaticLayerKV | None = None,
+    ) -> tuple[
+        list[torch.Tensor | None],
+        tuple[torch.Tensor, torch.Tensor] | StaticLayerKV,
+    ]:
         """Multi-expert attention forward.
 
         Concatenates all expert inputs along the sequence dimension (like JAX),
@@ -285,7 +328,7 @@ class Attention(nn.Module):
             xs: list of inputs, one per expert (or None)
             positions: (B, T) positional indices covering full concatenated sequence
             attn_mask: (B, 1, T, S) attention mask
-            kv_cache: optional (k, v) cache tuple
+            kv_cache: optional (k, v) tuple or static generation-cache layer
 
         Returns:
             (outputs, new_kv_cache)
@@ -323,13 +366,20 @@ class Attention(nn.Module):
         q = _apply_rope(q, positions=positions)
         k = _apply_rope(k, positions=positions)
 
-        # KV cache: concatenate along sequence dim
-        if kv_cache is not None:
-            cache_k, cache_v = kv_cache
-            k = torch.cat([cache_k, k], dim=1)
-            v = torch.cat([cache_v, v], dim=1)
-
-        new_kv_cache = (k, v)
+        if isinstance(kv_cache, StaticLayerKV):
+            if kv_cache.cache.frozen:
+                k = torch.cat([kv_cache.k, k], dim=1)
+                v = torch.cat([kv_cache.v, v], dim=1)
+            else:
+                kv_cache.write(k, v)
+                k, v = kv_cache.k, kv_cache.v
+            new_kv_cache = kv_cache
+        else:
+            if kv_cache is not None:
+                cache_k, cache_v = kv_cache
+                k = torch.cat([cache_k, k], dim=1)
+                v = torch.cat([cache_v, v], dim=1)
+            new_kv_cache = (k, v)
 
         # Apply mask: shape (B, 1, T, S) -> broadcast to (B, K, G, T, S)
         if attn_mask.dim() == 4:
@@ -338,35 +388,34 @@ class Attention(nn.Module):
         # GQA einsum pattern matching JAX:
         q = q * (self.head_dim**-0.5)
 
-        # q: (B, T, num_heads, H) -> rearrange to (B, T, K, G, H)
-        # k: (B, S, num_kv_heads, H) -> stays (B, S, K, H)
-        K = self.num_kv_heads
-        G = self.num_heads // K
-
-        q_r = q.reshape(q.shape[0], q.shape[1], K, G, self.head_dim)
-        k_r = k.reshape(k.shape[0], k.shape[1], K, self.head_dim)
-        v_r = v.reshape(v.shape[0], v.shape[1], K, self.head_dim)
-
-        # einsum "BTKGH,BSKH->BKGTS"
-        logits = torch.einsum("BTKGH,BSKH->BKGTS", q_r.float(), k_r.float())
-
-        # Align mask to logits shape: logits is (B, K, G, T, S), mask is (B, 1, T, S)
-        # We need mask to be (B, 1, 1, T, S) so it broadcasts to (B, K, G, T, S)
-        big_neg = -2.3819763e38
-        mask_for_logits = attn_mask[:, :, None, :, :].expand_as(logits).bool()
-        masked_logits = torch.where(
-            mask_for_logits,
-            logits,
-            torch.tensor(big_neg, dtype=logits.dtype, device=logits.device),
-        )
-
-        probs = F.softmax(masked_logits, dim=-1).to(dtype)
-
-        # einsum "BKGTS,BSKH->BTKGH"
-        encoded = torch.einsum("BKGTS,BSKH->BTKGH", probs, v_r.to(dtype))
-        encoded = encoded.reshape(
-            encoded.shape[0], encoded.shape[1], K * G, self.head_dim
-        )
+        if (
+            self.detach_prefix_kv
+            and kv_cache is None
+            and len(xs) >= 2
+            and xs[0] is not None
+            and xs[1] is not None
+        ):
+            # Prefix queries keep normal gradients for language CE. Suffix
+            # queries attend detached prefix K/V, so action loss cannot update
+            # the VLM, plus their own K/V with normal gradients.
+            prefix_len = xs[0].shape[1]
+            prefix_encoded = self._attend(
+                q[:, :prefix_len],
+                k[:, :prefix_len],
+                v[:, :prefix_len],
+                attn_mask[:, :, :prefix_len, :prefix_len],
+                dtype,
+            )
+            suffix_encoded = self._attend(
+                q[:, prefix_len:],
+                torch.cat([k[:, :prefix_len].detach(), k[:, prefix_len:]], dim=1),
+                torch.cat([v[:, :prefix_len].detach(), v[:, prefix_len:]], dim=1),
+                attn_mask[:, :, prefix_len:, :],
+                dtype,
+            )
+            encoded = torch.cat([prefix_encoded, suffix_encoded], dim=1)
+        else:
+            encoded = self._attend(q, k, v, attn_mask, dtype)
         # encoded: (B, T_total, num_heads, head_dim)
 
         # Split back to per-expert outputs
@@ -449,11 +498,14 @@ class Block(nn.Module):
     def forward(
         self,
         xs: list[torch.Tensor | None],
-        kv_cache: tuple[torch.Tensor, torch.Tensor] | None,
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | StaticLayerKV | None,
         positions: torch.Tensor,
         attn_mask: torch.Tensor,
         adarms_cond: list[torch.Tensor | None],
-    ) -> tuple[list[torch.Tensor | None], tuple[torch.Tensor, torch.Tensor]]:
+    ) -> tuple[
+        list[torch.Tensor | None],
+        tuple[torch.Tensor, torch.Tensor] | StaticLayerKV,
+    ]:
         """Forward pass.
 
         Args:
@@ -561,8 +613,11 @@ class Module(nn.Module):
         mask: torch.Tensor,
         adarms_cond: Sequence[torch.Tensor | None] | None = None,
         *,
-        kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[list[torch.Tensor | None], tuple[torch.Tensor, torch.Tensor]]:
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | StaticKVCache | None = None,
+    ) -> tuple[
+        list[torch.Tensor | None],
+        tuple[tuple[torch.Tensor, torch.Tensor] | StaticLayerKV, ...],
+    ]:
         """Full transformer forward pass.
 
         Args:
@@ -570,7 +625,7 @@ class Module(nn.Module):
             positions: (B, T) position indices
             mask: (B, T, S) attention mask (bool)
             adarms_cond: per-expert adaptive conditioning (or None)
-            kv_cache: optional KV cache for inference
+            kv_cache: optional tuple cache or static generation cache
 
         Returns:
             (outputs, new_kv_cache)
@@ -589,9 +644,12 @@ class Module(nn.Module):
 
         # KV cache: per-layer cache for inference. During training, no cache is used.
         # In JAX's nn.scan, each layer gets its own element from the cache list.
-        # We replicate this with per-layer caches.
+        # We replicate this with per-layer caches. Static generation caches
+        # expose one in-place layer handle per transformer block.
         if kv_cache is None:
             layer_kv_caches = [None] * len(self.layers)
+        elif isinstance(kv_cache, StaticKVCache):
+            layer_kv_caches = kv_cache.layers()
         else:
             layer_kv_caches = (
                 list(kv_cache)

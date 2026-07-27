@@ -1,0 +1,148 @@
+defaults:
+  - model/pi0_5_pytorch@actor.model
+  - hybrid_engines/fsdp@actor.fsdp_config
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor,env,rollout: all
+
+runner:
+  task_type: sft
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "sft_behavior_50tasks_pi05_vlm_vla"
+    logger_backends: ["tensorboard"]
+  max_epochs: 20
+  max_steps: 50000
+  val_check_interval: -1
+  save_interval: 10000
+
+data:
+  train_data_paths: /mnt/public/xzxuan/data/2025-challenge-demos
+  behavior_dataset_root: ${data.train_data_paths}
+  repo_id: "behavior-1k/2025-challenge-demos"
+  modalities: ["rgb"]
+  num_workers: 8
+  hf_cache_dir: /mnt/public/xzxuan/tmp/rlinf_e2e_openpi/hf_datasets
+  check_timestamp_sync: false
+  fine_grained_level: 1
+  enable_gap: false
+  tolerance_s: 1.0e-4
+  tasks:
+    - "turning_on_radio"
+    - "picking_up_trash"
+    - "putting_away_Halloween_decorations"
+    - "cleaning_up_plates_and_food"
+    - "can_meat"
+    - "setting_mousetraps"
+    - "hiding_Easter_eggs"
+    - "picking_up_toys"
+    - "rearranging_kitchen_furniture"
+    - "putting_up_Christmas_decorations_inside"
+    - "set_up_a_coffee_station_in_your_kitchen"
+    - "putting_dishes_away_after_cleaning"
+    - "preparing_lunch_box"
+    - "loading_the_car"
+    - "carrying_in_groceries"
+    - "bringing_in_wood"
+    - "moving_boxes_to_storage"
+    - "bringing_water"
+    - "tidying_bedroom"
+    - "outfit_a_basic_toolbox"
+    - "sorting_vegetables"
+    - "collecting_childrens_toys"
+    - "putting_shoes_on_rack"
+    - "boxing_books_up_for_storage"
+    - "storing_food"
+    - "clearing_food_from_table_into_fridge"
+    - "assembling_gift_baskets"
+    - "sorting_household_items"
+    - "getting_organized_for_work"
+    - "clean_up_your_desk"
+    - "setting_the_fire"
+    - "clean_boxing_gloves"
+    - "wash_a_baseball_cap"
+    - "wash_dog_toys"
+    - "hanging_pictures"
+    - "attach_a_camera_to_a_tripod"
+    - "clean_a_patio"
+    - "clean_a_trumpet"
+    - "spraying_for_bugs"
+    - "spraying_fruit_trees"
+    - "make_microwave_popcorn"
+    - "cook_cabbage"
+    - "chop_an_onion"
+    - "slicing_vegetables"
+    - "chopping_wood"
+    - "cook_hot_dogs"
+    - "cook_bacon"
+    - "freeze_pies"
+    - "canning_food"
+    - "make_pizza"
+  use_skill: false
+
+algorithm:
+  adv_type: gae
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 32
+  eval_batch_size: 1
+  global_batch_size: 256
+  seed: 42
+
+  model:
+    model_path: /mnt/public/xzxuan/models/pi05_base_pytorch_new
+    openpi:
+      assets_dir: /mnt/public/xzxuan/repos/RLinf/outputs/norm_stats
+      asset_id: 50tasks_reorder
+      max_token_len: 288
+      mode: vlm_vla
+      state_token: none
+      language_loss_weight: 1.0
+      action_loss_weight: 10.0
+      stop_gradient_to_vlm: false
+      max_new_tokens: 24
+      language_temperature: 0.0
+
+  optim:
+    lr: 2.5e-5
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 1.0e-10
+    clip_grad: 1.0
+    total_training_steps: 50000
+    lr_warmup_steps: 2000
+    lr_scheduler: "openpi_cosine"
+    num_cycles: 0.5
+    min_lr: 0.0
+
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    use_orig_params: true
+    gradient_checkpointing: true
+    gradient_checkpointing_use_reentrant: false
+    mixed_precision:
+      param_dtype: bf16
+      reduce_dtype: fp32
+      buffer_dtype: fp32
+
+reward:
+  use_reward_model: false
+
+critic:
+  use_critic_model: false

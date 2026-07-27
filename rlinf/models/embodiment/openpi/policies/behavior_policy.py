@@ -143,6 +143,11 @@ class BehaviorInputs(transforms.DataTransformFn):
         # stored in "prompt"; the output dict always needs to have the key "prompt").
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
+        # Full π₀.₅ SFT supervises an autoregressive subtask response. Keep it
+        # alongside the main-task prompt until the model-transform tokenizer
+        # consumes both fields. Action-only VLA samples simply omit this key.
+        if "response" in data:
+            inputs["response"] = data["response"]
 
         return inputs
 

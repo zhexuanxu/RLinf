@@ -38,11 +38,35 @@ class Pi0Config(model.BaseModelConfig):
     discrete_state_input: bool | None = None
     pcd: bool = False
 
+    # VLM token output. "vla" is the action-only behavior; "vlm_vla" lets the
+    # PaliGemma backbone emit subtask tokens before the action expert denoises
+    # actions.
+    mode: str = "vla"
+    # SFT combines the language and flow-matching losses with these weights.
+    language_loss_weight: float = 1.0
+    action_loss_weight: float = 1.0
+    # Prevent the flow-matching loss from updating the VLM prefix while still
+    # allowing the language loss to train it.
+    stop_gradient_to_vlm: bool = False
+    # Subtask generation settings (temperature 0 means greedy decoding).
+    max_new_tokens: int = 24
+    language_temperature: float = 0.0
+
     def __post_init__(self):
         if self.pi05 and self.max_token_len == 48:
             object.__setattr__(self, "max_token_len", 200)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.mode not in ("vla", "vlm_vla"):
+            raise ValueError(f"mode must be 'vla' or 'vlm_vla', got {self.mode!r}")
+        if self.mode == "vlm_vla" and not self.pi05:
+            raise ValueError("vlm_vla mode requires the pi05 configuration")
+        if self.language_loss_weight < 0 or self.action_loss_weight < 0:
+            raise ValueError("language and action loss weights must be non-negative")
+        if self.max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must be positive")
+        if self.language_temperature < 0:
+            raise ValueError("language_temperature must be non-negative")
 
     def create(self, **kwargs) -> model.BaseModel:
         from .pi0 import Pi0
@@ -52,6 +76,18 @@ class Pi0Config(model.BaseModelConfig):
     def fake_obs(self, batch_size: int = 1) -> model.Observation:
         image = torch.ones(batch_size, *model.IMAGE_RESOLUTION, 3)
         image_mask = torch.ones(batch_size, dtype=torch.bool)
+        token_ar_mask = None
+        token_loss_mask = None
+        token_kv_cache_mask = None
+        if self.mode == "vlm_vla":
+            token_ar_mask = torch.zeros(
+                batch_size, self.max_token_len, dtype=torch.bool
+            )
+            token_ar_mask[:, -1] = True
+            token_loss_mask = torch.zeros_like(token_ar_mask)
+            token_loss_mask[:, -1] = True
+            token_kv_cache_mask = torch.ones_like(token_ar_mask)
+            token_kv_cache_mask[:, -1] = False
         return model.Observation(
             images={
                 "base_0_rgb": image,
@@ -70,6 +106,9 @@ class Pi0Config(model.BaseModelConfig):
             tokenized_prompt_mask=torch.ones(
                 batch_size, self.max_token_len, dtype=torch.bool
             ),
+            token_ar_mask=token_ar_mask,
+            token_loss_mask=token_loss_mask,
+            token_kv_cache_mask=token_kv_cache_mask,
             pcd_xyz=torch.ones(batch_size, 16, 2025, 3) if self.pcd else None,
         )
 

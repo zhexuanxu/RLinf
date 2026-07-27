@@ -52,23 +52,27 @@ class OpenPiPytorchSFTActionModel(OpenPiPytorchActionModel):
             )
         return self.sft_forward(**kwargs)
 
-    def sft_forward(self, data: Any) -> torch.Tensor:
+    def sft_forward(self, data: Any) -> torch.Tensor | dict[str, torch.Tensor]:
         """Compute the flow-matching SFT loss for one batch.
 
         ``data`` is either a ``(observation, actions)`` tuple or a dict with
         ``observation`` and ``actions`` keys. The data loader has already run
         the openpi transform pipeline, so ``actions`` arrive normalised and
-        padded to the model action dim. Returns the scalar mean of the
-        ``(B, action_horizon)`` per-timestep loss from :meth:`Pi0.compute_loss`
-        (which samples the flow-matching noise/time internally).
+        padded to the model action dim. Action-only VLA returns the scalar mean
+        of the ``(B, action_horizon)`` flow loss. ``vlm_vla`` returns the
+        model's metric dict containing the weighted total, action loss,
+        language loss, and language accuracy.
         """
         observation, actions = self._unpack_sft_batch(data)
         observation = self._observation_to_device(observation)
         actions = self._actions_to_device(actions)
-        per_timestep_loss = self.model.compute_loss(observation, actions, train=True)
-        return per_timestep_loss.mean()
+        output = self.model.compute_loss(observation, actions, train=True)
+        # Action-only VLA returns a per-timestep tensor. Full π₀.₅ returns a
+        # scalar combined loss plus detached action/language metrics, which the
+        # generic SFT worker already knows how to log.
+        return output if isinstance(output, dict) else output.mean()
 
-    def compute_loss(self, data: Any) -> torch.Tensor:
+    def compute_loss(self, data: Any) -> torch.Tensor | dict[str, torch.Tensor]:
         """Alias kept for interface parity with the old action model."""
         return self.sft_forward(data)
 
@@ -115,6 +119,7 @@ class OpenPiPytorchSFTActionModel(OpenPiPytorchActionModel):
             tokenized_prompt_mask=_move(observation.tokenized_prompt_mask),
             token_ar_mask=_move(observation.token_ar_mask),
             token_loss_mask=_move(observation.token_loss_mask),
+            token_kv_cache_mask=_move(observation.token_kv_cache_mask),
             pcd_xyz=_move(observation.pcd_xyz),
         )
 

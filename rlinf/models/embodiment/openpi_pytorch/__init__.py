@@ -55,6 +55,20 @@ def get_model(cfg: Any, torch_dtype: Any = None) -> Any:
     if not weights_path.exists():
         raise FileNotFoundError(f"openpi_pytorch checkpoint not found: {weights_path}")
 
+    mode = str(OmegaConf.select(model_cfg, "mode", default="vla")).lower()
+    state_token_value = OmegaConf.select(model_cfg, "state_token", default=None)
+    if state_token_value is None:
+        # Compatibility for existing non-BEHAVIOR templates. New π₀.₅ configs
+        # use ``state_token`` as the public selector.
+        discrete_state_input = bool(
+            OmegaConf.select(model_cfg, "discrete_state_input", default=True)
+        )
+    else:
+        state_token = str(state_token_value).lower()
+        if not state_token:
+            raise ValueError("actor.model.openpi.state_token must not be empty.")
+        discrete_state_input = state_token != "none"
+
     pi0_kwargs = {
         "pi05": True,
         "action_horizon": int(cfg.num_action_chunks),
@@ -63,12 +77,27 @@ def get_model(cfg: Any, torch_dtype: Any = None) -> Any:
         "action_expert_variant": str(model_cfg.action_expert_variant),
         "dtype": "bfloat16",
         "pcd": False,
+        # ``state_token`` is the public selector. The vendored Pi0Config keeps
+        # this internal bool because it controls continuous-vs-discrete state
+        # placement in the action-only model too.
+        "discrete_state_input": discrete_state_input,
+        "mode": mode,
+        "language_loss_weight": float(
+            OmegaConf.select(model_cfg, "language_loss_weight", default=1.0)
+        ),
+        "action_loss_weight": float(
+            OmegaConf.select(model_cfg, "action_loss_weight", default=1.0)
+        ),
+        "stop_gradient_to_vlm": bool(
+            OmegaConf.select(model_cfg, "stop_gradient_to_vlm", default=False)
+        ),
+        "max_new_tokens": int(
+            OmegaConf.select(model_cfg, "max_new_tokens", default=24)
+        ),
+        "language_temperature": float(
+            OmegaConf.select(model_cfg, "language_temperature", default=0.0)
+        ),
     }
-    discrete_state_input = OmegaConf.select(
-        model_cfg, "discrete_state_input", default=None
-    )
-    if discrete_state_input is not None:
-        pi0_kwargs["discrete_state_input"] = bool(discrete_state_input)
     max_token_len = OmegaConf.select(model_cfg, "max_token_len", default=None)
     if max_token_len is not None:
         pi0_kwargs["max_token_len"] = int(max_token_len)

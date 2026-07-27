@@ -88,6 +88,9 @@ class _Repack(DataTransformFn):
         if not isinstance(prompt, str):
             prompt = prompt.item() if hasattr(prompt, "item") else str(prompt)
         data["prompt"] = prompt
+        response = frame.get("response")
+        if response is not None:
+            data["response"] = response if isinstance(response, str) else str(response)
         return data
 
 
@@ -143,15 +146,26 @@ def _sft_collate(items) -> tuple[Observation, torch.Tensor]:
         )
         for key in _IMAGE_KEYS
     }
-    observation = Observation.from_dict(
-        {
-            "image": images,
-            "image_mask": image_masks,
-            "state": _stack("state", np.float32),
-            "tokenized_prompt": _stack("tokenized_prompt", np.int64).long(),
-            "tokenized_prompt_mask": _stack("tokenized_prompt_mask", np.bool_),
-        }
-    )
+    observation_dict = {
+        "image": images,
+        "image_mask": image_masks,
+        "state": _stack("state", np.float32),
+        "tokenized_prompt": _stack("tokenized_prompt", np.int64).long(),
+        "tokenized_prompt_mask": _stack("tokenized_prompt_mask", np.bool_),
+    }
+    for mask_key in (
+        "token_ar_mask",
+        "token_loss_mask",
+        "token_kv_cache_mask",
+    ):
+        presence = [mask_key in item for item in items]
+        if any(presence) and not all(presence):
+            raise ValueError(
+                f"Inconsistent {mask_key!r} presence within one SFT batch."
+            )
+        if all(presence):
+            observation_dict[mask_key] = _stack(mask_key, np.bool_)
+    observation = Observation.from_dict(observation_dict)
     actions = _stack("actions", np.float32)
     return observation, actions
 
@@ -165,6 +179,21 @@ class BehaviorSftDataConfig:
     action_dim: int
     action_horizon: int
     max_token_len: int
+
+
+def _validate_task_names(tasks: list[str]) -> None:
+    """Validate explicit task names for episode-local subtask supervision."""
+    from rlinf.data.datasets.openpi_pytorch.behavior.behavior_sft_dataset import (
+        TASK_NAMES_TO_INDICES,
+    )
+
+    if not tasks:
+        raise ValueError("vlm_vla BEHAVIOR SFT requires a non-empty data.tasks list.")
+    unknown = [task for task in tasks if task not in TASK_NAMES_TO_INDICES]
+    if unknown:
+        raise ValueError(
+            f"data.tasks contains unknown BEHAVIOR task name(s): {unknown}."
+        )
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -199,6 +228,10 @@ def create_behavior_sft_data_loader(
     dist_rank: int,
     dist_world_size: int,
     data_kwargs: dict | None = None,
+    mode: str = "vla",
+    state_token: str = "abs_joint_old",
+    hf_cache_dir: str | None = None,
+    check_timestamp_sync: bool = False,
 ) -> "BehaviorSftDataLoader":
     """Build the BEHAVIOR-1K SFT data loader yielding ``(Observation, actions)``.
 
@@ -232,10 +265,20 @@ def create_behavior_sft_data_loader(
         dist_rank: This rank's id, threaded into the per-rank chunk partition.
         dist_world_size: Total ranks, threaded into the per-rank chunk partition.
         data_kwargs: Optional ``openpi_data`` overrides forwarded to the pipeline.
+        mode: OpenPI mode, either ``vla`` or ``vlm_vla``.
+        state_token: Prompt-state layout passed to the shared transform builder.
+        hf_cache_dir: Optional Hugging Face Arrow cache directory.
+        check_timestamp_sync: Whether to scan all timestamps during startup.
 
     Returns:
         A loader whose iteration yields ``(Observation, actions)`` 2-tuples.
     """
+    if mode == "vlm_vla" and not hf_cache_dir:
+        raise ValueError(
+            "vlm_vla BEHAVIOR SFT requires data.hf_cache_dir on a large "
+            "filesystem; the projected 50-task Arrow cache can exceed 100 GB."
+        )
+
     dataset = BehaviorSftDataset(
         repo_id=repo_id,
         root=behavior_dataset_root,
@@ -255,6 +298,9 @@ def create_behavior_sft_data_loader(
         allow_right=allow_right,
         dist_rank=dist_rank,
         dist_world_size=dist_world_size,
+        vlm_vla=mode == "vlm_vla",
+        hf_cache_dir=hf_cache_dir,
+        check_timestamp_sync=check_timestamp_sync,
     )
 
     # The shared openpi input pipeline (BehaviorInputs -> Normalize -> ModelTransform),
@@ -268,6 +314,9 @@ def create_behavior_sft_data_loader(
         data_kwargs=data_kwargs,
         norm_stats_dir=assets_dir,
         norm_stats_asset_id=asset_id,
+        mode=mode,
+        state_token=state_token,
+        max_token_len=max_token_len,
     )
     source = _TransformedStreamingDataset(
         dataset, compose([_Repack(), *input_transforms])
@@ -293,7 +342,11 @@ def create_behavior_sft_data_loader(
     torch_loader = torch.utils.data.DataLoader(
         typing.cast(torch.utils.data.Dataset, source),
         batch_size=batch_size,
-        shuffle=shuffle,
+        # The streaming dataset ignores sampler indices and shuffles its
+        # rank/worker-local chunk list itself. A RandomSampler here would build
+        # a frame-scale randperm (nearly 120M entries for the 50-task corpus)
+        # without changing sample order, wasting several GiB per rank.
+        shuffle=False,
         sampler=None,
         num_workers=num_workers,
         multiprocessing_context=mp_context,
@@ -380,8 +433,23 @@ def build_behavior_sft_dataloader(
     # `cfg.data` is the production source of truth for the BEHAVIOR task set and the
     # prompt-source flag. `use_skill: true` trains on the per-frame REFERENCE skill
     # text; `false` trains on the main-task text.
-    use_skill = bool(data_cfg.use_skill)
+    mode = str(model_cfg.openpi.get("mode", "vla"))
+    if mode not in ("vla", "vlm_vla"):
+        raise ValueError(f"Unsupported OpenPI SFT mode {mode!r}.")
+    fine_grained_level = int(data_cfg.fine_grained_level)
+    if mode == "vlm_vla" and fine_grained_level != 1:
+        raise ValueError("OpenPI mode 'vlm_vla' requires data.fine_grained_level=1.")
+
+    use_skill = bool(data_cfg.get("use_skill", False))
+    if mode == "vlm_vla" and use_skill:
+        raise ValueError(
+            "data.use_skill changes the prompt itself and is incompatible with "
+            "vlm_vla, which uses the main task as prompt and the episode-local "
+            "skill as response."
+        )
     tasks = list(data_cfg.tasks)
+    if mode == "vlm_vla":
+        _validate_task_names(tasks)
     skill_labels, enable_gap, allow_left, allow_right = None, True, 0, 0
     if use_skill:
         # The skill labels are the REFERENCE per-task subtask list from config (NOT
@@ -404,6 +472,8 @@ def build_behavior_sft_dataloader(
         # Fixed reference skill-window recipe (pi05_b1k-task0000_sft_local_skill);
         # intentionally hardcoded so the reference recipe cannot drift via config.
         enable_gap, allow_left, allow_right = True, 100, 100
+    elif mode == "vlm_vla":
+        enable_gap = bool(data_cfg.get("enable_gap", True))
 
     loader = create_behavior_sft_data_loader(
         behavior_dataset_root=str(data_cfg.behavior_dataset_root),
@@ -421,7 +491,7 @@ def build_behavior_sft_dataloader(
         if eval_dataset
         else int(cfg.actor.micro_batch_size),
         num_workers=int(data_cfg.num_workers),
-        fine_grained_level=int(data_cfg.fine_grained_level),
+        fine_grained_level=fine_grained_level,
         tolerance_s=float(data_cfg.tolerance_s),
         shuffle=not eval_dataset,
         seed=int(cfg.actor.seed),
@@ -433,5 +503,9 @@ def build_behavior_sft_dataloader(
         dist_rank=rank,
         dist_world_size=world_size,
         data_kwargs=data_kwargs,
+        mode=mode,
+        state_token=str(model_cfg.openpi.get("state_token", "abs_joint_old")),
+        hf_cache_dir=data_cfg.get("hf_cache_dir", None),
+        check_timestamp_sync=bool(data_cfg.get("check_timestamp_sync", False)),
     )
     return loader, loader.data_config()

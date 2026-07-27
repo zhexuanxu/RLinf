@@ -44,6 +44,24 @@ def _resolve_data_kwargs(cfg):
     return data_kwargs
 
 
+def _resolve_transform_kwargs(model_cfg):
+    """Resolve model-side tokenization knobs shared by eval/RL/SFT pipelines."""
+    from omegaconf import OmegaConf
+
+    state_token = OmegaConf.select(model_cfg, "state_token", default=None)
+    if state_token is None:
+        state_token = (
+            "abs_joint_old"
+            if bool(OmegaConf.select(model_cfg, "discrete_state_input", default=True))
+            else "none"
+        )
+    return {
+        "mode": str(OmegaConf.select(model_cfg, "mode", default="vla")).lower(),
+        "state_token": str(state_token).lower(),
+        "max_token_len": int(OmegaConf.select(model_cfg, "max_token_len", default=200)),
+    }
+
+
 def _build_eval_model(
     cfg,
     model_cfg,
@@ -67,6 +85,7 @@ def _build_eval_model(
     )
     from rlinf.models.embodiment.openpi_pytorch.transforms_pipeline import (
         build_openpi_transforms,
+        find_subtask_tokenizer,
     )
 
     config_name = str(OmegaConf.select(model_cfg, "config_name", default=""))
@@ -77,8 +96,12 @@ def _build_eval_model(
         )
 
     input_transforms, output_transforms = build_openpi_transforms(
-        cfg.model_path, config_name, data_kwargs=_resolve_data_kwargs(cfg)
+        cfg.model_path,
+        config_name,
+        data_kwargs=_resolve_data_kwargs(cfg),
+        **_resolve_transform_kwargs(model_cfg),
     )
+    subtask_tokenizer = find_subtask_tokenizer(input_transforms)
 
     eval_model = OpenPiPytorchEvalActionModel(
         model,
@@ -87,6 +110,7 @@ def _build_eval_model(
         action_chunk=action_chunk,
         config_name=config_name,
         state_indices=OmegaConf.select(model_cfg, "state_indices", default=None),
+        subtask_tokenizer=subtask_tokenizer,
     )
     eval_model.setup_wrappers(input_transforms, output_transforms)
     return eval_model
@@ -141,6 +165,7 @@ def _build_rl_model(
     )
     from rlinf.models.embodiment.openpi_pytorch.transforms_pipeline import (
         build_openpi_transforms,
+        find_subtask_tokenizer,
     )
 
     config_name = str(OmegaConf.select(model_cfg, "config_name", default=""))
@@ -151,7 +176,10 @@ def _build_rl_model(
         )
 
     input_transforms, output_transforms = build_openpi_transforms(
-        cfg.model_path, config_name, data_kwargs=_resolve_data_kwargs(cfg)
+        cfg.model_path,
+        config_name,
+        data_kwargs=_resolve_data_kwargs(cfg),
+        **_resolve_transform_kwargs(model_cfg),
     )
 
     rl_cfg = OpenPiPytorchRLConfig(
@@ -186,6 +214,7 @@ def _build_rl_model(
         paligemma_width=paligemma_width,
     )
     rl_model.setup_wrappers(input_transforms, output_transforms)
+    rl_model.subtask_tokenizer = find_subtask_tokenizer(input_transforms)
     if bool(OmegaConf.select(model_cfg, "train_expert_only", default=False)):
         # Mirror the legacy ``openpi/openpi_action_model.OpenPi0ForRLActionPrediction``
         # PPO path: freeze the PaliGemma VLM (SigLIP vision + LLM expert 0) and

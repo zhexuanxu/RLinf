@@ -621,6 +621,9 @@ def get_openpi_config(
     batch_size: Optional[int] = None,
     repo_id: Optional[str] = None,
     data_kwargs: Optional[dict] = None,
+    state_token: Optional[str] = None,
+    action_env_dim: Optional[int] = None,
+    max_token_len: Optional[int] = None,
 ) -> TrainConfig:
     """Get a config by name.
 
@@ -631,6 +634,13 @@ def get_openpi_config(
         repo_id: Optional LeRobot repo_id or local data path to override.
             When using a local path, the original asset_id is preserved so
             that norm_stats can still be loaded from the model checkpoint.
+        state_token: Optional public state-injection selector. Compatible data
+            configs receive the selector and compatible model configs receive
+            the corresponding ``discrete_state_input`` value.
+        action_env_dim: Optional semantic action width applied to data configs
+            that expose an ``action_dim`` field.
+        max_token_len: Optional prompt-token budget applied to compatible model
+            configs.
     """
     if config_name not in _CONFIGS_DICT:
         closest = difflib.get_close_matches(
@@ -660,5 +670,30 @@ def get_openpi_config(
             assets = dataclasses.replace(assets, asset_id=original_repo_id)
         new_data = dataclasses.replace(config.data, repo_id=repo_id, assets=assets)
         config = dataclasses.replace(config, data=new_data)
+
+    model_overrides = {}
+    data_overrides = {}
+    if state_token is not None:
+        model_overrides["discrete_state_input"] = state_token != "none"
+        data_overrides["state_token"] = state_token
+    if action_env_dim is not None:
+        data_overrides["action_dim"] = int(action_env_dim)
+    if max_token_len is not None:
+        model_overrides["max_token_len"] = int(max_token_len)
+
+    model_fields = {field.name for field in dataclasses.fields(config.model)}
+    data_fields = {field.name for field in dataclasses.fields(config.data)}
+    model_overrides = {
+        key: value for key, value in model_overrides.items() if key in model_fields
+    }
+    data_overrides = {
+        key: value for key, value in data_overrides.items() if key in data_fields
+    }
+    if model_overrides or data_overrides:
+        config = dataclasses.replace(
+            config,
+            model=dataclasses.replace(config.model, **model_overrides),
+            data=dataclasses.replace(config.data, **data_overrides),
+        )
 
     return config

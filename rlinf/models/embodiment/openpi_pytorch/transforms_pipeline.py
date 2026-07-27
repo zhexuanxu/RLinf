@@ -16,6 +16,11 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from rlinf.models.embodiment.openpi_pytorch.utils.tokenizer import (
+    PaligemmaTokenizer,
+    TokenizeSubtaskPrompt,
+)
+
 
 def build_openpi_transforms(
     model_path: str,
@@ -24,6 +29,10 @@ def build_openpi_transforms(
     *,
     norm_stats_dir: str | None = None,
     norm_stats_asset_id: str | None = None,
+    mode: str = "vla",
+    state_token: str | None = None,
+    action_env_dim: int | None = None,
+    max_token_len: int | None = None,
 ) -> tuple[Sequence, Sequence]:
     """Build ``(input_transforms, output_transforms)`` for ``config_name``.
 
@@ -41,6 +50,12 @@ def build_openpi_transforms(
     SFT loader passes the experiment's ``assets_dir`` + ``asset_id`` so it reads
     the exact same ``norm_stats.json`` the old SFT path did (the SFT *base*
     checkpoint bundles no stats).
+
+    In ``vlm_vla`` mode only the upstream ``TokenizePrompt`` stage is replaced
+    with :class:`TokenizeSubtaskPrompt`. Images, normalization, resize, action
+    padding, and output unnormalization remain the same shared OpenPI pipeline.
+    ``state_token: none`` is the public state-free selector; any concrete state
+    layout enables state injection after normalization.
     """
     import openpi.shared.download as download
     import openpi.transforms as transforms
@@ -49,7 +64,12 @@ def build_openpi_transforms(
     from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
 
     train_config = get_openpi_config(
-        config_name, model_path=str(model_path), data_kwargs=data_kwargs
+        config_name,
+        model_path=str(model_path),
+        data_kwargs=data_kwargs,
+        state_token=state_token,
+        action_env_dim=action_env_dim,
+        max_token_len=max_token_len,
     )
     upstream_model_config = train_config.model
 
@@ -73,11 +93,27 @@ def build_openpi_transforms(
             "for SFT set actor.model.openpi.assets_dir/asset_id to the stats dir."
         )
 
+    tokenizer = PaligemmaTokenizer(max_len=int(upstream_model_config.max_token_len))
+    inject_state = bool(upstream_model_config.discrete_state_input)
+    model_input_transforms = [
+        (
+            TokenizeSubtaskPrompt(tokenizer, inject_state=inject_state)
+            if mode == "vlm_vla"
+            else transforms.TokenizePrompt(
+                tokenizer,
+                discrete_state_input=inject_state,
+            )
+        )
+        if isinstance(transform, transforms.TokenizePrompt)
+        else transform
+        for transform in data_config.model_transforms.inputs
+    ]
+
     input_transforms = [
         transforms.InjectDefaultPrompt(None),
         *data_config.data_transforms.inputs,
         transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-        *data_config.model_transforms.inputs,
+        *model_input_transforms,
     ]
     output_transforms = [
         *data_config.model_transforms.outputs,
@@ -85,3 +121,13 @@ def build_openpi_transforms(
         *data_config.data_transforms.outputs,
     ]
     return input_transforms, output_transforms
+
+
+def find_subtask_tokenizer(
+    input_transforms: Sequence,
+) -> PaligemmaTokenizer | None:
+    """Return the VLM tokenizer installed in a shared transform sequence."""
+    for transform in input_transforms:
+        if isinstance(transform, TokenizeSubtaskPrompt):
+            return transform.tokenizer
+    return None

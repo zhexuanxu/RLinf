@@ -28,7 +28,7 @@ add_value_head: False
 # num_action_chunks (action_horizon) + the openpi.* shape fields; no config.json
 # is read. Norm stats + the PaliGemma tokenizer are resolved by the shared openpi
 # transform pipeline (checkpoint-relative for eval; the tokenizer from openpi's
-# cache), so no assets_dir/asset_id/paligemma_tokenizer are needed here.
+# cache), so no tokenizer path or assets_dir/asset_id are needed here.
 #
 # The openpi.* interpolations use relative refs (${..field}) so this template is
 # mount-agnostic — it composes under `@rollout.model` (eval) and `@actor.model`
@@ -49,3 +49,13 @@ openpi:
   paligemma_variant: "gemma_2b"
   action_expert_variant: "gemma_300m"
   max_token_len: 200
+  # Public π₀.₅ behavior selectors. Experiments can enable autoregressive
+  # subtask generation with ``mode: vlm_vla`` and disable prompt-state
+  # injection with ``state_token: none``.
+  mode: vla
+  state_token: abs_joint_old
+  language_loss_weight: 1.0
+  action_loss_weight: 1.0
+  stop_gradient_to_vlm: false
+  max_new_tokens: 24
+  language_temperature: 0.0

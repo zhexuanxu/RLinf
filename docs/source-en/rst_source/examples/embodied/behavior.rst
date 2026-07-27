@@ -376,26 +376,38 @@ RLinf YAML directly and preserves ``activity_definition_id``.
 
 BEHAVIOR evaluation is also supported with the new **self-contained PyTorch
 OpenPI** code (model ``model_type: openpi_pytorch``; see
-:doc:`sft_openpi_pytorch` for the matching SFT flow). The eval config is:
+:doc:`sft_openpi_pytorch` for the matching SFT flow). Choose the action-only or
+reasoning-then-acting config:
 
-- ``evaluations/behavior/behavior_openpi_pi05_pytorch_eval.yaml``
+- ``evaluations/behavior/behavior_openpi_pi05_pytorch_eval.yaml`` runs the
+  existing VLA-only path.
+- ``evaluations/behavior/behavior_openpi_pi05_pytorch_vlm_vla_eval.yaml`` first
+  generates a subtask and then conditions the action expert on the generated
+  tokens.
 
-This config runs in eval-only mode (``runner.only_eval: True``) and consumes a
+Both configs run in eval-only mode (``runner.only_eval: True``) and consume a
 **new-format** PyTorch checkpoint, i.e. one produced by the OpenPI checkpoint
-convertor (``ckpt_convertor.openpi`` ``old2new`` / ``sft2new``). Set the model
-paths directly in the config as ``/path/to/...`` placeholders:
+convertor (``ckpt_convertor.openpi`` ``old2new`` / ``sft2new``). Set or override
+the model path before launching evaluation:
 
 - ``rollout.model.model_path``: the new-format eval checkpoint.
-- ``rollout.model.openpi.assets_dir``: directory holding the BEHAVIOR norm-stats.
-  Norm stats resolve at ``{assets_dir}/{asset_id}/norm_stats.json``.
-- ``rollout.model.openpi.paligemma_tokenizer``: the PaliGemma SentencePiece
-  tokenizer model.
+- The VLM-to-VLA example is prefilled with the local acceptance-test checkpoint;
+  replace it when running elsewhere.
+- The checkpoint must bundle BEHAVIOR norm stats at
+  ``physical-intelligence/behavior/norm_stats.json``.
+- Both paths download the PaliGemma tokenizer into OpenPI's cache automatically.
+  Set ``OPENPI_DATA_HOME`` to choose a shared writable cache directory.
 
 .. code:: bash
 
    export ISAAC_PATH=/path/to/isaac-sim
    export OMNIGIBSON_DATA_PATH=/path/to/BEHAVIOR-1K-datasets
    bash evaluations/run_eval.sh behavior behavior_openpi_pi05_pytorch_eval
+   bash evaluations/run_eval.sh behavior behavior_openpi_pi05_pytorch_vlm_vla_eval
+
+The VLM-to-VLA checkpoint must use the same prompt contract as evaluation.
+Select ``state_token: none`` for a checkpoint trained without discrete state
+tokens.
 
 .. note::
 

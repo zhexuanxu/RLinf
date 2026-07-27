@@ -59,6 +59,15 @@ from lerobot.common.datasets.video_utils import get_safe_default_codec
 from openpi.transforms import DataTransformFn
 from torch.utils.data import Dataset, get_worker_info
 
+from rlinf.data.datasets.openpi_pytorch.behavior.skill_language import (
+    entry_to_subtask_text,
+)
+from rlinf.data.datasets.openpi_pytorch.behavior.skill_segments import (
+    SkillSegments,
+    build_skill_segments,
+    resolve_frame_subtask,
+)
+
 logger = logging.getLogger("BehaviorSftDataset")
 
 # ---------------------------------------------------------------------------
@@ -134,6 +143,17 @@ TASK_INDICES_TO_NAMES = {v: k for k, v in TASK_NAMES_TO_INDICES.items()}
 
 ANNOTATIONS_PATH = "annotations"
 ORCHESTRATORS_PATH = "orchestrators"
+
+# Only these low-dimensional columns are consumed directly. Camera frames are
+# decoded from the video files and injected by the streaming loop.
+_REQUIRED_PARQUET_COLUMNS = [
+    "index",
+    "episode_index",
+    "task_index",
+    "timestamp",
+    "observation.state",
+    "action",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +333,7 @@ class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
         tasks: Iterable[str] | None = None,
         modalities: Iterable[str] | None = None,
         cameras: Iterable[str] | None = None,
+        include_orchestrators: bool = True,
     ):
         self.task_name_candidates = (
             set(tasks) if tasks is not None else set(TASK_NAMES_TO_INDICES.keys())
@@ -321,6 +342,7 @@ class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
         self.camera_names = (
             set(cameras) if cameras else {"head", "left_wrist", "right_wrist"}
         )
+        self.include_orchestrators = include_orchestrators
         assert self.modalities.issubset({"rgb", "depth", "seg_instance_id"})
         assert self.camera_names.issubset(ROBOT_CAMERA_NAMES["R1Pro"])
 
@@ -359,7 +381,9 @@ class BehaviorSftDatasetMetadata(LeRobotDatasetMetadata):
 
         self.episodes = self.load_episodes(self.root)
         self.annotations = self.load_annotations(self.root)
-        self.orchestrators = self.load_orchestrators(self.root)
+        self.orchestrators = (
+            self.load_orchestrators(self.root) if self.include_orchestrators else {}
+        )
         import packaging.version
 
         if self._version < packaging.version.parse("v2.1"):
@@ -567,11 +591,23 @@ class BehaviorSftDataset(LeRobotDataset):
         allow_right: int = 0,
         dist_rank: int | None = None,
         dist_world_size: int | None = None,
+        vlm_vla: bool = False,
+        hf_cache_dir: str | Path | None = None,
     ):
         import packaging.version
 
         if skill_list is None:
             skill_list = ["all"]
+        if vlm_vla and fine_grained_level != 1:
+            raise ValueError(
+                "vlm_vla BEHAVIOR SFT requires fine_grained_level=1 so every "
+                "training frame carries a subtask response."
+            )
+        if vlm_vla and not chunk_streaming_using_keyframe:
+            raise ValueError(
+                "vlm_vla BEHAVIOR SFT requires keyframe chunk streaming because "
+                "frames without subtask supervision must be skipped."
+            )
 
         Dataset.__init__(self)
         self.repo_id = repo_id
@@ -612,6 +648,10 @@ class BehaviorSftDataset(LeRobotDataset):
         # back to ``torch.distributed`` only when these are not provided.
         self._dist_rank = dist_rank
         self._dist_world_size = dist_world_size
+        self.vlm_vla = vlm_vla
+        self._hf_cache_dir = (
+            Path(os.path.expanduser(str(hf_cache_dir))) if hf_cache_dir else None
+        )
         # Real OmniGibson video/stat utilities, imported lazily here (never at module
         # import) and cached so the streaming hot path and `load_hf_dataset` can reuse
         # them without re-importing. See `_omnigibson_utils`.
@@ -645,6 +685,7 @@ class BehaviorSftDataset(LeRobotDataset):
             tasks=self.task_names,
             modalities=modalities,
             cameras=cameras,
+            include_orchestrators=not vlm_vla,
         )
 
         all_episodes = load_jsonlines(self.root / EPISODES_PATH)
@@ -663,16 +704,13 @@ class BehaviorSftDataset(LeRobotDataset):
         self.episodes = sorted([ep for eps in epi_by_task.values() for ep in eps])
 
         self._chunk_streaming_using_keyframe = chunk_streaming_using_keyframe
+        self.shuffle = shuffle
         if self._chunk_streaming_using_keyframe:
             self.chunks = self._get_keyframe_chunk_indices()
-            if shuffle:
-                self.current_streaming_chunk_idx = None
-                self.current_streaming_frame_idx = None
-            else:
-                self.current_streaming_chunk_idx = 0
-                self.current_streaming_frame_idx = self.chunks[
-                    self.current_streaming_chunk_idx
-                ][0]
+            # Resolve the rank/worker partition lazily inside each worker. This
+            # also gives the non-shuffle path the correct per-rank slice.
+            self.current_streaming_chunk_idx = None
+            self.current_streaming_frame_idx = None
             self.obs_loaders = {}
             self._should_obs_loaders_reload = True
 
@@ -740,6 +778,21 @@ class BehaviorSftDataset(LeRobotDataset):
             )
         if self.skill_labels is not None:
             self._build_skill_boundaries()
+
+        self._skill_segments: dict[int, SkillSegments] = {}
+        self._subtask_text_cache: dict[tuple[int, int], str] = {}
+        if self.vlm_vla:
+            for ep_id in self.episodes:
+                annotation = self.meta.annotations.get(ep_id)
+                if annotation is None:
+                    raise ValueError(
+                        f"episode {ep_id}: vlm_vla SFT requires a skill annotation "
+                        "under annotations/, but none was loaded."
+                    )
+                num_windows = len(annotation.get("skill_annotation") or [])
+                self._skill_segments[ep_id] = build_skill_segments(
+                    annotation, num_windows, episode_id=ep_id
+                )
 
         self.omnigibson_mapping = {
             ep_idx: defaultdict(dict) for ep_idx in self.episodes
@@ -901,16 +954,24 @@ class BehaviorSftDataset(LeRobotDataset):
         )
 
     def load_hf_dataset(self):
-        """Load the parquet frames for the selected episodes as a HF dataset."""
+        """Load only the parquet columns consumed by the streaming pipeline."""
+        load_kwargs = {"columns": _REQUIRED_PARQUET_COLUMNS}
+        if self._hf_cache_dir is not None:
+            self._hf_cache_dir.mkdir(parents=True, exist_ok=True)
+            load_kwargs["cache_dir"] = str(self._hf_cache_dir)
         if self.episodes is None:
             path = str(self.root / "data")
-            hf_dataset = load_dataset("parquet", data_dir=path, split="train")
+            hf_dataset = load_dataset(
+                "parquet", data_dir=path, split="train", **load_kwargs
+            )
         else:
             files = [
                 str(self.root / self.meta.get_data_file_path(ep_idx))
                 for ep_idx in self.episodes
             ]
-            hf_dataset = load_dataset("parquet", data_files=files, split="train")
+            hf_dataset = load_dataset(
+                "parquet", data_files=files, split="train", **load_kwargs
+            )
         hf_dataset.set_transform(self._hf_transform_to_torch)
         return hf_dataset
 
@@ -952,13 +1013,32 @@ class BehaviorSftDataset(LeRobotDataset):
                 num_workers=num_workers,
             )
             worker_chunks = [self.chunks[i] for i in indices]
-            rng = np.random.default_rng(self.seed + global_worker_id)
-            rng.shuffle(worker_chunks)
+            if not worker_chunks:
+                if not self.chunks:
+                    raise ValueError(
+                        "BehaviorSftDataset has no keyframe chunks to stream; "
+                        "check data.tasks and episode filtering."
+                    )
+                logger.warning(
+                    "BEHAVIOR SFT rank %d worker %d has an empty partition "
+                    "(%d chunks for %d consumers); falling back to all chunks.",
+                    rank,
+                    worker_id,
+                    len(self.chunks),
+                    world_size * num_workers,
+                )
+                worker_chunks = list(self.chunks)
+            if self.shuffle:
+                rng = np.random.default_rng(self.seed + global_worker_id)
+                rng.shuffle(worker_chunks)
             self._active_chunks = worker_chunks
-        rng = np.random.default_rng(self.seed + global_worker_id)
-        self.current_streaming_chunk_idx = rng.integers(
-            0, len(self._active_chunks)
-        ).item()
+        if self.shuffle:
+            rng = np.random.default_rng(self.seed + global_worker_id)
+            self.current_streaming_chunk_idx = rng.integers(
+                0, len(self._active_chunks)
+            ).item()
+        else:
+            self.current_streaming_chunk_idx = 0
         self.current_streaming_frame_idx = self._active_chunks[
             self.current_streaming_chunk_idx
         ][0]
@@ -986,6 +1066,8 @@ class BehaviorSftDataset(LeRobotDataset):
         # Streaming mode
         if self.current_streaming_chunk_idx is None:
             self._select_streaming_chunk()
+        if self.vlm_vla:
+            return self._get_vlm_vla_item()
 
         if (
             self.current_streaming_frame_idx
@@ -1073,6 +1155,133 @@ class BehaviorSftDataset(LeRobotDataset):
         self._set_prompt(item)
         self.current_streaming_frame_idx += 1
         return item
+
+    def _get_vlm_vla_item(self) -> dict:
+        """Return the next frame carrying an episode-local subtask response.
+
+        Unlabeled frames are skipped iteratively before expensive image
+        transforms while each video iterator is still advanced to remain aligned
+        with the low-dimensional frame cursor.
+        """
+        while True:
+            if (
+                self.current_streaming_frame_idx
+                >= self._active_chunks[self.current_streaming_chunk_idx][1]
+            ):
+                self.current_streaming_chunk_idx += 1
+                if self.current_streaming_chunk_idx >= len(self._active_chunks):
+                    self.current_streaming_chunk_idx = 0
+                self.current_streaming_frame_idx = self._active_chunks[
+                    self.current_streaming_chunk_idx
+                ][0]
+                self._should_obs_loaders_reload = True
+
+            item = self.hf_dataset[self.current_streaming_frame_idx]
+            item.pop("observation.task_info", None)
+            ep_idx = item["episode_index"].item()
+
+            if self._should_obs_loaders_reload:
+                for loader in self.obs_loaders.values():
+                    loader.close()
+                self.obs_loaders = {}
+                self.current_streaming_episode_idx = ep_idx
+                for vid_key in self.meta.video_keys:
+                    kwargs = {}
+                    task_id = item["task_index"].item()
+                    if "rgb" in vid_key:
+                        kwargs["train_rgb_type"] = self.train_rgb_type
+                    loader_cls = self._obs_loader_map.get(vid_key.split(".")[2])
+                    if loader_cls is None:
+                        continue
+                    self.obs_loaders[vid_key] = iter(
+                        loader_cls(
+                            data_path=self.root,
+                            task_id=task_id,
+                            camera_id=vid_key.split(".")[-1],
+                            demo_id=f"{ep_idx:08d}",
+                            start_idx=self._active_chunks[
+                                self.current_streaming_chunk_idx
+                            ][2],
+                            start_idx_is_keyframe=False,
+                            batch_size=1,
+                            stride=1,
+                            **kwargs,
+                        )
+                    )
+                self._should_obs_loaders_reload = False
+
+            frame_index = round(item["timestamp"].item() * self.fps)
+            subtask_index = resolve_frame_subtask(
+                self._skill_segments[ep_idx], frame_index, self.enable_gap
+            )
+            if subtask_index is None:
+                self.current_streaming_frame_idx += 1
+                for loader in self.obs_loaders.values():
+                    next(loader)[0]
+                continue
+
+            if self.delta_indices is not None:
+                query_indices, padding = self._get_query_indices(
+                    self.current_streaming_frame_idx, ep_idx
+                )
+                item = {
+                    **item,
+                    **padding,
+                    **self._query_hf_dataset(query_indices),
+                }
+
+            for key, loader in self.obs_loaders.items():
+                item[key] = next(loader)[0]
+            if self.image_transforms is not None:
+                for camera in self.meta.camera_keys:
+                    item[camera] = self.image_transforms(item[camera])
+
+            self._attach_vlm_text(item, subtask_index)
+            self.current_streaming_frame_idx += 1
+            return item
+
+    def _attach_vlm_text(self, item: dict, subtask_index: int | None = None) -> None:
+        """Attach the main-task prompt and episode-local subtask response."""
+        ep_idx = item["episode_index"].item()
+        item["task"] = self.meta.episodes[ep_idx]["tasks"][0]
+        if subtask_index is None:
+            frame_index = round(item["timestamp"].item() * self.fps)
+            subtask_index = resolve_frame_subtask(
+                self._skill_segments[ep_idx], frame_index, self.enable_gap
+            )
+            if subtask_index is None:
+                raise ValueError(
+                    f"episode {ep_idx} frame {frame_index} has no subtask label."
+                )
+        item["response"] = self._resolve_subtask_text(ep_idx, subtask_index)
+
+    def _resolve_subtask_text(self, ep_idx: int, skill_idx: int) -> str:
+        """Resolve and cache one annotation window's natural-language label."""
+        cache_key = (ep_idx, skill_idx)
+        if cache_key in self._subtask_text_cache:
+            return self._subtask_text_cache[cache_key]
+
+        annotation = self.meta.annotations.get(ep_idx)
+        if annotation is None:
+            raise ValueError(
+                f"episode {ep_idx}: no skill annotation loaded, cannot resolve "
+                f"subtask text for skill_idx {skill_idx}."
+            )
+        windows = annotation.get("skill_annotation") or []
+        matches = [entry for entry in windows if entry.get("skill_idx") == skill_idx]
+        if len(matches) != 1:
+            raise ValueError(
+                f"episode {ep_idx}: expected exactly one annotation window for "
+                f"skill_idx {skill_idx}, found {len(matches)}."
+            )
+        text = entry_to_subtask_text(
+            matches[0],
+            task_name=self.meta.episodes[ep_idx]["tasks"][0],
+            episode_id=ep_idx,
+            skill_idx=skill_idx,
+        )
+        self._subtask_text_cache[cache_key] = text
+        return text
 
     def _get_current_task_skill(self, item: dict) -> str:
         """Look up the level-1 (skill) task text for the current frame."""
