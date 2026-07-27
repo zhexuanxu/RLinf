@@ -87,6 +87,108 @@ def sync_robot_after_pose_override(robot) -> None:
     robot.keep_still()
 
 
+def reset_robot_joint_state_to_reset_pose(
+    robot,
+    preserve_base_pose: bool = True,
+    base_joint_dim: int = 6,
+) -> None:
+    """Reset articulated joints and velocities without moving the robot base.
+
+    Args:
+        robot: OmniGibson robot instance to reset.
+        preserve_base_pose: Whether to retain the current floating-base joints.
+        base_joint_dim: Number of leading floating-base joints to preserve.
+    """
+    if robot is None:
+        return
+
+    get_joint_positions = getattr(robot, "get_joint_positions", None)
+    set_joint_positions = getattr(robot, "set_joint_positions", None)
+    set_joint_velocities = getattr(robot, "set_joint_velocities", None)
+    reset_joint_pos = getattr(robot, "reset_joint_pos", None)
+    if (
+        not callable(get_joint_positions)
+        or not callable(set_joint_positions)
+        or reset_joint_pos is None
+    ):
+        return
+
+    current_joint_positions = get_joint_positions()
+    if current_joint_positions is None:
+        return
+
+    current_joint_positions = torch.as_tensor(current_joint_positions)
+    target_joint_positions = torch.as_tensor(
+        reset_joint_pos,
+        dtype=current_joint_positions.dtype,
+        device=current_joint_positions.device,
+    ).clone()
+    if target_joint_positions.shape != current_joint_positions.shape:
+        return
+
+    if preserve_base_pose and target_joint_positions.numel() > base_joint_dim:
+        target_joint_positions[:base_joint_dim] = current_joint_positions[
+            :base_joint_dim
+        ]
+
+    keep_still = getattr(robot, "keep_still", None)
+    if callable(keep_still):
+        keep_still()
+
+    set_joint_positions(positions=target_joint_positions, drive=False)
+    if callable(set_joint_velocities):
+        set_joint_velocities(
+            velocities=torch.zeros_like(target_joint_positions),
+            drive=False,
+        )
+
+    if callable(keep_still):
+        keep_still()
+
+
+def clear_robot_grasp_state(robot) -> None:
+    """Best-effort cleanup of assisted-grasp state between task instances.
+
+    Args:
+        robot: OmniGibson manipulation robot whose grasp state should be cleared.
+    """
+    if robot is None or not getattr(robot, "is_manipulation", False):
+        return
+
+    arm_names = list(getattr(robot, "arm_names", []) or [])
+    default_arm = getattr(robot, "default_arm", None)
+    if not arm_names and default_arm is not None:
+        arm_names = [default_arm]
+    if not arm_names:
+        return
+
+    release_grasp_immediately = getattr(robot, "release_grasp_immediately", None)
+    if callable(release_grasp_immediately):
+        for arm in arm_names:
+            try:
+                release_grasp_immediately(arm=arm)
+            except Exception:  # noqa: BLE001 - simulator cleanup is best effort
+                pass
+
+    for attr_name, default_value in (
+        ("_ag_obj_in_hand", None),
+        ("_ag_obj_constraints", None),
+        ("_ag_obj_constraint_params", None),
+        ("_ag_release_counter", 0),
+        ("_ag_grasp_counter", 0),
+    ):
+        attr_value = getattr(robot, attr_name, None)
+        if not isinstance(attr_value, dict):
+            continue
+        for arm in arm_names:
+            if arm in attr_value:
+                attr_value[arm] = default_value
+
+    keep_still = getattr(robot, "keep_still", None)
+    if callable(keep_still):
+        keep_still()
+
+
 def set_camera_resolution(camera_cfg: dict | None) -> None:
     if camera_cfg is None:
         return
@@ -198,12 +300,118 @@ def override_sub_cfg(omni_cfg: DictConfig, override_cfg: DictConfig, sub_attr: s
         )
 
 
-def setup_omni_cfg(cfg: DictConfig) -> DictConfig:
+def merge_robot_override(omni_cfg: DictConfig, robot_override: DictConfig) -> None:
+    """Merge an R1Pro override without leaking controller-class parameters.
+
+    OmniGibson's base R1Pro config uses joint controllers for both arms. A
+    normal recursive merge would retain joint-only fields such as ``pos_kp``
+    when a control-mode override switches an arm to
+    ``InverseKinematicsController``. OmniGibson rejects those stale keyword
+    arguments. Robot fields are therefore merged recursively, while a
+    controller group whose ``name`` changes is replaced as one atomic mapping.
+
+    Args:
+        omni_cfg: Loaded OmniGibson base config.
+        robot_override: RLinf's ``omni_config.robots[0]`` override.
+    """
+    base_controllers = OmegaConf.select(
+        omni_cfg, "robots[0].controller_config", default=None
+    )
+    base_controller_names = (
+        {
+            group: OmegaConf.select(base_controllers, f"{group}.name")
+            for group in base_controllers
+        }
+        if base_controllers is not None
+        else {}
+    )
+
+    OmegaConf.update(omni_cfg, "robots[0]", robot_override, merge=True)
+    override_controllers = OmegaConf.select(
+        robot_override, "controller_config", default=None
+    )
+    if override_controllers is None:
+        return
+
+    for group in override_controllers:
+        override_name = OmegaConf.select(
+            override_controllers, f"{group}.name", default=None
+        )
+        if (
+            override_name is not None
+            and base_controller_names.get(group) is not None
+            and override_name != base_controller_names[group]
+        ):
+            OmegaConf.update(
+                omni_cfg,
+                f"robots[0].controller_config.{group}",
+                OmegaConf.select(override_controllers, group),
+                merge=False,
+            )
+
+
+def select_control_mode_robot_override(
+    robot_override: DictConfig,
+    control_mode: str,
+) -> DictConfig:
+    """Select both R1Pro arm controllers from the configured mode tables.
+
+    The environment YAML keeps every supported controller under each arm so it
+    remains the source of truth for simulator parameters. This function returns
+    a detached robot override containing only the requested controller leaves;
+    the Hydra source config is never mutated.
+
+    Args:
+        robot_override: RLinf's ``omni_config.robots[0]`` override.
+        control_mode: Exact controller leaf to select for both arms.
+
+    Returns:
+        A detached robot override ready to merge into OmniGibson's base config.
+
+    Raises:
+        ValueError: If an arm does not define the requested control mode.
+    """
+    selected_override = OmegaConf.create(
+        OmegaConf.to_container(robot_override, resolve=False)
+    )
+    for arm in ("arm_left", "arm_right"):
+        mode_table = OmegaConf.select(
+            selected_override,
+            f"controller_config.{arm}",
+            default=None,
+        )
+        selected_controller = (
+            OmegaConf.select(mode_table, control_mode, default=None)
+            if mode_table is not None
+            else None
+        )
+        if selected_controller is None:
+            available_modes = tuple(mode_table) if mode_table is not None else ()
+            raise ValueError(
+                f"R1Pro controller_config.{arm} does not define "
+                f"control_mode={control_mode!r}; available modes: {available_modes}."
+            )
+        OmegaConf.update(
+            selected_override,
+            f"controller_config.{arm}",
+            OmegaConf.create(
+                OmegaConf.to_container(selected_controller, resolve=False)
+            ),
+            merge=False,
+        )
+    return selected_override
+
+
+def setup_omni_cfg(
+    cfg: DictConfig,
+    control_mode: str = "abs_joint",
+) -> DictConfig:
     """
     Setup OmniGibson's config, overrided by user-set config
 
     Args:
         cfg(DictConfig): rlinf's env config, must have `omni_config` field
+        control_mode: R1Pro arm-controller mode selected by the active model.
 
     Returns:
         (DictConfig): overrided OmniGibson config
@@ -232,7 +440,11 @@ def setup_omni_cfg(cfg: DictConfig) -> DictConfig:
     assert robot_override is not None, (
         "OmniGibson config must contain a non-empty robots list, but robots[0] config is None"
     )
-    OmegaConf.update(omni_cfg, "robots[0]", robot_override, merge=True)
+    robot_override = select_control_mode_robot_override(
+        robot_override,
+        control_mode,
+    )
+    merge_robot_override(omni_cfg, robot_override)
 
     override_proprio_obs = OmegaConf.select(
         override_cfg, "robots[0].proprio_obs", default=None

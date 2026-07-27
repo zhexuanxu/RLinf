@@ -58,16 +58,14 @@ def get_model(cfg: Any, torch_dtype: Any = None) -> Any:
     mode = str(OmegaConf.select(model_cfg, "mode", default="vla")).lower()
     state_token_value = OmegaConf.select(model_cfg, "state_token", default=None)
     if state_token_value is None:
-        # Compatibility for existing non-BEHAVIOR templates. New π₀.₅ configs
-        # use ``state_token`` as the public selector.
-        discrete_state_input = bool(
-            OmegaConf.select(model_cfg, "discrete_state_input", default=True)
+        raise ValueError(
+            "actor.model.openpi.state_token is required; use 'none' to disable "
+            "prompt-state injection."
         )
-    else:
-        state_token = str(state_token_value).lower()
-        if not state_token:
-            raise ValueError("actor.model.openpi.state_token must not be empty.")
-        discrete_state_input = state_token != "none"
+    state_token = str(state_token_value)
+    if not state_token:
+        raise ValueError("actor.model.openpi.state_token must not be empty.")
+    discrete_state_input = state_token != "none"
 
     pi0_kwargs = {
         "pi05": True,

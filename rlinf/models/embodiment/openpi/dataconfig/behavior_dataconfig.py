@@ -34,6 +34,8 @@ class LeRobotBehaviorDataConfig(DataConfigFactory):
     extract_state_from_proprio: bool = False
     use_all_wrist_images: bool = False
     use_quantile_norm: bool = False
+    state_token: str = "abs_joint_old"
+    action_dim: int = 23
 
     @override
     def create(
@@ -73,9 +75,10 @@ class LeRobotBehaviorDataConfig(DataConfigFactory):
                     model_type=model_config.model_type,
                     extract_state_from_proprio=self.extract_state_from_proprio,
                     use_all_wrist_images=self.use_all_wrist_images,
+                    state_token=self.state_token,
                 )
             ],
-            outputs=[behavior_policy.BehaviorOutputs()],
+            outputs=[behavior_policy.BehaviorOutputs(action_dim=self.action_dim)],
         )
 
         # One additional data transform: pi0 models are trained on delta actions (relative to the first

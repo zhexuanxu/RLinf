@@ -111,6 +111,7 @@ actor:
       max_token_len: 288
       mode: vlm_vla
       state_token: none
+      control_mode: abs_joint
       language_loss_weight: 1.0
       action_loss_weight: 10.0
       stop_gradient_to_vlm: false

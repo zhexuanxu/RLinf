@@ -119,13 +119,14 @@ actor:
     add_value_head: True
     num_images_in_input: 3
     proprio_dim: 32
-    action_dim: 23
     num_action_chunks: 32
     # Flow-matching denoise steps (RL SDE chain length).
     num_steps: 8
     openpi:
       # Selects the RL variant (chain-collecting SDE sampler + VLM value head).
       task: rl
+      state_token: abs_joint_old
+      control_mode: abs_joint
       # config_name + all shape fields are inherited from model/pi0_5_pytorch.
       # VLM-pooled value head over the paligemma prefix — the only combination the
       # pytorch RL port supports (value_after_vlm=False raises NotImplementedError).

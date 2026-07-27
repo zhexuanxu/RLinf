@@ -1,0 +1,93 @@
+defaults:
+  - env/behavior_r1pro@env.eval
+  - model/pi0_5_pytorch@rollout.model
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+# Dataset-action replay validates a controller/dataset conversion without
+# constructing OpenPI. Both identifiers are explicit: no episode-stride
+# convention or random cached-instance selection is used.
+cluster:
+  num_nodes: 1
+  component_placement:
+    rollout,env: 0-0
+
+runner:
+  task_type: embodied_eval
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "behavior_openpi05_pytorch_replay"
+    logger_backends: ["tensorboard"]
+  only_eval: true
+  max_epochs: 1
+  max_steps: 1
+  val_check_interval: -1
+  save_interval: -1
+  resume_dir: null
+  ckpt_path: null
+
+env:
+  group_name: "EnvGroup"
+  eval:
+    rollout_epoch: 1
+    total_num_envs: 1
+    max_episode_steps: 2560
+    max_steps_per_rollout_epoch: 2560
+    skip_intermediate_obs_in_chunk: false
+    video_cfg:
+      save_video: true
+      info_on_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+      fps: 30
+    replay:
+      enabled: true
+      # Select the original dataset for abs_joint or a converted dataset for
+      # delta_joint / abs_eef / delta_eef. Converted datasets are checked
+      # against meta/control_mode.json before the simulator starts.
+      dataset_root: /mnt/public/xzxuan/data/2025-challenge-demos
+      activity_instance_id: 1
+      episode_index: 10
+    omni_config:
+      env:
+        action_frequency: 30
+        physics_frequency: 240
+        rendering_frequency: 30
+      task:
+        activity_name: turning_on_radio
+        activity_instance_dir: ${oc.env:OMNIGIBSON_DATA_PATH}/2025-challenge-task-instances/scenes/house_double_floor_lower/json/house_double_floor_lower_task_turning_on_radio_instances
+        # Keep this concrete because EnvWorker passes omni_config as a detached
+        # subtree to the simulator process. The replay launcher overrides this
+        # field and replay.activity_instance_id together, and the worker rejects
+        # any mismatch.
+        activity_instance_id: 1
+        instance_file_format: tro_state
+        instance_resample_mode: disabled
+        online_object_sampling: false
+        use_presampled_robot_pose: true
+        reward_config:
+          reward_mode: task
+          task_specific_reward_name: turning_on_radio
+      scene:
+        load_room_types: ["living_room", "kitchen"]
+        partial_scene_load: false
+
+rollout:
+  group_name: "RolloutGroup"
+  backend: "behavior_replay"
+  enable_offload: false
+  pipeline_stage_num: 1
+  model:
+    # These two selectors are the complete replay mode surface. The lightweight
+    # replay worker uses only model shape/controller metadata; it does not load
+    # a checkpoint, tokenizer, transforms, or norm stats.
+    openpi:
+      state_token: none
+      control_mode: abs_joint

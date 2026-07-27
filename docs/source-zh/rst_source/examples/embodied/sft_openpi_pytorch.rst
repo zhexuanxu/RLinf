@@ -10,7 +10,7 @@
 
 在 BEHAVIOR 示范数据上微调数值对齐的 PyTorch π₀.₅ 实现。你可以训练仅输出动作的
 VLA，也可以训练完整的 VLM-to-VLA 模型：模型先预测子任务，再让动作专家基于该预测
-生成动作。
+生成动作。两条路径都支持绝对/增量关节控制以及绝对/增量末端执行器（EEF）控制。
 
 概览
 ----
@@ -75,7 +75,7 @@ VLA，也可以训练完整的 VLM-to-VLA 模型：模型先预测子任务，�
    * - Observation
      - 头部 RGB、左右腕部 RGB 与 R1 Pro proprioception。
    * - Action
-     - 32 步 BEHAVIOR 动作块，补齐到 32 个模型通道。
+     - 32 步、23 通道关节或 21 通道 EEF 动作块，补齐到 32 个模型通道。
    * - Reward
      - SFT 阶段不使用。
    * - Prompt
@@ -107,6 +107,91 @@ VLA，也可以训练完整的 VLM-to-VLA 模型：模型先预测子任务，�
    不要在 50 任务训练中使用固定的逐任务子任务列表。技能序列与对象标识会随 episode
    变化。
 
+转换控制表示
+~~~~~~~~~~~~
+
+仓库中的 SFT YAML 使用统一的控制入口。通过
+``actor.model.openpi.control_mode`` 选择表示，不要添加按模式区分的数据集或
+统计量字段。
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 14 30 36
+
+   * - ``control_mode``
+     - 维度
+     - 手臂目标
+     - BEHAVIOR 控制器
+   * - ``abs_joint``
+     - 23
+     - 绝对 7-DoF 关节目标
+     - ``JointController`` （绝对）
+   * - ``delta_joint``
+     - 23
+     - 实际到达的 ``qpos[t+1] - qpos[t]``
+     - ``JointController`` （增量）
+   * - ``abs_eef``
+     - 21
+     - 基座坐标系下的位置和轴角姿态
+     - IK ``absolute_pose``
+   * - ``delta_eef``
+     - 21
+     - 基座坐标系下的位置与相对旋转增量
+     - IK ``pose_delta_ori``
+
+原始数据集已经包含 ``abs_joint`` 动作。使用统一转换脚本生成任一表示，也可以只
+生成用于验证的小子集：
+
+.. code-block:: bash
+
+   bash toolkits/behavior/convert_openpi_control_mode.sh \
+       --source-dataset-root /path/to/native-behavior-data \
+       --output-dataset-root /path/to/behavior-delta-eef \
+       --control-mode delta_eef \
+       --tasks turning_on_radio
+
+省略 ``--tasks`` 会转换全部 50 个任务。``--episodes 10`` 按绝对 LeRobot
+episode ID 限制范围，适合快速验证。转换器不会修改源数据；它会写入新的 Parquet
+和 ``meta/control_mode.json``，并链接视频及与动作无关的标注。
+旧版 ``RLinf`` 转换数据使用 ``meta/eef_delta_provenance.json`` 和旧模式别名，
+必须从原生 ``abs_joint`` 数据重新生成。转换器会拒绝这些数据，避免把同为 23
+通道的 ``delta_joint`` 源数据错误标记为 ``abs_joint``。
+
+随后为相同表示计算归一化统计量：
+
+.. code-block:: bash
+
+   bash toolkits/behavior/compute_openpi_norm_stats.sh \
+       --behavior-dataset-root /path/to/behavior-delta-eef \
+       --assets-dir /path/to/behavior-norm-stats \
+       --asset-id turning_on_radio_delta_eef \
+       --control-mode delta_eef \
+       --state-token abs_eef \
+       --tasks turning_on_radio
+
+四元数到轴角的映射是非线性的，因此 ``abs_eef`` 状态统计会扫描原始帧。关节状态
+默认使用更快的 episode 元数据路径；需要精确逐帧聚合时可增加
+``--raw-state-stats``。
+
+仅通过原有通用字段选择生成的数据和统计量：
+
+.. code-block:: yaml
+
+   data:
+     train_data_paths: /path/to/behavior-delta-eef
+     behavior_dataset_root: ${data.train_data_paths}
+
+   actor:
+     model:
+       openpi:
+         control_mode: delta_eef
+         state_token: abs_eef
+         assets_dir: /path/to/behavior-norm-stats
+         asset_id: turning_on_radio_delta_eef
+
+模型模板会根据 ``control_mode`` 推导环境动作维度，同时保持模型填充维度为 32。
+系统会在使用前校验数据集来源、统计量元数据、模型维度和评估控制器。
+
 配置模型
 --------
 
@@ -128,6 +213,7 @@ VLA，也可以训练完整的 VLM-to-VLA 模型：模型先预测子任务，�
        openpi:
          mode: vlm_vla
          state_token: abs_joint_old
+         control_mode: abs_joint
          assets_dir: /path/to/norm-stats
          asset_id: behavior
          language_loss_weight: 1.0
@@ -136,11 +222,32 @@ VLA，也可以训练完整的 VLM-to-VLA 模型：模型先预测子任务，�
          max_new_tokens: 24
          language_temperature: 0.0
 
-使用 ``state_token: none`` 可生成无状态语言前缀。其他取值会把归一化状态离散化为语言
-token 并注入 prompt。OpenPI 会自动将 PaliGemma tokenizer 下载到缓存；可设置
-``OPENPI_DATA_HOME`` 来选择共享的可写缓存目录。当任务、状态与 response 超过
-``max_token_len`` 时，tokenizer 会直接报错，不会截断 response 或 EOS 监督。
-50 任务配置使用 288 个 token。
+PaliGemma SentencePiece 模型会自动下载到 OpenPI 缓存。若默认的
+``~/.cache/openpi`` 不合适，或多个 worker 需要共享同一个可写缓存，请在启动前设置
+``OPENPI_DATA_HOME``。
+
+``state_token`` 只接受以下四个值：
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 76
+
+   * - 值
+     - 状态行为
+   * - ``none``
+     - 不向语言前缀注入离散状态；预处理仅为归一化和 checkpoint 兼容保留
+       ``abs_joint_old`` tensor 布局，但模型不会使用其归一化数值。
+   * - ``abs_joint_old``
+     - 注入预训练关节布局，两个夹爪都位于末尾。
+   * - ``abs_joint``
+     - 注入与动作对齐的关节布局，左夹爪位于索引 14。
+   * - ``abs_eef``
+     - 注入基座坐标系下的 EEF 位置和轴角状态。
+
+``abs_joint_old``、``abs_joint`` 和 ``abs_eef`` 需要匹配的状态统计量。使用
+``none`` 时模型不消费状态 token，因此忽略状态布局元数据，但仍校验动作布局和
+任务覆盖范围。当任务、状态与 response 超过 ``max_token_len`` 时，tokenizer
+会直接报错，不会截断 response 或 EOS 监督。50 任务配置使用 288 个 token。
 
 归一化统计从 ``{assets_dir}/{asset_id}/norm_stats.json`` 读取。SFT 与评估必须使用
 相同状态/动作表示对应的统计量。

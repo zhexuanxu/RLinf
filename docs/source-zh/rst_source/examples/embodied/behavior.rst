@@ -278,8 +278,10 @@ BEHAVIOR 评估同样支持新的 **自包含 PyTorch OpenPI** 代码（模型
   VLA-only 路径。
 - ``evaluations/behavior/behavior_openpi_pi05_pytorch_vlm_vla_eval.yaml`` 先生成
   子任务，再让动作专家基于生成 token 输出动作。
+- ``evaluations/behavior/behavior_openpi_pi05_pytorch_vlm_vla_eval_test.yaml``
+  在有序缓存 instance 列表上评测同一个模型。
 
-两个配置均以纯评估模式运行（``runner.only_eval: True``），并消费 **新格式** 的
+这些配置均以纯评估模式运行（``runner.only_eval: True``），并消费 **新格式** 的
 PyTorch checkpoint，即由 OpenPI checkpoint 转换器
 （``ckpt_convertor.openpi`` 的 ``old2new`` / ``sft2new``）产出的 checkpoint。
 启动评估前，请设置或覆盖模型路径：
@@ -299,7 +301,11 @@ PyTorch checkpoint，即由 OpenPI checkpoint 转换器
    bash evaluations/run_eval.sh behavior behavior_openpi_pi05_pytorch_vlm_vla_eval
 
 VLM-to-VLA checkpoint 必须使用与评估一致的 prompt 约定。对于未使用离散状态 token
-训练的 checkpoint，设置 ``state_token: none``。
+训练的 checkpoint，设置 ``state_token: none``。``control_mode`` 可取 ``abs_joint``、
+``delta_joint``、``abs_eef`` 或 ``delta_eef``；系统会从这一个选择器推导环境
+动作维度与 R1 Pro 手臂控制器。数据转换和归一化统计量见
+:doc:`sft_openpi_pytorch`，确定性数据集 replay 见
+:doc:`BEHAVIOR 评测 <../../evaluations/guides/behavior>`。
 
 .. note::
 
@@ -330,7 +336,7 @@ OmniGibson 的基础配置（``base_config_name``），再应用 ``omni_config``
      - 当前任务 id（0–49）。RLinf 将其映射到 ``task.activity_name``（见 ``behavior_env.py``）。
    * - ``omni_config.task.instance_resample_mode``
      - reset 时的实例切换：``disabled``（加载固定的 ``activity_instance_id``）、``offline``
-       （启动时扫描一次 ``activity_instance_dir``，每次 reset 采样一个缓存实例——
+       （启动时扫描一次 ``activity_instance_dir``，每次 reset 按确定性的全局轮询顺序分配缓存实例——
        ``*_template.json`` 走较重的场景重载路径，``*_template-tro_state.json`` 走较轻的原地路径）、
        或 ``online``（需 ``online_object_sampling: True`` 且 ``use_presampled_robot_pose: False``）。
    * - ``omni_config.task.activity_instance_dir``

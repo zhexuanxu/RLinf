@@ -11,7 +11,8 @@ Supervised Fine-Tuning with PyTorch OpenPI (Pi0.5) on BEHAVIOR
 Fine-tune the numerically aligned PyTorch π₀.₅ implementation on BEHAVIOR
 demonstrations. You can train the action-only VLA or the full VLM-to-VLA model,
 which first predicts a subtask and then conditions the action expert on that
-prediction.
+prediction. Both paths support absolute or delta joint control and absolute or
+delta end-effector (EEF) control.
 
 Overview
 --------
@@ -76,7 +77,8 @@ Observation and Action
    * - Observation
      - Head RGB, left/right wrist RGB, and R1 Pro proprioception.
    * - Action
-     - A 32-step BEHAVIOR action chunk, padded to 32 model channels.
+     - A 32-step, 23-channel joint or 21-channel EEF action chunk, padded to 32
+       model channels.
    * - Reward
      - Not used during SFT.
    * - Prompt
@@ -109,6 +111,96 @@ filesystem.
    Do not use a fixed per-task subtask list for 50-task training. Skill
    sequences and object identifiers vary by episode.
 
+Convert Control Representations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The checked-in SFT YAMLs use one control surface. Select the representation with
+``actor.model.openpi.control_mode``; do not add mode-specific dataset or asset
+fields.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 14 30 36
+
+   * - ``control_mode``
+     - Width
+     - Arm target
+     - BEHAVIOR controller
+   * - ``abs_joint``
+     - 23
+     - Absolute 7-DoF joint targets
+     - ``JointController`` (absolute)
+   * - ``delta_joint``
+     - 23
+     - Achieved ``qpos[t+1] - qpos[t]``
+     - ``JointController`` (delta)
+   * - ``abs_eef``
+     - 21
+     - Base-frame position and axis-angle pose
+     - IK ``absolute_pose``
+   * - ``delta_eef``
+     - 21
+     - Base-frame position and relative-rotation delta
+     - IK ``pose_delta_ori``
+
+The native dataset already contains ``abs_joint`` actions. Create any selected
+representation, or a small validation subset, with the generic converter:
+
+.. code-block:: bash
+
+   bash toolkits/behavior/convert_openpi_control_mode.sh \
+       --source-dataset-root /path/to/native-behavior-data \
+       --output-dataset-root /path/to/behavior-delta-eef \
+       --control-mode delta_eef \
+       --tasks turning_on_radio
+
+Omit ``--tasks`` to convert all 50 tasks. ``--episodes 10`` restricts the
+conversion to absolute LeRobot episode IDs and is useful for validation. The
+converter writes new Parquet files and ``meta/control_mode.json`` without
+modifying the source; videos and action-independent annotations are linked.
+Older ``RLinf`` conversions that carry ``meta/eef_delta_provenance.json`` use
+legacy mode aliases and must be regenerated from the native ``abs_joint``
+dataset. The converter rejects those artifacts so a 23-channel
+``delta_joint`` source cannot be silently relabeled as ``abs_joint``.
+
+Compute matching normalization statistics in the same representation:
+
+.. code-block:: bash
+
+   bash toolkits/behavior/compute_openpi_norm_stats.sh \
+       --behavior-dataset-root /path/to/behavior-delta-eef \
+       --assets-dir /path/to/behavior-norm-stats \
+       --asset-id turning_on_radio_delta_eef \
+       --control-mode delta_eef \
+       --state-token abs_eef \
+       --tasks turning_on_radio
+
+``abs_eef`` state statistics are computed from raw frames because quaternion to
+axis-angle conversion is nonlinear. Joint-state statistics use the faster
+episode-metadata path by default; pass ``--raw-state-stats`` when exact
+frame-level aggregation is required.
+
+Use only the original generic path fields to select the generated data and
+asset:
+
+.. code-block:: yaml
+
+   data:
+     train_data_paths: /path/to/behavior-delta-eef
+     behavior_dataset_root: ${data.train_data_paths}
+
+   actor:
+     model:
+       openpi:
+         control_mode: delta_eef
+         state_token: abs_eef
+         assets_dir: /path/to/behavior-norm-stats
+         asset_id: turning_on_radio_delta_eef
+
+The model template derives the semantic action width from ``control_mode`` and
+keeps the padded model width at 32. Dataset provenance, norm-stat metadata,
+model width, and evaluation controllers are validated before use.
+
 Configure the Model
 -------------------
 
@@ -132,6 +224,7 @@ full π₀.₅ behavior under ``actor.model``:
        openpi:
          mode: vlm_vla
          state_token: abs_joint_old
+         control_mode: abs_joint
          assets_dir: /path/to/norm-stats
          asset_id: behavior
          language_loss_weight: 1.0
@@ -140,12 +233,36 @@ full π₀.₅ behavior under ``actor.model``:
          max_new_tokens: 24
          language_temperature: 0.0
 
-Use ``state_token: none`` for a state-free language prefix. Other values inject
-the normalized state as discretized language tokens. OpenPI downloads the
-PaliGemma tokenizer into its cache automatically; set ``OPENPI_DATA_HOME`` to
-choose a shared writable cache directory. The tokenizer raises when the task,
-state, and response exceed ``max_token_len``; it never truncates away response
-or EOS supervision. The 50-task config uses 288 tokens.
+The PaliGemma SentencePiece model is downloaded automatically into OpenPI's
+cache. Set ``OPENPI_DATA_HOME`` before launching when the default
+``~/.cache/openpi`` location is unsuitable or when several workers should share
+one writable cache.
+
+``state_token`` accepts exactly four values:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 76
+
+   * - Value
+     - State behavior
+   * - ``none``
+     - Do not inject discrete state into the language prefix. Preprocessing
+       retains the ``abs_joint_old`` tensor layout for checkpoint compatibility,
+       but the model does not consume its normalized values.
+   * - ``abs_joint_old``
+     - Inject the pretrained joint layout with both grippers at the tail.
+   * - ``abs_joint``
+     - Inject the action-aligned joint layout with the left gripper at index 14.
+   * - ``abs_eef``
+     - Inject base-frame EEF position and axis-angle state.
+
+``abs_joint_old``, ``abs_joint``, and ``abs_eef`` require matching state
+statistics. With ``none``, state-layout metadata is ignored because no state
+token is consumed, while action layout and task coverage are still validated.
+The tokenizer raises when the task, state, and response exceed
+``max_token_len``; it never truncates away response or EOS supervision. The
+50-task config uses 288 tokens.
 
 Norm stats resolve from
 ``{assets_dir}/{asset_id}/norm_stats.json``. SFT and evaluation must use stats

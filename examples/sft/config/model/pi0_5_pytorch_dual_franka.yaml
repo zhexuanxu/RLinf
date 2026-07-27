@@ -50,4 +50,4 @@ openpi:
   action_expert_variant: "gemma_300m"
   max_token_len: 200
   # Classic pi05_dualfranka_tcp_rot6d keeps state continuous, not in the prompt.
-  discrete_state_input: false
+  state_token: none

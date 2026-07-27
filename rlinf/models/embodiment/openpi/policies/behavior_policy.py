@@ -18,16 +18,9 @@ import numpy as np
 from openpi import transforms
 from openpi.models import model as _model
 
-# Keep a local copy of the R1Pro proprio slices to avoid importing omnigibson
-# in rollout worker init threads (omnigibson registers signal handlers at import time).
-R1PRO_PROPRIO_INDICES = {
-    "arm_left_qpos": np.s_[158:165],
-    "gripper_left_qpos": np.s_[193:195],
-    "arm_right_qpos": np.s_[197:204],
-    "trunk_qpos": np.s_[236:240],
-    "base_qvel": np.s_[253:256],
-    "gripper_right_qpos": np.s_[232:234],
-}
+from rlinf.envs.behavior.control_modes import (
+    extract_state_from_proprio,
+)
 
 
 def make_behavior_example() -> dict:
@@ -40,32 +33,6 @@ def make_behavior_example() -> dict:
         ),
         "prompt": "do something",
     }
-
-
-def extract_state_from_proprio(proprio_data: np.ndarray) -> np.ndarray:
-    """Extract 23-dim policy state from full proprio vector."""
-    base_qvel = proprio_data[..., R1PRO_PROPRIO_INDICES["base_qvel"]]  # 3
-    trunk_qpos = proprio_data[..., R1PRO_PROPRIO_INDICES["trunk_qpos"]]  # 4
-    arm_left_qpos = proprio_data[..., R1PRO_PROPRIO_INDICES["arm_left_qpos"]]  # 7
-    arm_right_qpos = proprio_data[..., R1PRO_PROPRIO_INDICES["arm_right_qpos"]]  # 7
-    left_gripper_width = proprio_data[
-        ..., R1PRO_PROPRIO_INDICES["gripper_left_qpos"]
-    ].sum(axis=-1, keepdims=True)  # 1
-    right_gripper_width = proprio_data[
-        ..., R1PRO_PROPRIO_INDICES["gripper_right_qpos"]
-    ].sum(axis=-1, keepdims=True)  # 1
-    return np.concatenate(
-        [
-            base_qvel,
-            trunk_qpos,
-            arm_left_qpos,
-            # left_gripper_width,
-            arm_right_qpos,
-            left_gripper_width,  # NOTE: we rearrange the gripper from 21 to 14 to match the action space
-            right_gripper_width,
-        ],
-        axis=-1,
-    )
 
 
 def _parse_image(image) -> np.ndarray:
@@ -90,6 +57,7 @@ class BehaviorInputs(transforms.DataTransformFn):
     model_type: _model.ModelType
     extract_state_from_proprio: bool = False
     use_all_wrist_images: bool = False
+    state_token: str = "abs_joint_old"
 
     def __call__(self, data: dict) -> dict:
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
@@ -109,14 +77,16 @@ class BehaviorInputs(transforms.DataTransformFn):
         )  # [num_image, h, w, c]
 
         state = (
-            extract_state_from_proprio(data["observation/state"])
+            extract_state_from_proprio(
+                data["observation/state"], state_token=self.state_token
+            )
             if self.extract_state_from_proprio
             else data["observation/state"]
         )
 
         # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
-            "state": state[:32],
+            "state": np.asarray(state)[..., :32],
             "image": {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": wrist_image[0, ...],
@@ -163,8 +133,7 @@ class BehaviorOutputs(transforms.DataTransformFn):
     action_dim: int = 23
 
     def __call__(self, data: dict) -> dict:
-        # Only return the first N actions -- since we padded actions above to fit the model action
-        # dimension, we need to now parse out the correct number of actions in the return dict.
-        # For Behavior, we only return the first 7 actions (since the rest is padding).
-        # For your own dataset, replace `7` with the action dimension of your dataset.
+        # Return only the selected BEHAVIOR representation. Model-space actions
+        # are padded to 32 channels, while joint and EEF controllers consume 23
+        # and 21 channels, respectively.
         return {"actions": np.asarray(data["actions"][:, : self.action_dim])}

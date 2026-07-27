@@ -3,7 +3,8 @@ BEHAVIOR-1K Evaluation
 
 BEHAVIOR-1K is a large-scale household scene simulation benchmark built on OmniGibson and Isaac Sim. It tasks a dual-arm R1 Pro robot with manipulation skills such as pick-and-place, stacking, and tidying. RLinf supports parallel evaluation of OpenPI and other VLA policies in BEHAVIOR environments and reports metrics such as ``eval/success_once``.
 
-Related training doc: :doc:`../../examples/embodied/behavior`
+Related training docs: :doc:`../../examples/embodied/behavior` and
+:doc:`../../examples/embodied/sft_openpi_pytorch`
 
 Environment Setup
 -----------------
@@ -15,7 +16,10 @@ Environment Setup
    bash requirements/install.sh embodied --model openpi --env behavior
    source .venv/bin/activate
 
-``evaluations/behavior/`` currently ships an OpenPI π₀.₅ example only. Training also supports OpenVLA-OFT; you can derive an eval YAML from ``examples/embodiment/config/`` (see :doc:`../reference/configuration`).
+``evaluations/behavior/`` ships OpenPI π₀.₅ evaluation, the self-contained
+PyTorch VLA and VLM-to-VLA paths, and deterministic dataset replay. Training
+also supports OpenVLA-OFT; you can derive an eval YAML from
+``examples/embodiment/config/`` (see :doc:`../reference/configuration`).
 
 **Hardware and Isaac Sim**
 
@@ -43,11 +47,11 @@ BEHAVIOR assets exceed 30 GB; see the "Resource download" section in :doc:`../..
 Example Configs
 ---------------
 
-The following example is available under ``evaluations/behavior/``:
+The following examples are available under ``evaluations/behavior/``:
 
 .. list-table::
    :header-rows: 1
-   :widths: 40 30 30
+   :widths: 52 24 24
 
    * - Config file
      - Env preset
@@ -55,8 +59,20 @@ The following example is available under ``evaluations/behavior/``:
    * - ``behavior_openpi_pi05_eval.yaml``
      - ``behavior_r1pro``
      - π₀.₅
+   * - ``behavior_openpi_pi05_pytorch_eval.yaml``
+     - ``behavior_r1pro``
+     - PyTorch π₀.₅ VLA
+   * - ``behavior_openpi_pi05_pytorch_vlm_vla_eval.yaml``
+     - ``behavior_r1pro``
+     - PyTorch π₀.₅ VLM-to-VLA
+   * - ``behavior_openpi_pi05_pytorch_vlm_vla_eval_test.yaml``
+     - ``behavior_r1pro``
+     - PyTorch π₀.₅ VLM-to-VLA on an ordered cached-instance test set
+   * - ``behavior_openpi_pi05_pytorch_replay.yaml``
+     - ``behavior_r1pro``
+     - Dataset replay (no model)
 
-If ``evaluations/behavior/<config>.yaml`` is missing, ``run_eval.sh`` falls back to ``examples/embodiment/config/`` with the same name (e.g. ``behavior_ppo_openpi_pi05_eval``). Fallback configs include ``actor`` / ``algorithm`` sections but still work for evaluation when ``runner.only_eval: True``.
+If ``evaluations/behavior/<config>.yaml`` is missing, ``run_eval.sh`` falls back to ``examples/embodiment/config/`` with the same name (e.g. ``behavior_ppo_openpi_pi05``). Fallback configs include ``actor`` / ``algorithm`` sections and require ``runner.only_eval=true``.
 
 End-to-End Workflow
 -------------------
@@ -74,13 +90,23 @@ End-to-End Workflow
 
 **Step 2: Prepare the model**
 
-Recommended checkpoint: `RLinf/RLinf-Pi0-Behavior <https://huggingface.co/RLinf/RLinf-Pi0-Behavior>`_ (download commands in the training doc). Third-party OpenPI weights (e.g. OpenPI-Comet) must be converted to PyTorch format before setting ``rollout.model.model_path``.
+Recommended checkpoint: `RLinf/RLinf-Pi0-Behavior <https://huggingface.co/RLinf/RLinf-Pi0-Behavior>`_ (download commands in the training doc). Third-party OpenPI weights (e.g. OpenPI-Comet) must be converted to PyTorch format before setting ``rollout.model.model_path``. The self-contained PyTorch configs require the new-format layout described in :doc:`../../examples/embodied/sft_openpi_pytorch`.
 
 **Step 3: Edit the config**
 
-Copy or edit the target YAML and set at least ``rollout.model.model_path``. Generic ``env.eval`` fields are documented in :doc:`../reference/configuration` (:ref:`env-eval-fields`); BEHAVIOR-specific fields and the evaluation protocol are covered in :ref:`behavior-eval-config` below.
+Copy or edit the target YAML and set at least ``rollout.model.model_path``.
+VLM-to-VLA downloads the PaliGemma SentencePiece model into OpenPI's cache
+automatically. Set ``OPENPI_DATA_HOME`` if the default ``~/.cache/openpi``
+location is unsuitable. Generic ``env.eval`` fields are documented in
+:doc:`../reference/configuration` (:ref:`env-eval-fields`);
+BEHAVIOR-specific fields and the evaluation protocol are covered in
+:ref:`behavior-eval-config` below.
 
-The OpenPI fields in ``behavior_openpi_pi05_eval.yaml`` must match training (``action_dim: 23``, ``num_action_chunks: 32``, ``openpi.config_name: pi05_behavior``, etc.).
+The OpenPI fields must match training. For the self-contained PyTorch path,
+``rollout.model.openpi.state_token`` and ``control_mode`` must match the
+checkpoint, dataset, and norm stats. The checked-in evaluation examples use
+``control_mode: abs_joint``; the VLM-to-VLA checkpoint without prompt-state
+tokens uses ``state_token: none``.
 
 **Step 4: Launch evaluation**
 
@@ -88,6 +114,14 @@ The OpenPI fields in ``behavior_openpi_pi05_eval.yaml`` must match training (``a
 
    bash evaluations/run_eval.sh behavior behavior_openpi_pi05_eval \
      rollout.model.model_path=/path/to/model
+
+For the full PyTorch model:
+
+.. code-block:: bash
+
+   bash evaluations/run_eval.sh behavior \
+     behavior_openpi_pi05_pytorch_vlm_vla_eval \
+     rollout.model.model_path=/path/to/new-format-model
 
 **Step 5: Check results**
 
@@ -113,13 +147,17 @@ Each evaluation trajectory is determined by:
 
 ``instance_resample_mode`` supports three values:
 
-- ``disabled`` (default): every reset loads the fixed instance for ``activity_instance_id``; if ``activity_instance_dir`` is set, the matching JSON is read from that directory.
-- ``offline``: every reset **randomly** picks a cached instance from ``activity_instance_dir`` (download official ``2025-challenge-task-instances`` or generate files with ``instance_generator.py``).
+- ``disabled`` (default): every reset loads the fixed scalar ``activity_instance_id``; if ``activity_instance_dir`` is set, the matching JSON is read from that directory.
+- ``offline``: cached instances are assigned in deterministic global round-robin order. A list-valued ``activity_instance_id`` restricts the pool and preserves the requested order; a scalar leaves all discovered files eligible. Download official ``2025-challenge-task-instances`` or generate files with ``instance_generator.py``.
 - ``online``: online object resampling on reset (requires ``online_object_sampling: True`` and ``use_presampled_robot_pose: False``; slower startup).
 
 .. note::
 
-   A single launch does not automatically sweep all tasks or init states. To evaluate multiple tasks, change ``activity_name`` and rerun, or wrap launches in a batch script. For multiple instances, use ``instance_resample_mode: offline`` and average over ``rollout_epoch``.
+   A single launch does not automatically sweep all tasks. To evaluate multiple
+   tasks, change ``activity_name`` and rerun, or wrap launches in a batch script.
+   For an instance test set, use ``instance_resample_mode: offline`` and a list of
+   IDs. Each reset consumes the next global slot, so
+   ``total_num_envs × rollout_epoch`` determines coverage and repetitions.
 
 Generic ``env.eval`` fields
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -131,11 +169,11 @@ Generic ``env.eval`` fields
    * - Field
      - BEHAVIOR guidance
    * - ``total_num_envs``
-     - Global parallel env count. Each BEHAVIOR env uses roughly **10 GiB** VRAM; the example defaults to ``8``.
+     - Global parallel env count. Each BEHAVIOR env uses roughly **10 GiB** VRAM. The model-eval configs use ``8``; replay uses ``1``.
    * - ``rollout_epoch``
-     - Number of eval rounds with the same config; metrics are averaged. The example defaults to ``2``.
+     - Number of eval rounds with the same config; metrics are averaged. The JAX, PyTorch, and replay configs use ``2``, ``4``, and ``1``, respectively.
    * - ``max_episode_steps``
-     - Max steps per trajectory. The π₀.₅ example uses ``4096`` (the preset default ``2000`` may be too short for long-horizon tasks).
+     - Max steps per trajectory. Model evaluation uses ``4096``; replay uses ``2560``. The preset default ``2000`` may be too short for long-horizon tasks.
    * - ``max_steps_per_rollout_epoch``
      - Total interaction steps per rollout round; **must be divisible by** ``rollout.model.num_action_chunks``. Without ``auto_reset``, usually equals ``max_episode_steps``.
    * - ``num_env_subprocess``
@@ -190,7 +228,7 @@ Advanced Usage
      rollout.model.model_path=/path/to/model \
      env.eval.omni_config.task.activity_name=picking_up_trash
 
-**Random offline instance sampling**
+**Deterministic offline instance test set**
 
 .. code-block:: yaml
 
@@ -199,6 +237,7 @@ Advanced Usage
        omni_config:
          task:
            activity_instance_dir: ${oc.env:OMNIGIBSON_DATA_PATH}/2025-challenge-task-instances
+           activity_instance_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
            instance_file_format: tro_state
            instance_resample_mode: offline
        rollout_epoch: 5
@@ -216,8 +255,50 @@ Advanced Usage
 
 .. code-block:: bash
 
-   bash evaluations/run_eval.sh behavior behavior_ppo_openpi_pi05_eval \
-     rollout.model.model_path=/path/to/model
+   bash evaluations/run_eval.sh behavior behavior_ppo_openpi_pi05 \
+     rollout.model.model_path=/path/to/model \
+     runner.only_eval=true
+
+Replay a Recorded Episode
+-------------------------
+
+Replay sends recorded dataset actions directly to the BEHAVIOR controller. It
+is intended to validate data conversion and controller semantics independently
+of model inference. The replay worker does not load a checkpoint, tokenizer,
+transforms, norm stats, or the demonstration's recorded observation state.
+
+Use one explicit cached-instance and dataset-episode pair:
+
+.. code-block:: bash
+
+   bash toolkits/behavior/run_behavior_replay.sh \
+     abs_joint none \
+     /path/to/behavior-dataset \
+     1 10
+
+The positional arguments are ``control_mode``, ``state_token``,
+``dataset_root``, ``activity_instance_id``, and ``episode_index``. For
+``delta_joint``, ``abs_eef``, or ``delta_eef``, point ``dataset_root`` at data
+created by ``convert_openpi_control_mode.sh``. The launcher uses the dedicated
+``evaluations/behavior/replay_embodied_agent.py`` entrypoint with the single
+``behavior_openpi_pi05_pytorch_replay.yaml`` config and accepts trailing Hydra
+overrides, for example:
+
+.. code-block:: bash
+
+   bash toolkits/behavior/run_behavior_replay.sh \
+     delta_eef abs_eef /path/to/converted-data 1 10 \
+     env.eval.max_episode_steps=3200 \
+     env.eval.max_steps_per_rollout_epoch=3200
+
+Replay requires ``instance_resample_mode: disabled`` and an explicit
+``activity_instance_id`` matching the selected cached JSON. It never infers an
+episode from the instance ID: the two values are a caller-selected pair, and
+the episode is checked only to belong to the configured activity. Keep
+``max_steps_per_rollout_epoch`` divisible by the 32-step action horizon.
+The launcher writes the instance ID to both ``env.eval.replay`` and
+``env.eval.omni_config.task``; when invoking the YAML directly, override both
+fields with the same value.
 
 FAQ
 ---
@@ -231,3 +312,4 @@ FAQ
 - **Fewer video frames than expected:** ``skip_intermediate_obs_in_chunk: True`` skips intermediate chunk frames and keeps only observations consumed by the policy.
 - **Instance load failure:** JSON filenames under ``activity_instance_dir`` must match ``activity_name``, ``activity_definition_id``, and ``scene_model``; see ``rlinf/envs/behavior/instance_loader.py``.
 - **Step count validation error:** ``max_steps_per_rollout_epoch`` must be divisible by ``rollout.model.num_action_chunks``.
+- **Replay mode mismatch:** converted datasets carry ``meta/control_mode.json``; its mode and action width must match ``rollout.model.openpi.control_mode``.

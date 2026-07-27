@@ -1082,10 +1082,13 @@ def validate_embodied_cfg(cfg):
             train_env_type == SupportedEnvType.BEHAVIOR
             or eval_env_type == SupportedEnvType.BEHAVIOR
         ):
-            if cfg.env.get("train", None) is not None:
-                assert cfg.env.train.base_config_name == "r1pro_behavior", (
-                    f"Only r1pro_behavior is supported for omnigibson, got {cfg.env.train.base_config_name}"
-                )
+            for env_split in ("train", "eval"):
+                env_cfg = cfg.env.get(env_split, None)
+                if env_cfg is not None:
+                    assert env_cfg.base_config_name == "r1pro_behavior", (
+                        "Only r1pro_behavior is supported for OmniGibson, got "
+                        f"{env_cfg.base_config_name!r} for env.{env_split}."
+                    )
     return cfg
 
 

@@ -14,13 +14,16 @@
 
 import json
 import os
-import random
 from dataclasses import dataclass
 from pathlib import Path
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from rlinf.envs.behavior.utils import sync_robot_after_pose_override
+from rlinf.envs.behavior.utils import (
+    clear_robot_grasp_state,
+    reset_robot_joint_state_to_reset_pose,
+    sync_robot_after_pose_override,
+)
 
 TASK_INSTANCE_FILE_SUFFIX = "_template-tro_state.json"
 TASK_INSTANCE_TEMPLATE_FILE_SUFFIX = "_template.json"
@@ -182,6 +185,8 @@ def load_activity_instance_tro_state(
     )
     robot_poses = tro_state.pop("robot_poses", None)
 
+    clear_robot_grasp_state(robot)
+
     for tro_key, state in tro_state.items():
         entity = env.task.object_scope.get(tro_key)
         assert entity is not None, (
@@ -219,10 +224,12 @@ def load_activity_instance_tro_state(
             robot_pose["orientation"],
             frame="scene",
         )
-        sync_robot_after_pose_override(robot)
         env.scene.write_task_metadata(key="robot_poses", data=robot_poses)
     else:
         env.scene.write_task_metadata(key="robot_poses", data=None)
+
+    reset_robot_joint_state_to_reset_pose(robot, preserve_base_pose=True)
+    sync_robot_after_pose_override(robot)
 
     for _ in range(25):
         og.sim.step_physics()
@@ -233,6 +240,10 @@ def load_activity_instance_tro_state(
     env.scene.update_initial_file()
     if reset_scene:
         env.scene.reset()
+        robot = env.task.get_agent(env)
+        clear_robot_grasp_state(robot)
+        reset_robot_joint_state_to_reset_pose(robot, preserve_base_pose=True)
+        sync_robot_after_pose_override(robot)
 
 
 class ActivityInstanceLoader:
@@ -242,22 +253,60 @@ class ActivityInstanceLoader:
         self,
         omni_cfg: DictConfig,
         activity_name: str,
-        activity_instance_id: int,
+        activity_instance_id: int | None,
         instance_resample_mode: str,
         activity_instances: tuple[ActivityInstanceFile, ...],
+        seed_offset: int = 0,
+        total_num_workers: int = 1,
     ):
+        if seed_offset < 0:
+            raise ValueError(f"seed_offset must be non-negative, got {seed_offset}.")
+        if total_num_workers <= 0:
+            raise ValueError(
+                f"total_num_workers must be positive, got {total_num_workers}."
+            )
         self.omni_cfg = omni_cfg
         self.activity_name = activity_name
         self.activity_instance_id = activity_instance_id
         self.instance_resample_mode = instance_resample_mode
         self.activity_instances = activity_instances
+        self._seed_offset = seed_offset
+        self._total_num_workers = total_num_workers
+        self._reset_counter = 0
+
+    def build_initial_omni_cfg(self) -> DictConfig:
+        """Build the config used before any cached reset state is applied.
+
+        Cached template and ``tro_state`` files are reset-time instances. The
+        simulator must first construct the task from its canonical full scene
+        template (instance 0); attempting to construct directly from a cached
+        instance ID makes OmniGibson look for a nonexistent full
+        ``*_template.json`` file. The selected instance remains unchanged in
+        this loader and is applied by :meth:`prepare_reset`.
+
+        Returns:
+            A detached OmniGibson config safe for initial environment creation.
+        """
+        initial_cfg = OmegaConf.create(
+            OmegaConf.to_container(self.omni_cfg, resolve=False)
+        )
+        if self.activity_instances:
+            OmegaConf.update(initial_cfg, "task.activity_instance_id", 0)
+        return initial_cfg
 
     @classmethod
-    def from_omni_cfg(cls, omni_cfg: DictConfig) -> "ActivityInstanceLoader":
+    def from_omni_cfg(
+        cls,
+        omni_cfg: DictConfig,
+        seed_offset: int = 0,
+        total_num_workers: int = 1,
+    ) -> "ActivityInstanceLoader":
         """Build an instance loader from OmniGibson task config.
 
         Args:
             omni_cfg: Full OmniGibson config used to construct the BEHAVIOR env.
+            seed_offset: Global subprocess index used for deterministic sampling.
+            total_num_workers: Total number of BEHAVIOR simulator subprocesses.
 
         Returns:
             A configured activity instance loader.
@@ -270,6 +319,21 @@ class ActivityInstanceLoader:
             omni_cfg, "task.activity_definition_id"
         )
         activity_instance_id = OmegaConf.select(omni_cfg, "task.activity_instance_id")
+        requested_instance_ids = None
+        if isinstance(activity_instance_id, ListConfig):
+            activity_instance_id = OmegaConf.to_container(activity_instance_id)
+        if isinstance(activity_instance_id, (list, tuple)):
+            requested_instance_ids = list(activity_instance_id)
+            if not requested_instance_ids:
+                raise ValueError("task.activity_instance_id list must not be empty.")
+            if any(
+                not isinstance(instance_id, int) or isinstance(instance_id, bool)
+                for instance_id in requested_instance_ids
+            ):
+                raise ValueError(
+                    "Every task.activity_instance_id list entry must be an integer."
+                )
+            activity_instance_id = requested_instance_ids[0]
         activity_instance_dir = OmegaConf.select(omni_cfg, "task.activity_instance_dir")
         instance_resample_mode = OmegaConf.select(
             omni_cfg, "task.instance_resample_mode"
@@ -291,6 +355,11 @@ class ActivityInstanceLoader:
             raise ValueError(
                 "task.instance_resample_mode must be one of "
                 f"{SUPPORTED_INSTANCE_RESAMPLE_MODES}, got {instance_resample_mode!r}."
+            )
+        if requested_instance_ids is not None and instance_resample_mode != "offline":
+            raise ValueError(
+                "A task.activity_instance_id list requires "
+                "task.instance_resample_mode='offline'."
             )
 
         if instance_file_format is not None:
@@ -327,6 +396,8 @@ class ActivityInstanceLoader:
                 activity_instance_id=activity_instance_id,
                 instance_resample_mode=instance_resample_mode,
                 activity_instances=(),
+                seed_offset=seed_offset,
+                total_num_workers=total_num_workers,
             )
 
         if activity_instance_dir is None:
@@ -341,6 +412,8 @@ class ActivityInstanceLoader:
                 activity_instance_id=activity_instance_id,
                 instance_resample_mode=instance_resample_mode,
                 activity_instances=(),
+                seed_offset=seed_offset,
+                total_num_workers=total_num_workers,
             )
 
         if online_object_sampling:
@@ -354,7 +427,7 @@ class ActivityInstanceLoader:
                 "'tro_state' when task.activity_instance_dir is set."
             )
 
-        activity_instances = tuple(
+        discovered_activity_instances = tuple(
             discover_activity_instance_files(
                 activity_instance_dir=activity_instance_dir,
                 activity_name=activity_name,
@@ -363,12 +436,35 @@ class ActivityInstanceLoader:
             )
         )
         if instance_resample_mode == "disabled":
-            instance_ids = {entry.instance_id for entry in activity_instances}
+            instance_ids = {
+                entry.instance_id for entry in discovered_activity_instances
+            }
             if activity_instance_id not in instance_ids:
                 raise ValueError(
                     f"task.activity_instance_id={activity_instance_id} is not present in "
                     f"task.activity_instance_dir={activity_instance_dir}."
                 )
+            activity_instances = discovered_activity_instances
+        elif requested_instance_ids is not None:
+            instances_by_id = {
+                entry.instance_id: entry for entry in discovered_activity_instances
+            }
+            missing_ids = [
+                instance_id
+                for instance_id in requested_instance_ids
+                if instance_id not in instances_by_id
+            ]
+            if missing_ids:
+                raise ValueError(
+                    "task.activity_instance_id contains ids not present in "
+                    f"task.activity_instance_dir={activity_instance_dir}: "
+                    f"{missing_ids}."
+                )
+            activity_instances = tuple(
+                instances_by_id[instance_id] for instance_id in requested_instance_ids
+            )
+        else:
+            activity_instances = discovered_activity_instances
 
         return cls(
             omni_cfg=omni_cfg,
@@ -376,6 +472,8 @@ class ActivityInstanceLoader:
             activity_instance_id=activity_instance_id,
             instance_resample_mode=instance_resample_mode,
             activity_instances=activity_instances,
+            seed_offset=seed_offset,
+            total_num_workers=total_num_workers,
         )
 
     def prepare_reset(self, vec_env) -> None:
@@ -395,9 +493,19 @@ class ActivityInstanceLoader:
             return
 
         if self.instance_resample_mode == "offline":
-            instance_files = [
-                random.choice(self.activity_instances) for _ in range(len(vec_env.envs))
-            ]
+            num_envs = len(vec_env.envs)
+            total_global_envs = self._total_num_workers * num_envs
+            instance_files = []
+            for env_index in range(num_envs):
+                global_index = (
+                    self._seed_offset * num_envs
+                    + env_index
+                    + self._reset_counter * total_global_envs
+                )
+                instance_files.append(
+                    self.activity_instances[global_index % len(self.activity_instances)]
+                )
+            self._reset_counter += 1
         else:
             instance_file = self._get_activity_instance(self.activity_instance_id)
             instance_files = [instance_file] * len(vec_env.envs)
@@ -463,7 +571,7 @@ class ActivityInstanceLoader:
                 env,
                 instance_id=instance_file.instance_id,
                 tro_file_path=instance_file.path,
-                reset_scene=False,
+                reset_scene=True,
             )
 
     def _build_reload_config(self, instance_file: ActivityInstanceFile) -> dict:

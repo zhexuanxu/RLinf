@@ -1,4 +1,7 @@
 env_type: behavior
+# Keep simulator controller selection in the BEHAVIOR environment config.
+# Actor-backed runs use the actor selector, evaluation and replay use rollout.
+control_mode: ${oc.select:actor.model.openpi.control_mode,${oc.select:rollout.model.openpi.control_mode,abs_joint}}
 total_num_envs: null
 auto_reset: False
 ignore_terminations: False
@@ -83,21 +86,59 @@ omni_config:
           use_impedances: False
           use_delta_commands: False
         arm_left:
-          name: JointController
-          motor_type: position
-          pos_kp: 150
-          command_input_limits: null
-          command_output_limits: null
-          use_impedances: False
-          use_delta_commands: False
+          abs_joint:
+            name: JointController
+            motor_type: position
+            pos_kp: 150
+            command_input_limits: null
+            command_output_limits: null
+            use_impedances: False
+            use_delta_commands: False
+          delta_joint:
+            name: JointController
+            motor_type: position
+            pos_kp: 150
+            command_input_limits: null
+            command_output_limits: null
+            use_impedances: False
+            use_delta_commands: True
+          abs_eef:
+            name: InverseKinematicsController
+            mode: absolute_pose
+            command_input_limits: null
+            command_output_limits: null
+          delta_eef:
+            name: InverseKinematicsController
+            mode: pose_delta_ori
+            command_input_limits: null
+            command_output_limits: null
         arm_right:
-          name: JointController
-          motor_type: position
-          pos_kp: 150
-          command_input_limits: null
-          command_output_limits: null
-          use_impedances: False
-          use_delta_commands: False
+          abs_joint:
+            name: JointController
+            motor_type: position
+            pos_kp: 150
+            command_input_limits: null
+            command_output_limits: null
+            use_impedances: False
+            use_delta_commands: False
+          delta_joint:
+            name: JointController
+            motor_type: position
+            pos_kp: 150
+            command_input_limits: null
+            command_output_limits: null
+            use_impedances: False
+            use_delta_commands: True
+          abs_eef:
+            name: InverseKinematicsController
+            mode: absolute_pose
+            command_input_limits: null
+            command_output_limits: null
+          delta_eef:
+            name: InverseKinematicsController
+            mode: pose_delta_ori
+            command_input_limits: null
+            command_output_limits: null
         gripper_left:
           name: MultiFingerGripperController
           mode: smooth
@@ -129,7 +170,7 @@ omni_config:
     # RLinf clears stale robot_poses metadata in that case so reset falls back to the default pose.
     instance_file_format: tro_state
     # Reset-time instance resampling mode: disabled | offline | online.
-    # offline: sample cached instances from activity_instance_dir before each reset.
+    # offline: assign cached instances in deterministic global round-robin order.
     # template files are reloaded as full scene templates; tro_state files are applied in-place.
     # online: use BDDL online object sampling during reset.
     instance_resample_mode: disabled

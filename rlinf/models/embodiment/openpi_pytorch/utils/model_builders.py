@@ -48,18 +48,31 @@ def _resolve_transform_kwargs(model_cfg):
     """Resolve model-side tokenization knobs shared by eval/RL/SFT pipelines."""
     from omegaconf import OmegaConf
 
+    assets_dir = OmegaConf.select(model_cfg, "assets_dir", default=None)
+    asset_id = OmegaConf.select(model_cfg, "asset_id", default=None)
+    if (assets_dir is None) != (asset_id is None):
+        raise ValueError(
+            "openpi.assets_dir and openpi.asset_id must be set together when "
+            "overriding checkpoint-relative norm stats."
+        )
     state_token = OmegaConf.select(model_cfg, "state_token", default=None)
     if state_token is None:
-        state_token = (
-            "abs_joint_old"
-            if bool(OmegaConf.select(model_cfg, "discrete_state_input", default=True))
-            else "none"
+        raise ValueError(
+            "actor.model.openpi.state_token is required; use 'none' to disable "
+            "prompt-state injection."
         )
-    return {
+    kwargs = {
         "mode": str(OmegaConf.select(model_cfg, "mode", default="vla")).lower(),
-        "state_token": str(state_token).lower(),
+        "state_token": str(state_token),
+        "action_env_dim": int(
+            OmegaConf.select(model_cfg, "action_env_dim", default=23)
+        ),
         "max_token_len": int(OmegaConf.select(model_cfg, "max_token_len", default=200)),
     }
+    if assets_dir is not None:
+        kwargs["norm_stats_dir"] = str(assets_dir)
+        kwargs["norm_stats_asset_id"] = str(asset_id)
+    return kwargs
 
 
 def _build_eval_model(

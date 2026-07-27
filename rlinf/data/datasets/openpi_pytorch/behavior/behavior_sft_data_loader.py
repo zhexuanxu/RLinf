@@ -66,6 +66,8 @@ class _Repack(DataTransformFn):
     the channel reorder and the float→uint8 conversion.
     """
 
+    action_env_dim: int = 23
+
     def __call__(self, frame: dict) -> dict:
         left_wrist = np.asarray(frame[_LEROBOT_LEFT_WRIST_KEY])
         right_wrist = np.asarray(frame[_LEROBOT_RIGHT_WRIST_KEY])
@@ -77,7 +79,14 @@ class _Repack(DataTransformFn):
 
         actions = frame.get("action")
         if actions is not None:
-            data["actions"] = np.asarray(actions)
+            actions = np.asarray(actions)
+            if actions.ndim == 0 or actions.shape[-1] != self.action_env_dim:
+                raise ValueError(
+                    "BEHAVIOR action width does not match the selected "
+                    f"control mode: expected {self.action_env_dim}, got shape "
+                    f"{actions.shape}."
+                )
+            data["actions"] = actions
 
         prompt = frame.get("prompt", frame.get("task"))
         if prompt is None:
@@ -177,8 +186,11 @@ class BehaviorSftDataConfig:
 
     repo_id: str
     action_dim: int
+    action_env_dim: int
     action_horizon: int
     max_token_len: int
+    control_mode: str
+    state_token: str
 
 
 def _validate_task_names(tasks: list[str]) -> None:
@@ -230,6 +242,8 @@ def create_behavior_sft_data_loader(
     data_kwargs: dict | None = None,
     mode: str = "vla",
     state_token: str = "abs_joint_old",
+    control_mode: str = "abs_joint",
+    action_env_dim: int | None = None,
     hf_cache_dir: str | None = None,
     check_timestamp_sync: bool = False,
 ) -> "BehaviorSftDataLoader":
@@ -247,7 +261,8 @@ def create_behavior_sft_data_loader(
         repo_id: LeRobot dataset repo id (used for metadata bookkeeping).
         tasks: BEHAVIOR task names to include.
         modalities: Observation modalities to load (e.g. ``["rgb"]``).
-        action_dim: Model action dimension (metadata).
+        action_dim: Padded model action dimension (metadata).
+        action_env_dim: Semantic dataset/environment action dimension.
         action_horizon: Number of future action steps per sample.
         max_token_len: Maximum tokenized-prompt length (metadata).
         batch_size: Per-rank batch size.
@@ -267,6 +282,7 @@ def create_behavior_sft_data_loader(
         data_kwargs: Optional ``openpi_data`` overrides forwarded to the pipeline.
         mode: OpenPI mode, either ``vla`` or ``vlm_vla``.
         state_token: Prompt-state layout passed to the shared transform builder.
+        control_mode: Dataset action semantics.
         hf_cache_dir: Optional Hugging Face Arrow cache directory.
         check_timestamp_sync: Whether to scan all timestamps during startup.
 
@@ -277,6 +293,27 @@ def create_behavior_sft_data_loader(
         raise ValueError(
             "vlm_vla BEHAVIOR SFT requires data.hf_cache_dir on a large "
             "filesystem; the projected 50-task Arrow cache can exceed 100 GB."
+        )
+    from rlinf.envs.behavior.control_modes import (
+        CONTROL_MODE_ACTION_DIMS,
+        validate_control_mode,
+        validate_state_token,
+    )
+
+    control_mode = validate_control_mode(control_mode)
+    state_token = validate_state_token(state_token)
+    expected_action_env_dim = CONTROL_MODE_ACTION_DIMS[control_mode]
+    if action_env_dim is None:
+        action_env_dim = expected_action_env_dim
+    if action_env_dim != expected_action_env_dim:
+        raise ValueError(
+            f"control_mode={control_mode!r} requires action_env_dim="
+            f"{expected_action_env_dim}, got {action_env_dim}."
+        )
+    if action_dim < action_env_dim:
+        raise ValueError(
+            f"Model action_dim={action_dim} cannot pad semantic "
+            f"action_env_dim={action_env_dim}."
         )
 
     dataset = BehaviorSftDataset(
@@ -316,10 +353,11 @@ def create_behavior_sft_data_loader(
         norm_stats_asset_id=asset_id,
         mode=mode,
         state_token=state_token,
+        action_env_dim=action_env_dim,
         max_token_len=max_token_len,
     )
     source = _TransformedStreamingDataset(
-        dataset, compose([_Repack(), *input_transforms])
+        dataset, compose([_Repack(action_env_dim), *input_transforms])
     )
 
     # The streaming dataset partitions chunks per (rank, worker) on its own, so a
@@ -360,8 +398,11 @@ def create_behavior_sft_data_loader(
     data_config = BehaviorSftDataConfig(
         repo_id=repo_id,
         action_dim=action_dim,
+        action_env_dim=action_env_dim,
         action_horizon=action_horizon,
         max_token_len=max_token_len,
+        control_mode=control_mode,
+        state_token=state_token,
     )
     return BehaviorSftDataLoader(torch_loader, data_config)
 
@@ -420,6 +461,42 @@ def build_behavior_sft_dataloader(
 
     model_cfg = cfg.actor.model
     data_cfg = cfg.data
+
+    from rlinf.envs.behavior.control_modes import (
+        CONTROL_MODE_ACTION_DIMS,
+        OPENPI_MODEL_ACTION_DIM,
+        validate_control_mode,
+        validate_control_mode_dataset,
+        validate_state_token,
+    )
+
+    control_mode = validate_control_mode(str(model_cfg.openpi.control_mode))
+    state_token = validate_state_token(str(model_cfg.openpi.state_token))
+    expected_action_env_dim = CONTROL_MODE_ACTION_DIMS[control_mode]
+    action_env_dim = int(model_cfg.action_dim)
+    configured_action_env_dim = int(
+        model_cfg.openpi.get("action_env_dim", action_env_dim)
+    )
+    if (
+        action_env_dim != expected_action_env_dim
+        or configured_action_env_dim != expected_action_env_dim
+    ):
+        raise ValueError(
+            f"actor.model.openpi.control_mode={control_mode!r} requires "
+            f"action_dim={expected_action_env_dim}, but actor.model.action_dim="
+            f"{action_env_dim} and openpi.action_env_dim="
+            f"{configured_action_env_dim}."
+        )
+    model_action_dim = int(model_cfg.openpi.model_action_dim)
+    if model_action_dim != OPENPI_MODEL_ACTION_DIM:
+        raise ValueError(
+            f"actor.model.openpi.model_action_dim must be "
+            f"{OPENPI_MODEL_ACTION_DIM} for pi05_behavior; got "
+            f"{model_action_dim}."
+        )
+    validate_control_mode_dataset(
+        str(data_cfg.behavior_dataset_root), control_mode, list(data_cfg.tasks)
+    )
 
     # Norm stats resolve STRICTLY from YAML (assets_dir / asset_id) for the openpi
     # Normalize stage — the same file the eval / RL paths would resolve.
@@ -484,7 +561,8 @@ def build_behavior_sft_dataloader(
         repo_id=str(data_cfg.repo_id),
         tasks=tasks,
         modalities=list(data_cfg.modalities),
-        action_dim=int(model_cfg.openpi.model_action_dim),
+        action_dim=model_action_dim,
+        action_env_dim=action_env_dim,
         action_horizon=int(model_cfg.num_action_chunks),
         max_token_len=int(model_cfg.openpi.max_token_len),
         batch_size=int(cfg.actor.eval_batch_size)
@@ -504,7 +582,8 @@ def build_behavior_sft_dataloader(
         dist_world_size=world_size,
         data_kwargs=data_kwargs,
         mode=mode,
-        state_token=str(model_cfg.openpi.get("state_token", "abs_joint_old")),
+        state_token=state_token,
+        control_mode=control_mode,
         hf_cache_dir=data_cfg.get("hf_cache_dir", None),
         check_timestamp_sync=bool(data_cfg.get("check_timestamp_sync", False)),
     )

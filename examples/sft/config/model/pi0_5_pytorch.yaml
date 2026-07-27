@@ -14,10 +14,11 @@ precision: fp32
 is_lora: False
 lora_rank: 32
 
-# Action and chunk settings (BEHAVIOR pi05): 23-dim env actions, 32-step chunk
-# (action_horizon). `num_action_chunks` is the Pi0 action_horizon.
+# Action and chunk settings (BEHAVIOR pi05). ``control_mode`` below is the
+# single public switch for the semantic environment action width; the model
+# still pads every mode to ``openpi.model_action_dim``.
 num_action_chunks: 32
-action_dim: 23
+action_dim: ${.openpi.control_mode_action_dims.${.openpi.control_mode}}
 use_proprio: True
 
 # Flow-matching denoising steps (used by the eval sampler; carried here so the
@@ -47,10 +48,23 @@ openpi:
   paligemma_variant: "gemma_2b"
   action_expert_variant: "gemma_300m"
   max_token_len: 200
-  # Public π₀.₅ behavior selectors. ``state_token: none`` disables prompt-state
-  # injection; ``abs_joint_old`` preserves the pretrained BEHAVIOR state order.
+  # Public π₀.₅ BEHAVIOR selectors. ``state_token`` accepts exactly ``none``,
+  # ``abs_joint_old``, ``abs_joint``, or ``abs_eef``. ``none`` disables
+  # prompt-state injection; preprocessing retains the ``abs_joint_old`` layout
+  # only for normalization/checkpoint compatibility.
+  #
+  # ``control_mode`` accepts exactly ``abs_joint``, ``delta_joint``,
+  # ``abs_eef``, or ``delta_eef``. It selects the expected dataset action
+  # semantics and semantic action width. Generic ``assets_dir`` / ``asset_id``
+  # must point to matching norm stats.
   mode: vla
   state_token: abs_joint_old
+  control_mode: abs_joint
+  control_mode_action_dims:
+    abs_joint: 23
+    delta_joint: 23
+    abs_eef: 21
+    delta_eef: 21
   language_loss_weight: 1.0
   action_loss_weight: 1.0
   stop_gradient_to_vlm: false

@@ -297,7 +297,8 @@ performance.
      - Current task id (0–49). RLinf maps it to ``task.activity_name`` (see ``behavior_env.py``).
    * - ``omni_config.task.instance_resample_mode``
      - Reset-time instance switching: ``disabled`` (load the fixed ``activity_instance_id``),
-       ``offline`` (scan ``activity_instance_dir`` once and sample a cached instance per reset —
+       ``offline`` (scan ``activity_instance_dir`` once and assign cached instances in
+       deterministic global round-robin order —
        ``*_template.json`` use the heavy scene-reload path, ``*_template-tro_state.json`` the
        lighter in-place path), or ``online`` (requires ``online_object_sampling: True`` and
        ``use_presampled_robot_pose: False``).
@@ -384,8 +385,10 @@ reasoning-then-acting config:
 - ``evaluations/behavior/behavior_openpi_pi05_pytorch_vlm_vla_eval.yaml`` first
   generates a subtask and then conditions the action expert on the generated
   tokens.
+- ``evaluations/behavior/behavior_openpi_pi05_pytorch_vlm_vla_eval_test.yaml``
+  evaluates the same model over an ordered list of cached test instances.
 
-Both configs run in eval-only mode (``runner.only_eval: True``) and consume a
+These configs run in eval-only mode (``runner.only_eval: True``) and consume a
 **new-format** PyTorch checkpoint, i.e. one produced by the OpenPI checkpoint
 convertor (``ckpt_convertor.openpi`` ``old2new`` / ``sft2new``). Set or override
 the model path before launching evaluation:
@@ -407,7 +410,12 @@ the model path before launching evaluation:
 
 The VLM-to-VLA checkpoint must use the same prompt contract as evaluation.
 Select ``state_token: none`` for a checkpoint trained without discrete state
-tokens.
+tokens. ``control_mode`` accepts ``abs_joint``, ``delta_joint``, ``abs_eef``,
+or ``delta_eef``; the semantic action width and R1 Pro arm controllers are
+derived from that one selector. See
+:doc:`sft_openpi_pytorch` for data conversion and norm stats, and
+:doc:`BEHAVIOR evaluation <../../evaluations/guides/behavior>` for deterministic
+dataset replay.
 
 .. note::
 

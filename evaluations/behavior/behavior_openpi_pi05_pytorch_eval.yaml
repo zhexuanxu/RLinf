@@ -2,6 +2,7 @@ defaults:
   - env/behavior_r1pro@env.eval
   - model/pi0_5_pytorch@rollout.model
   - override hydra/job_logging: stdout
+  - _self_
 
 hydra:
   run:
@@ -39,7 +40,7 @@ env:
 
   eval:
     rollout_epoch: 4
-    total_num_envs: 4
+    total_num_envs: 8
     max_episode_steps: 4096
     max_steps_per_rollout_epoch: 4096
     video_cfg:
@@ -65,3 +66,6 @@ rollout:
   model:
     model_path: /path/to/pi05_sft_pytorch_new
     add_value_head: False
+    openpi:
+      state_token: abs_joint_old
+      control_mode: abs_joint

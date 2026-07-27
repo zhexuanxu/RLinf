@@ -5,7 +5,7 @@ set -euo pipefail
 export EVALUATIONS_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export REPO_PATH="$(dirname "$EVALUATIONS_PATH")"
 export EMBODIED_PATH="${REPO_PATH}/examples/embodiment"
-export SRC_FILE="${EVALUATIONS_PATH}/eval_embodied_agent.py"
+export SRC_FILE="${RLINF_EVAL_ENTRYPOINT:-${EVALUATIONS_PATH}/eval_embodied_agent.py}"
 
 export PYTHONPATH="${REPO_PATH}:${PYTHONPATH:-}"
 export HYDRA_FULL_ERROR=1

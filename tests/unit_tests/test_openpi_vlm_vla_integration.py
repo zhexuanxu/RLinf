@@ -21,6 +21,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
+from rlinf.models.embodiment.openpi.dataconfig import get_openpi_config
 from rlinf.models.embodiment.openpi_pytorch.eval_action_model import (
     OpenPiPytorchEvalActionModel,
 )
@@ -276,6 +277,20 @@ def test_shared_pipeline_replaces_only_prompt_tokenizer_for_vlm_vla(monkeypatch)
     assert isinstance(vla_prompt_transform.tokenizer, PaligemmaTokenizer)
 
 
+def test_openpi_config_applies_generic_runtime_transform_overrides():
+    config = get_openpi_config(
+        "pi05_behavior",
+        state_token="none",
+        action_env_dim=21,
+        max_token_len=288,
+    )
+
+    assert config.model.discrete_state_input is False
+    assert config.model.max_token_len == 288
+    assert config.data.state_token == "none"
+    assert config.data.action_dim == 21
+
+
 def test_required_vlm_configs_use_generic_state_and_data_fields():
     repo_root = Path(__file__).resolve().parents[2]
     single_path = repo_root / "examples/sft/config/behavior_pi05_vlm_vla.yaml"
@@ -310,11 +325,33 @@ def test_required_vlm_configs_use_generic_state_and_data_fields():
         assert "asset_id_" not in text
 
 
-def test_legacy_discrete_state_selector_remains_compatible():
+def test_transform_kwargs_require_public_state_token():
     state_free = _resolve_transform_kwargs(
-        OmegaConf.create({"discrete_state_input": False})
+        OmegaConf.create(
+            {
+                "state_token": "none",
+                "control_mode": "abs_joint",
+                "action_env_dim": 23,
+                "assets_dir": "/path/to/assets",
+                "asset_id": "behavior",
+            }
+        )
     )
-    upstream_default = _resolve_transform_kwargs(OmegaConf.create({}))
 
     assert state_free["state_token"] == "none"
-    assert upstream_default["state_token"] == "abs_joint_old"
+    assert "control_mode" not in state_free
+    assert "paligemma_tokenizer_path" not in state_free
+    assert state_free["norm_stats_dir"] == "/path/to/assets"
+    assert state_free["norm_stats_asset_id"] == "behavior"
+    with pytest.raises(ValueError, match="state_token is required"):
+        _resolve_transform_kwargs(OmegaConf.create({"discrete_state_input": False}))
+    with pytest.raises(ValueError, match="must be set together"):
+        _resolve_transform_kwargs(
+            OmegaConf.create(
+                {
+                    "state_token": "none",
+                    "control_mode": "abs_joint",
+                    "assets_dir": "/path/to/assets",
+                }
+            )
+        )
