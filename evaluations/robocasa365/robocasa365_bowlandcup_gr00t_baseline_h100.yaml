@@ -13,10 +13,6 @@ hydra:
     - file://${oc.env:EMBODIED_PATH}/config/
 runner:
   logger:
-    log_path: /home/xuzhexuan/project/robottt_runs/native_gr00t_baseline_eval
+    log_path: /home/xuzhexuan/project/repos/robottt/logs/eval/baseline_step8000
     experiment_name: gr00t_baseline
-  ckpt_path: /home/xuzhexuan/project/robottt_runs/baseline_final/step_000500/model.pt
-env:
-  eval:
-    video_cfg:
-      video_base_dir: /home/xuzhexuan/project/robottt_runs/native_gr00t_baseline_eval/video
+  ckpt_path: /home/xuzhexuan/project/repos/robottt/logs/20260924-063706-robocasa_bowlandcup_gr00t_baseline_h100/gr00t_baseline/checkpoints/global_step_8000/actor/model_state_dict/full_weights.pt

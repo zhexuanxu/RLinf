@@ -22,9 +22,13 @@ LOG_PATH=/absolute/resume_run bash examples/sft/run_vla_sft.sh \
   robocasa_bowlandcup_robottt_h100.yaml \
   runner.resume_dir=/absolute/run_dir/robottt/checkpoints/global_step_2
 
-bash evaluations/run_eval.sh robocasa365_bowlandcup_gr00t_baseline_h100.yaml
-bash evaluations/run_eval.sh robocasa365_bowlandcup_robottt_h100.yaml \
-  runner.ckpt_path=/absolute/run_dir/robottt/checkpoints/global_step_30000/actor/model_state_dict/full_weights.pt
+# 串行评测 baseline/RoboTTT 的 2K、4K、8K checkpoint；每次占用全部 8 卡。
+bash evaluations/run_bowlandcup_full_eval.sh
+
+# 仍可单独运行，并通过 Hydra 覆盖 checkpoint 或输出目录。
+LOG_PATH=/absolute/eval_output bash evaluations/run_eval.sh \
+  robocasa365_bowlandcup_robottt_h100.yaml \
+  runner.ckpt_path=/absolute/run_dir/robottt/checkpoints/global_step_N/actor/model_state_dict/full_weights.pt
 
 # 各项命令依次运行；默认每个训练/评测占用全部 8 卡。
 USE_TF=0 NO_ALBUMENTATIONS_UPDATE=1 python -m pytest -q \
@@ -43,6 +47,12 @@ PYTHONPATH=. python toolkits/robottt/diagnose_history.py \
   --checkpoint /absolute/full_weights.pt --output /absolute/history.json --anchors 32
 ```
 
+每个完整 BowlAndCup 实验运行 8 个并行环境、每个环境最多 2400 个 simulator step
+（300 次 8-action policy call），每个 checkpoint 共 8 个 trial。六个实验总计 48 个
+trial，按 2K baseline、2K RoboTTT、4K baseline、4K RoboTTT、8K baseline、8K
+RoboTTT 严格串行。成功会提前结束；失败在 2400 步按 task horizon 截断。8 个环境
+使用 seed 7..14，两种模型在同一 step 得到同一组确定性初始状态；视频默认保存并
+叠加 success/episode length 信息。
 可用 Hydra `env.eval.video_cfg.video_base_dir=...` 指定评测视频目录。
 `runner.logger.log_path` 默认由 bash 入口按时间生成，`LOG_PATH` 可固定它。
 训练 YAML 通过 model/FSDP/公共实验 defaults 复用；默认 30K、warmup 120。

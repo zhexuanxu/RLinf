@@ -72,8 +72,9 @@ TTT 更新公式、DiT 插入位置、推理写入、数据采样、评测交互
 | 文件 | 阶段 | 修改及目的 |
 |---|---|---|
 | `evaluations/run_eval.sh` | 此前 | 支持 `bash evaluations/run_eval.sh xxx.yaml`；保持原 benchmark、Hydra、eval entrypoint 与环境准备 |
-| `evaluations/robocasa365/robottt/bowlandcup_eval.yaml` | 本轮新增 | 两组共享 runner/rollout 和 BowlAndCup 环境覆盖；直接继承原生 env/robocasa365 的 robot/camera/key-map/action-space默认值 |
-| `evaluations/robocasa365/robocasa365_bowlandcup_gr00t_baseline_h100.yaml` | 本轮 | 改用 env/共享训练model/共享模态/公共eval defaults，仅保留个别路径和实验名；baseline 短闭环配置：同任务/种子、8 env、执行8、相机/action布局和视频；默认加载历史500-step权重，可显式指定新 full_weights.pt |
+| `evaluations/run_bowlandcup_full_eval.sh` | 完整评测 | 默认暴露全部8卡，预检 baseline/RoboTTT 的2K、4K、8K六个checkpoint，按step配对串行评测并写入六个独立日志/视频目录；额外 Hydra 参数传给全部实验 |
+| `evaluations/robocasa365/robottt/bowlandcup_eval.yaml` | 本轮新增，完整评测更新 | 两组共享 runner/rollout 和 BowlAndCup 环境覆盖；8 个不同 deterministic seed、2400-step task horizon、完整失败计数及默认视频；直接继承原生 env/robocasa365 的 robot/camera/key-map/action-space 默认值 |
+| `evaluations/robocasa365/robocasa365_bowlandcup_gr00t_baseline_h100.yaml` | 本轮 | 改用 env/共享训练model/共享模态/公共eval defaults，仅保留路径和实验名；默认加载已完成 global_step_8000 完整权重 |
 | `evaluations/robocasa365/robocasa365_bowlandcup_robottt_h100.yaml` | 本轮 | 同一组 defaults，仅另行启用TTT/register/model alias和路径差异；匹配 baseline 的评测配置，启用 TTT/register 和最终预测 memory 写入；记录每次实际 forward/commit/reset |
 | `rlinf/data/schema/embodied_types.py` | 此前 | `EnvOutput.reset_mask` 与 done 分离，随 channel 序列化和 batch 合并；避免误把结束但未重置的 observation 当作新 episode |
 | `rlinf/workers/env/env_worker.py` | 此前 | 在真实手工 reset 或 auto-reset 时发出 reset_mask，并通过原有 channel 传给 rollout |

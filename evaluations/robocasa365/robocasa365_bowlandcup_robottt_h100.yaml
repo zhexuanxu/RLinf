@@ -13,13 +13,9 @@ hydra:
     - file://${oc.env:EMBODIED_PATH}/config/
 runner:
   logger:
-    log_path: /home/xuzhexuan/project/robottt_runs/native_robottt_eval
+    log_path: /home/xuzhexuan/project/repos/robottt/logs/eval/robottt_step8000
     experiment_name: robottt
-  ckpt_path: /home/xuzhexuan/project/robottt_runs/robottt_final/step_000500/model.pt
-env:
-  eval:
-    video_cfg:
-      video_base_dir: /home/xuzhexuan/project/robottt_runs/native_robottt_eval/video
+  ckpt_path: /home/xuzhexuan/project/repos/robottt/logs/20260921-235012-robocasa_bowlandcup_robottt_h100/robottt/checkpoints/global_step_8000/actor/model_state_dict/full_weights.pt
 rollout:
   model:
     model_type: robottt

@@ -56,8 +56,9 @@ defaults:
 | 原有 `examples/embodiment/config/env/robocasa365.yaml` | 直接继承 robot、相机、观察 key map、action space 和一般环境行为；此原文件不修改 |
 | SFT 的 `model/gr00t_n1d7.yaml` | 训练/评测共用 GR00T/TTT 架构、精度、denoising、memory 写入设置 |
 | SFT 的 `robottt/bowlandcup_model.yaml` | 训练/评测共用 checkpoint/Cosmos 路径、12维动作和3相机等适配字段 |
-| `evaluations/robocasa365/robottt/bowlandcup_eval.yaml` | 公共 runner/rollout 与 BowlAndCup 的必要 env 覆盖：8env、两轮、64step、相机256、16维state、seed7/global_unique、动作二值转换约定 |
-| 两份 eval 主 YAML | 各自 checkpoint、实验名/日志/视频路径；RoboTTT 另启用 model alias、TTT 和16register |
+| `evaluations/robocasa365/robottt/bowlandcup_eval.yaml` | 公共 runner/rollout 与完整 BowlAndCup env 覆盖：8env、一轮、task horizon 2400、相机256、16维state、seed7/global_unique、视频和动作二值转换约定 |
+| 两份 eval 主 YAML | 各自最终 8K checkpoint、实验名和日志路径；RoboTTT 另启用 model alias、TTT 和16register |
+| `evaluations/run_bowlandcup_full_eval.sh` | 激活统一环境，验证 8 张可见 GPU 和六个 checkpoint，随后按 2K/4K/8K 逐 step 配对、严格串行运行 baseline 与 RoboTTT |
 
 训练公共实验通过自身的 `defaults` 加载共享 `bowlandcup_model@actor.model`，
 评测主配置加载同一文件至 `rollout.model`。字段级审计要求每组
@@ -68,10 +69,11 @@ defaults:
 的 `hydra.searchpath` 先搜索 `${REPO_PATH}/examples/sft/config/`，再搜索
 `${EMBODIED_PATH}/config/`。顺序确保选择共享序列模型，而不会误选同名 PPO 模型。
 Hydra 要求 searchpath 在主配置声明，故这两行保留在两个主 YAML 中。没有新增环境
-变量要求；仍以 `bash evaluations/run_eval.sh xxx.yaml` 启动。
+变量要求；单组仍以 `bash evaluations/run_eval.sh xxx.yaml` 启动，两组正式比较以
+`bash evaluations/run_bowlandcup_full_eval.sh` 启动。
 
-本轮默认 checkpoint 继续指向历史500-step权重，不凭空改成尚未训练的30K文件。
-新权重仍通过 `runner.ckpt_path=.../actor/model_state_dict/full_weights.pt` 指定。
+两份主 YAML 默认指向已经完成的 global_step_8000 `full_weights.pt`。可继续通过
+`runner.ckpt_path=.../actor/model_state_dict/full_weights.pt` 显式覆盖。
 
 ## 2. 30K 日程的具体定义
 
