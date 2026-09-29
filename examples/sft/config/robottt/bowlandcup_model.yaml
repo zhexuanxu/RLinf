@@ -1,0 +1,8 @@
+# Shared H100 checkpoint paths and BowlAndCup adapter for both SFT and eval.
+model_path: /home/xuzhexuan/project/models/GR00T-N1.7-realworld-pni
+backbone_model_path: /home/xuzhexuan/project/models/Cosmos-Reason2-2B
+embodiment_tag: new_embodiment
+obs_converter_type: robocasa365
+action_dim: 12
+valid_action_dim: 12
+image_nums: 3

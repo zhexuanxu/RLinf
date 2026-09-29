@@ -1,0 +1,2 @@
+bash examples/sft/run_vla_sft.sh robocasa_bowlandcup_robottt_h100
+bash examples/sft/run_vla_sft.sh robocasa_bowlandcup_gr00t_baseline_h100

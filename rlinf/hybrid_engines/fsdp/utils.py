@@ -100,13 +100,30 @@ def _normalize_wrap_targets(value):
     return [value]
 
 
+def _filter_present_wrap_class_names(module, class_names):
+    """Filter optional inferred variants; explicit user targets remain strict."""
+    present, missing = [], []
+    for name in _normalize_wrap_targets(class_names) or []:
+        (
+            present if get_module_class_from_name(module, name) is not None else missing
+        ).append(name)
+    if missing:
+        warnings.warn(
+            "Skipping absent inferred FSDP wrap targets: " + ", ".join(missing),
+            stacklevel=2,
+        )
+    if class_names and not present:
+        raise ValueError("None of the inferred FSDP wrap targets exists in the model")
+    return present or None
+
+
 def _resolve_module_classes_to_wrap(module, module_classes_to_wrap):
     resolved_module_classes = set()
     for module_class in _normalize_wrap_targets(module_classes_to_wrap) or []:
         if isinstance(module_class, str):
             resolved_class = get_module_class_from_name(module, module_class)
             if resolved_class is None:
-                raise Exception("Could not find the module class to wrap in the model.")
+                raise ValueError(f"Could not find FSDP wrap target: {module_class}")
             resolved_module_classes.add(resolved_class)
         else:
             raise TypeError(
@@ -206,6 +223,11 @@ def get_fsdp_wrap_policy(module, config=None, is_lora=False, model_type=None):
         )
         module_classes_to_wrap = None
         no_split_names = getattr(module, "_no_split_names", None)
+
+    if not use_custom_wrap_policy:
+        fsdp_transformer_layer_cls_to_wrap = _filter_present_wrap_class_names(
+            module, fsdp_transformer_layer_cls_to_wrap
+        )
 
     # Build policies list
     policies = []
@@ -541,6 +563,18 @@ def get_lr_scheduler(
             if current_step < num_warmup_steps:
                 return float(current_step) / float(max(1.0, num_warmup_steps))
             return 1.0
+
+        return LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
+    elif lr_scheduler == "linear_warmup_cosine":
+        from torch.optim.lr_scheduler import LambdaLR
+
+        def lr_lambda(current_step):
+            if current_step < num_warmup_steps:
+                return (current_step + 1) / max(1, num_warmup_steps)
+            progress = (current_step - num_warmup_steps) / max(
+                1, num_training_steps - num_warmup_steps
+            )
+            return (1 + math.cos(math.pi * min(progress, 1))) / 2
 
         return LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
     elif lr_scheduler == "cosine":

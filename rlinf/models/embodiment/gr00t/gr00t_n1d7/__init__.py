@@ -21,6 +21,15 @@ from rlinf.utils.logging import get_logger
 
 
 def get_model(cfg: DictConfig, torch_dtype=torch.bfloat16):
+    if cfg.get("sequence_training", False):
+        from .gr00t_action_model import GR00T_N1_7_SequencePolicy
+        from .sequence_utils import model_settings
+        from .ttt_dit import build_model
+
+        if torch_dtype != torch.float32:
+            raise ValueError("Sequence GR00T/RoboTTT requires FP32 master parameters")
+        return build_model(model_settings(cfg), policy_class=GR00T_N1_7_SequencePolicy)
+
     from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
     from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7
     from transformers import AutoConfig, AutoModel

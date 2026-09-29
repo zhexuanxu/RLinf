@@ -42,6 +42,8 @@ from rlinf.models.embodiment.modules.explore_noise_net import ExploreNoiseNet
 from rlinf.models.embodiment.modules.value_head import ValueHead
 from rlinf.utils.logging import get_logger
 
+from .ttt_dit import SequencePolicy
+
 logger = get_logger()
 
 
@@ -1329,3 +1331,101 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
 
         video_mods = self.metadata.get("modalities", {}).get("video", {})
         self.image_nums = len(video_mods)
+
+
+class GR00T_N1_7_SequencePolicy(SequencePolicy, BasePolicy):
+    """Native RLinf SFT/rollout adapter with caller-owned recurrent memory.
+
+    The existing RL action model above remains available for PPO. This adapter
+    shares the tested GR00T forward with both baseline and RoboTTT sequence SFT.
+    """
+
+    _no_split_modules = [
+        "RecurrentBlock",
+        "Qwen3VLTextDecoderLayer",
+        "Qwen3VLVisionBlock",
+    ]
+    supports_recurrent_memory = True
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        options = gradient_checkpointing_kwargs or {"use_reentrant": False}
+        if options.get("use_reentrant", False):
+            raise ValueError("Explicit fast states require non-reentrant checkpointing")
+        self.base.gradient_checkpointing_enable(gradient_checkpointing_kwargs=options)
+        self.base.action_head.model.checkpoint_blocks = True
+
+    def forward(self, forward_type=ForwardType.SFT, data=None, incoming=None, **kwargs):
+        if forward_type not in (ForwardType.SFT, ForwardType.DEFAULT):
+            raise NotImplementedError(
+                f"Sequence policy does not implement {forward_type}"
+            )
+        return self.default_forward(data=data, incoming=incoming)
+
+    def default_forward(self, data, incoming=None, **kwargs):
+        return SequencePolicy.forward(self, data, incoming)
+
+    def load_inference_metadata(self, checkpoint_path, model_config):
+        from rlinf.data.datasets.gr00t_n1d7.sequence_dataset import build_processor
+
+        from .sequence_utils import checkpoint_bundle
+
+        bundle_path, metadata = checkpoint_bundle(checkpoint_path)
+        saved = metadata.get("model_settings", metadata.get("config"))
+        if saved is None:
+            raise ValueError("Checkpoint has no model architecture metadata")
+        for key in ("use_ttt", "registers", "ttt"):
+            if saved["model"][key] != self.settings["model"][key]:
+                raise ValueError(f"Checkpoint architecture differs: {key}")
+        self._modality_transform, _, _ = build_processor(
+            self.settings, str(bundle_path)
+        )
+        self._modality_transform.eval()
+        self.binary_action_threshold = float(model_config.binary_action_threshold)
+
+    @torch.no_grad()
+    def predict_action_batch(
+        self, env_obs, mode="eval", incoming_memory=None, reset_mask=None, **kwargs
+    ):
+        del kwargs
+        if mode != "eval":
+            raise NotImplementedError(
+                "Use the SFT path for training; DAgger/PPO are separate work"
+            )
+        if not hasattr(self, "_modality_transform"):
+            raise RuntimeError("Load the checkpoint processor bundle before rollout")
+        observations = OBS_CONVERSION["robocasa365"](env_obs)
+        inputs = self._modality_transform.process_observation(
+            observations, EmbodimentTag.NEW_EMBODIMENT
+        )
+        device = next(self.parameters()).device
+        batch = {key: value.to(device) for key, value in inputs.items()}
+        reset = (
+            None
+            if reset_mask is None
+            else reset_mask.to(device=device, dtype=torch.bool)
+        )
+        diagnostics = {}
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
+        ):
+            actions, candidate = self.predict(
+                batch, incoming_memory, reset, diagnostics=diagnostics
+            )
+        if not torch.isfinite(actions).all():
+            raise FloatingPointError("Non-finite predicted action")
+        decoded = self._modality_transform.decode_action(
+            actions.float().cpu().numpy(), EmbodimentTag.NEW_EMBODIMENT
+        )
+        raw = ACTION_CONVERSION_N1D7["robocasa365"](
+            decoded,
+            chunk_size=self.settings["inference"]["execute_horizon"],
+            binary_threshold=self.binary_action_threshold,
+        )
+        diagnostics["action_rms"] = actions.float().square().mean().sqrt().item()
+        return raw, {
+            "prev_logprobs": None,
+            "prev_values": None,
+            "forward_inputs": {},
+            "memory": candidate,
+            "memory_diagnostics": diagnostics,
+        }

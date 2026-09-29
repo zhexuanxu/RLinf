@@ -440,6 +440,10 @@ class FSDPModelManager:
         )
 
         if not torch.isfinite(torch.as_tensor(grad_norm)):
+            if self._cfg.optim.get("fail_on_nonfinite", False):
+                raise FloatingPointError(
+                    f"Non-finite grad norm {grad_norm}; optimizer step aborted"
+                )
             self._logger.warning(
                 f"[FSDP] Non-finite grad norm {grad_norm} detected. Skipping optimizer step."
             )

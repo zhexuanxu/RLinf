@@ -17,7 +17,7 @@ import logging
 
 import hydra
 import torch.multiprocessing as mp
-from omegaconf.omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from rlinf.config import validate_cfg
 from rlinf.runners.sft_runner import SFTRunner
@@ -26,6 +26,17 @@ from rlinf.utils.placement import HybridComponentPlacement
 from rlinf.workers.sft.fsdp_vla_sft_worker import FSDPVlaSftWorker
 
 mp.set_start_method("spawn", force=True)
+
+
+def get_sft_worker_class(cfg: DictConfig) -> type[FSDPVlaSftWorker]:
+    """Use the sequence worker for both matched GR00T/RoboTTT SFT groups."""
+    if cfg.actor.model.get("sequence_training", False):
+        if cfg.actor.model.model_type not in ("gr00t_n1d7", "robottt"):
+            raise ValueError("Sequence SFT requires gr00t_n1d7 or robottt")
+        from rlinf.workers.sft.fsdp_vla_robottt_worker import FSDPVlaRoboTTTWorker
+
+        return FSDPVlaRoboTTTWorker
+    return FSDPVlaSftWorker
 
 
 @hydra.main(
@@ -42,8 +53,12 @@ def main(cfg) -> None:
     actor_placement = component_placement.get_strategy("actor")
 
     if cfg.actor.training_backend == "fsdp" or cfg.actor.training_backend == "fsdp2":
-        actor_group = FSDPVlaSftWorker.create_group(cfg).launch(
-            cluster, name=cfg.actor.group_name, placement_strategy=actor_placement
+        actor_group = (
+            get_sft_worker_class(cfg)
+            .create_group(cfg)
+            .launch(
+                cluster, name=cfg.actor.group_name, placement_strategy=actor_placement
+            )
         )
 
     else:
