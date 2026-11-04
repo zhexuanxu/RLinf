@@ -1,0 +1,21 @@
+# Deployment paths for this cluster; keep algorithm settings in the parent.
+defaults:
+  - train_qwen3.5_4b_libero_rl_sao_3node
+  - _self_
+
+runner:
+  output_dir: /mnt/c20250301/xzxuan/logs/rl-sft439-e3-sao-20261105/training
+
+data:
+  train_data_paths:
+    - /mnt/c20250301/xzxuan/logs/rl-sft439-e3-16gpu-20261104-194952/tasks/train.jsonl
+
+tools:
+  rpent:
+    python: /mnt/c20250301/xzxuan/envs/rpent/bin/python
+    libero_config_path: /mnt/c20250301/xzxuan/data/libero-standard-config
+    output_dir: /mnt/c20250301/xzxuan/logs/rl-sft439-e3-sao-20261105/episodes
+
+rollout:
+  model:
+    model_path: /mnt/c20250301/xzxuan/logs/sft439-success-4b-20261104-110943/models/qwen3.5-4b-sft-success439-e3

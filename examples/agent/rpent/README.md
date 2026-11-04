@@ -14,9 +14,8 @@ The separate `libero_rl` workflow uses a **complete multimodal** Qwen checkpoint
 |---|---|
 | `train_qwen3.5_4b_libero_rl_ppo` | Synchronous PPO template |
 | `train_qwen3.5_4b_libero_rl_sao` | Asynchronous SAO template |
-| `train_qwen3.5_4b_libero_rl_local` | Single-node SAO/offload settings; supply deployment paths |
-| `train_qwen3.5_4b_libero_rl_smoke` | Single-step local smoke test |
-| `train_qwen3.5_4b_libero_rl_2node` | Shared 16-GPU synchronous PPO, plus a separate environment node |
+| `train_qwen3.5_4b_libero_rl_sao_local` | Launch profile containing this deployment's paths |
+| `train_qwen3.5_4b_libero_rl_sao_3node` | Shared 16-GPU SAO, plus a separate environment node |
 | `eval_qwen3.5_4b_libero_rl` | Multimodal evaluation template |
 
 ## Install code and environments
@@ -101,7 +100,7 @@ Path(os.environ['LIBERO_CONFIG_PATH'], 'config.yaml').write_text(yaml.safe_dump(
 PY
 ```
 
-The installed package's assets link is necessary because LIBERO constructs some XML/mesh paths relative to its source, independently of config.yaml. Preserve an existing complete assets directory; repair a broken link instead of replacing scene geometry. Keep the package's benchmark/BDDL/initial-state paths from `get_default_path_dict()`. The `2node` recipe passes this config explicitly to episode subprocesses, so a parent process configured for LIBERO-PRO cannot silently change the standard benchmark.
+The installed package's assets link is necessary because LIBERO constructs some XML/mesh paths relative to its source, independently of config.yaml. Preserve an existing complete assets directory; repair a broken link instead of replacing scene geometry. Keep the package's benchmark/BDDL/initial-state paths from `get_default_path_dict()`. The `sao_3node` recipe passes this config explicitly to episode subprocesses, so a parent process configured for LIBERO-PRO cannot silently change the standard benchmark.
 
 Create the standard 40-task training list with the RPent interpreter:
 
@@ -114,26 +113,30 @@ python examples/agent/rpent/prepare_tasks.py --workflow libero_rl \
 
 This writes 1,280 rows and a manifest containing task/state counts, seeds and hashes. Seed 0 is reserved for evaluation. The generator rejects seeds outside each task's initial-state range instead of silently reusing an initial state through modulo indexing. For separate dev/test manifests, use `--seeds 33-39 --split dev` or `--seeds 40-49 --split test` with a separate output directory. The old memory-based generator remains the default `--workflow libero` and still requires `--memory-dir`.
 
-## Configure shared 16-GPU PPO
+## Configure Shared 16-GPU SAO
 
-Edit `config/train_qwen3.5_4b_libero_rl_2node.yaml` relative to this example, or pass Hydra overrides at launch. Replace the `/path/to/` values for the model, task JSONL, RPent interpreter, LIBERO config and episode artifacts. Set `runner.output_dir` for training checkpoints. Setting `rollout.model.model_path` also sets the actor/critic tokenizer and HF import paths through interpolation.
+Use the four clean-workflow profiles as an inheritance chain: `libero_rl_ppo` → `libero_rl_sao` → `libero_rl_sao_3node` → `libero_rl_sao_local`. Every name has the prefix `train_qwen3.5_4b_`. The first inherits the original `train_qwen3.5_4b_ppo`, which remains available for the original LIBERO integration. Common task, sampling and model settings live in the clean PPO profile; SAO overrides its update rules, the three-node profile overrides placement, and the local profile contains deployment paths.
+
+Edit `config/train_qwen3.5_4b_libero_rl_sao_local.yaml` for your installation. Set the full multimodal model directory, training JSONL, RPent interpreter, LIBERO configuration, episode directory and training output directory. The parent profiles require these paths instead of supplying machine-specific defaults. Setting `rollout.model.model_path` also sets the actor/critic tokenizer and HF import paths.
 
 | Resource or parameter | Configuration |
 |---|---|
-| Nodes 0–1, GPUs 0–15 | Rollout, critic and actor share all 16 GPUs in successive phases; weights/gradients/optimizer offload between phases |
-| Learners | TP2, CP1, DP8; sequence parallel on; BF16; activation recomputation; response-only logits |
-| Rollout | 16 TP1 SGLang replicas; `replica_affinity=false`; four requests per replica; memory fraction 0.3 |
-| Node 2, GPUs 0–7 | Eight agent workers, eight episode slots each; SAM3 on GPU 0 |
-| Algorithm | Synchronous PPO with GAE, recomputed logprobs and truncated importance-sampling correction; no SAO in this recipe |
-| Updates | Batch 32, two minibatches, microbatch 1; 40 rollout updates, one dataset epoch; save every five updates |
-| Optimization | Actor LR `1e-6`, critic LR `5e-6`; full language parameters, no LoRA; vision encoder/projector frozen |
+| Nodes 0–1, GPUs 0–15 | Rollout, critic and actor share all 16 GPUs in successive phases; weights, gradients and optimizer states offload between phases |
+| Learners | TP2, CP1, DP8; sequence parallel; BF16; activation recomputation; response-only logits |
+| Rollout | 16 TP1 SGLang replicas; `replica_affinity=false`; `max_running_requests=128` per replica; memory fraction 0.7 |
+| Node 2, GPUs 0–7 | Eight agent workers, 32 episode slots each; one SAM3 service on GPU 0 |
+| Completion scheduling | Batch 128; `max_in_flight_rollouts=null` and `rollout_buffer_capacity=null` each resolve to 256 |
+| Training budget | 10 dataset epochs, no separate step cap; 1,280 input rows yield 100 learner updates; save every five updates |
+| Optimization | One actor minibatch and two critic update epochs per learner update; microbatch 1; actor LR `1e-6`, critic LR `5e-6`; language parameters train, vision encoder/projector remain frozen |
 | Episode | Simple prompt, adaptive observation, thinking, 100 turns, 10,000 env steps, four-hour budget |
 | Generation | Context 262144, output 32768; temperature 1, top-p 0.95, top-k 20, presence penalty 1.5, repetition penalty 1.0 |
 | Context management | Native message window 80→40, trigger fraction 0.7; no extra tool clearing or summarization |
 
-There are 64 environment slots, but a synchronous batch launches **32 episodes**, not 64. Disabling replica affinity allows all 16 inference replicas to consume the common request queue. Rollout completes before critic/actor training uses the same GPUs. With DP8, a rollout batch must be divisible by `8 × n_minibatches`: batch 32 gives two trajectories per DP rank in each of the default two minibatches; a one-step smoke test with one minibatch needs at least batch 8. An isolated smoke test can reduce turns and steps, while the full run retains its stated budgets.
+SAO keeps up to 256 episodes in flight and consumes the next 128 completed trajectories, rather than waiting for a fixed synchronous batch to finish. An episode's slot includes model waits and tool execution; eight workers with 32 slots can start all 256 in-flight episodes. The buffer holds complete trajectories. Additional pending prompts can be queued, but do not increase the in-flight limit. Each episode normally has one outstanding model request, so a per-replica limit of 128 is an admission ceiling, not 128 continuously active requests on every GPU.
 
-Tool results and images remain in the next prompt. Only policy-generated assistant tokens receive policy loss; user/tool/history tokens do not. Prefix-compatible turns merge, while context compression/history rewriting starts a new row. The critic and actor use the same response-position mapping. Response-only logits avoid projecting the vocabulary at every history position and require CP1.
+Shared GPUs still require a phase switch: pause/retract model requests, offload rollout memory, train the critic and actor, synchronize weights, then resume the waiting requests. Environment work may continue during training, but model generation pauses. SAO also changes the learning rules: DIS actor loss, clip bounds 0.3/5.0, `sao_gae` with alpha 1.5, and the SAO critic objective. It uses behavior logprobs saved during rollout instead of recomputing old-policy logprobs. The task, model, prompt, sampling and compression settings remain inherited from clean PPO.
+
+Tool results and images remain in subsequent prompts. Only policy-generated assistant tokens receive policy loss; user/tool/history tokens do not. Prefix-compatible turns merge, while context compression/history rewriting starts a new row. The critic and actor use the same response-position mapping. Response-only logits require CP1.
 
 ## Start three Ray nodes and SAM3
 
@@ -169,17 +172,17 @@ The agent workers and episode processes all run on node 2, so `http://127.0.0.1:
 
 ## Launch, inspect and resume
 
-After filling the deployment paths, launch from the head node:
+After filling the local profile, launch it from the head node:
 
 ```bash
 source "$STACK_ROOT/envs/rlinf/bin/activate"
 cd "$STACK_ROOT/repos/RLinf"
-bash examples/agent/rpent/run_train.sh train_qwen3.5_4b_libero_rl_2node
+bash examples/agent/rpent/run_train.sh train_qwen3.5_4b_libero_rl_sao_local
 ```
 
-Hydra overrides follow the config name, for example `rollout.model.model_path="$STACK_ROOT/models/Qwen3.5-4B-SFT"`. Append `--cfg job --resolve` to inspect the resolved configuration without starting training. Use `runner.resume_dir=/path/to/saved/checkpoint` to resume a complete training checkpoint, retaining its optimizer and data state. Actor/critic checkpoints and logs live under `runner.output_dir`/the experiment name; episode requests, tool images and results live under `tools.rpent.output_dir`.
+Hydra overrides follow the config name, for example `rollout.model.model_path="$STACK_ROOT/models/Qwen3.5-4B-SFT"`. Append `--cfg job --resolve` to inspect the resolved configuration without starting training. Use `runner.resume_dir=/path/to/saved/checkpoint` to resume a complete SAO checkpoint, retaining both model/optimizer states and its buffered/pending rollout state. A synchronous PPO checkpoint cannot provide the SAO queue state. Actor/critic checkpoints and logs live under `runner.output_dir`/the experiment name; episode requests, tool images and results live under `tools.rpent.output_dir`.
 
-Check finite losses/gradients, nonzero parameter updates, actual replica activity, task success and infrastructure errors. A successful short smoke test establishes connectivity and optimizer execution; it does not establish that the longest 262144-token workload fits in memory. Keep failure evidence and diagnose memory limits before changing sharding or budgets.
+Check finite losses/gradients, nonzero parameter updates, actual replica activity, task success and infrastructure errors. Use Hydra overrides for an isolated short smoke run, rather than maintaining another smoke YAML. A successful short smoke test establishes connectivity and optimizer execution; it does not establish that the longest 262144-token workload fits in memory. Keep failure evidence and diagnose memory limits before changing sharding or budgets.
 
 Evaluation uses the separate explicit entrypoint:
 

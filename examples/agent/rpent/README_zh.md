@@ -2,7 +2,7 @@
 
 # RPent 强化学习
 
-本示例使用 RPent 执行 LIBERO 任务，并通过 RLinf 根据环境反馈训练多模态 Qwen3.5 策略。
+本示例使用 RPent 执行 LIBERO 任务，并通过 RLinf 根据环境反馈训练多模态 Qwen3.5 policy。
 
 ## 选择工作流
 
@@ -14,9 +14,8 @@
 |---|---|
 | `train_qwen3.5_4b_libero_rl_ppo` | 同步 PPO 模板 |
 | `train_qwen3.5_4b_libero_rl_sao` | 异步 SAO 模板 |
-| `train_qwen3.5_4b_libero_rl_local` | 单机 SAO/offload 配置，需填写部署路径 |
-| `train_qwen3.5_4b_libero_rl_smoke` | 单机单步 smoke test |
-| `train_qwen3.5_4b_libero_rl_2node` | 两台模型节点共享 16 卡同步 PPO，另加一台环境节点 |
+| `train_qwen3.5_4b_libero_rl_sao_local` | 含本地部署路径的最终启动配置 |
+| `train_qwen3.5_4b_libero_rl_sao_3node` | 两台模型节点共享 16 卡运行 SAO，另加一台环境节点 |
 | `eval_qwen3.5_4b_libero_rl` | 多模态评测模板 |
 
 ## 安装代码与环境
@@ -101,7 +100,7 @@ Path(os.environ['LIBERO_CONFIG_PATH'], 'config.yaml').write_text(yaml.safe_dump(
 PY
 ```
 
-LIBERO 的部分 XML/mesh 路径直接相对安装包构造，独立于 config.yaml，所以还必须补齐包内 assets 链接。已有完整资产目录时保留；遇到断链应修复路径，不替换场景几何。保留 `get_default_path_dict()` 返回的包内 benchmark、BDDL 和初始状态路径。`2node` 配置把此路径显式传给 episode 子进程，避免父环境中的 LIBERO-PRO 配置悄悄替换标准 benchmark。
+LIBERO 的部分 XML/mesh 路径直接相对安装包构造，独立于 config.yaml，所以还必须补齐包内 assets 链接。已有完整资产目录时保留；遇到断链应修复路径，不替换场景几何。保留 `get_default_path_dict()` 返回的包内 benchmark、BDDL 和初始状态路径。`sao_3node` 配置把此路径显式传给 episode 子进程，避免父环境中的 LIBERO-PRO 配置悄悄替换标准 benchmark。
 
 继续使用 RPent 解释器生成标准 40-task 训练清单：
 
@@ -114,26 +113,30 @@ python examples/agent/rpent/prepare_tasks.py --workflow libero_rl \
 
 生成 1,280 行及记录 task/初始状态数量、seeds、哈希的 manifest。seed 0 保留评测。生成器拒绝越过各任务初始状态范围的 seed，避免取模后重复同一初始状态。可使用 `--seeds 33-39 --split dev` 或 `--seeds 40-49 --split test`，为各 split 指定独立输出目录。原来的 memory 清单生成器仍为默认 `--workflow libero`，仍要求 `--memory-dir`。
 
-## 配置共享 16 卡 PPO
+## 配置共享 16 卡 SAO
 
-编辑本示例下的 `config/train_qwen3.5_4b_libero_rl_2node.yaml`，或启动时传 Hydra 覆盖参数。填写模型、任务 JSONL、RPent 解释器、LIBERO 配置、episode 输出的 `/path/to/` 占位路径；通过 `runner.output_dir` 指定训练 checkpoint 目录。`rollout.model.model_path` 同时通过插值设置 actor/critic 的 tokenizer 和 HF 导入路径。
+Clean workflow 只保留四份依次继承的训练配置：`libero_rl_ppo` → `libero_rl_sao` → `libero_rl_sao_3node` → `libero_rl_sao_local`，完整文件名均带 `train_qwen3.5_4b_` 前缀。第一份继承原版 `train_qwen3.5_4b_ppo`，原版 LIBERO 集成仍可使用该基础配置。任务、采样和模型参数放在 clean PPO 中；SAO 只覆盖更新规则，三节点配置只覆盖 placement，local 配置只填写部署路径。
+
+根据自己的安装位置编辑 `config/train_qwen3.5_4b_libero_rl_sao_local.yaml`，填写完整多模态模型、训练 JSONL、RPent 解释器、LIBERO 配置、episode 目录和训练输出目录。父配置将这些路径标记为必填，不提供特定机器的默认路径。`rollout.model.model_path` 同时设置 actor/critic 的 tokenizer 和 HF 导入路径。
 
 | 资源或参数 | 配置 |
 |---|---|
-| 节点 0–1，GPU 0–15 | Rollout、critic、actor 依次共享全部 16 卡，阶段间 offload 权重、梯度、优化器 |
+| 节点 0–1，GPU 0–15 | Rollout、critic、actor 分阶段共享全部 16 卡，阶段间 offload 权重、梯度和优化器 |
 | Learner | TP2、CP1、DP8；开启 sequence parallel；BF16；activation recomputation；response-only logits |
-| Rollout | 16 个 TP1 SGLang 副本；`replica_affinity=false`；每副本最多四请求；显存比例 0.3 |
-| 节点 2，GPU 0–7 | 八个 agent worker，每个八个 episode 槽位；SAM3 在 GPU 0 |
-| 算法 | 同步 PPO + GAE，重算 logprob 并使用截断重要性采样纠正；本配置不使用 SAO |
-| 更新 | Batch 32，两个 minibatch，microbatch 1；40 次 rollout 更新，一轮数据；每五次保存 |
-| 优化 | Actor LR `1e-6`，critic LR `5e-6`；语言部分全参，无 LoRA；冻结视觉编码器/projector |
+| Rollout | 16 个 TP1 SGLang 副本；`replica_affinity=false`；每副本 `max_running_requests=128`；显存比例 0.7 |
+| 节点 2，GPU 0–7 | 八个 agent worker，每个 32 个 episode 槽位；GPU 0 上一个 SAM3 服务 |
+| 完成顺序调度 | Batch 128；`max_in_flight_rollouts=null` 和 `rollout_buffer_capacity=null` 分别解析为 256 |
+| 训练预算 | 10 个数据 epoch，无额外 step 上限；1,280 条任务对应 100 次 learner 更新；每五次保存 |
+| 优化 | 每次 learner 更新使用一个 actor minibatch、两个 critic update epoch；microbatch 1；actor LR `1e-6`、critic LR `5e-6`；训练语言参数，冻结视觉编码器/projector |
 | Episode | Simple prompt、adaptive 观测、thinking、100 turns、10,000 env steps、四小时预算 |
 | 生成 | Context 262144，output 32768；temperature 1、top-p 0.95、top-k 20、presence penalty 1.5、repetition penalty 1.0 |
 | Context management | 原生消息窗口 80→40，触发比例 0.7；不额外清除工具结果或生成摘要 |
 
-64 个环境槽位表示容量，同步 batch 实际启动 **32 条 episode**。关闭 replica affinity 后，全部 16 个推理副本均可消费公共队列。Rollout 完成并卸载后，critic/actor 才使用相同 GPU。DP8 下 rollout batch 必须被 `8 × n_minibatches` 整除：batch 32 在默认两个 minibatch 中，每个 DP rank 每个 minibatch 有两条轨迹；单步 smoke 若改成一个 minibatch，batch 至少为 8。独立 smoke 可以缩小 turns/steps，正式训练仍使用原定预算。
+SAO 允许最多 256 条在途 episode，按完成顺序收集下一批 128 条轨迹，不再等待某个固定同步 batch 的全部轨迹。Episode 槽位包含等待模型与执行工具的时间；八个 worker 各 32 个槽位，足以同时展开全部 256 条在途轨迹。Buffer 保存已完成轨迹；额外排队的 prompt 不会提高在途上限。每个 episode 通常只有一个未完成模型请求，因此每副本 128 是准入上限，并不表示每张 GPU 始终都有 128 个活跃请求。
 
-工具结果和图片保留在后续输入中。策略 loss 只作用于策略生成的 assistant token，user/tool/history token 不参与策略监督。可逐 token 前缀合并的连续 turn 合为一行；压缩或历史改写后分段。Actor 和 critic 使用相同的 response 位置映射。Response-only logits 只投影需要计分的位置，避免对全部历史位置生成词表 logits；该路径要求 CP1。
+共享 GPU 仍需切换阶段：暂停并收回模型请求、卸载 rollout 显存、依次训练 critic 和 actor、同步权重，再恢复等待中的请求。训练时环境动作可以继续，但模型生成暂停。SAO 的学习规则也有变化：DIS actor loss、0.3/5.0 clip 边界、alpha 为 1.5 的 `sao_gae` 和 SAO critic 目标；它直接使用 rollout 保存的 behavior logprob，不重算旧 policy 的 logprob。任务、模型、prompt、采样和压缩参数均继承 clean PPO。
+
+工具结果和图片保留在后续输入中。Policy loss 只作用于 policy 生成的 assistant token，user/tool/history token 不参与监督。逐 token 前缀兼容的连续 turn 合并，压缩或历史改写后分段。Actor 和 critic 使用相同的 response 位置映射；response-only logits 要求 CP1。
 
 ## 启动三节点 Ray 和 SAM3
 
@@ -169,17 +172,17 @@ Agent worker 和 episode 子进程都位于节点 2，因此 `http://127.0.0.1:8
 
 ## 启动、检查与恢复
 
-填好部署路径后，在 head 节点执行：
+填好 local 配置后，在 head 节点执行：
 
 ```bash
 source "$STACK_ROOT/envs/rlinf/bin/activate"
 cd "$STACK_ROOT/repos/RLinf"
-bash examples/agent/rpent/run_train.sh train_qwen3.5_4b_libero_rl_2node
+bash examples/agent/rpent/run_train.sh train_qwen3.5_4b_libero_rl_sao_local
 ```
 
-Hydra 覆盖参数放在配置名之后，例如 `rollout.model.model_path="$STACK_ROOT/models/Qwen3.5-4B-SFT"`。末尾加 `--cfg job --resolve` 可以只检查最终配置而不启动训练。使用 `runner.resume_dir=/path/to/saved/checkpoint` 从完整训练 checkpoint 恢复优化器与数据状态。Actor/critic checkpoint 和日志位于 `runner.output_dir` 下的实验目录；episode 请求、工具图片和结果位于 `tools.rpent.output_dir`。
+Hydra 覆盖参数放在配置名之后，例如 `rollout.model.model_path="$STACK_ROOT/models/Qwen3.5-4B-SFT"`。末尾加 `--cfg job --resolve` 可以只检查最终配置而不启动训练。使用 `runner.resume_dir=/path/to/saved/checkpoint` 从完整 SAO checkpoint 恢复两套模型/优化器与 buffered/pending rollout 状态。同步 PPO checkpoint 不包含 SAO 所需的队列状态。Actor/critic checkpoint 和日志位于 `runner.output_dir` 下的实验目录；episode 请求、工具图片和结果位于 `tools.rpent.output_dir`。
 
-检查 loss/梯度是否有限、参数是否实际更新、模型副本活动、任务成功率及基础设施错误。短 smoke 通过证明连通和优化器执行，不代表最长 262144-token 工作负载一定能放入显存。遇到显存限制先保留证据并诊断，再决定切分或预算调整。
+使用 Hydra 覆盖参数运行独立短 smoke，无须单独维护 smoke YAML。检查 loss/梯度是否有限、参数是否实际更新、模型副本活动、任务成功率及基础设施错误。短 smoke 通过证明连通和优化器执行，不代表最长 262144-token 工作负载一定能放入显存。遇到显存限制先保留证据并诊断，再决定切分或预算调整。
 
 评测使用独立的显式入口：
 

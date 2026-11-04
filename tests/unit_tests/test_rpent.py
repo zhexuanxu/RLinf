@@ -586,7 +586,20 @@ def compose(overrides=(), config_name="train_qwen3.5_4b_libero_rl_ppo"):
 
     config_dir = Path(__file__).parents[2] / "examples/agent/rpent/config"
     with initialize_config_dir(version_base="1.1", config_dir=str(config_dir)):
-        return compose(config_name=config_name, overrides=list(overrides))
+        cfg = compose(config_name=config_name, overrides=list(overrides))
+    # Templates require deployment paths; CPU tests supply explicit stand-ins.
+    for name, value in {
+        "data.train_data_paths": ["/test/tasks.jsonl"],
+        "tools.rpent.python": "/test/env/bin/python",
+        "tools.rpent.libero_config_path": "/test/libero-config",
+        "tools.rpent.output_dir": "/test/episodes",
+        "rollout.model.model_path": "/test/full-model",
+    }.items():
+        parent, key = name.rsplit(".", 1)
+        node = OmegaConf.select(cfg, parent)
+        if node is not None and OmegaConf.is_missing(node, key):
+            OmegaConf.update(cfg, name, value)
+    return cfg
 
 
 @pytest.mark.parametrize(
@@ -595,9 +608,8 @@ def compose(overrides=(), config_name="train_qwen3.5_4b_libero_rl_ppo"):
         "train_qwen3.5_4b_ppo",
         "eval_qwen3.5_4b",
         "train_qwen3.5_4b_libero_rl_sao",
-        "train_qwen3.5_4b_libero_rl_local",
-        "train_qwen3.5_4b_libero_rl_smoke",
-        "train_qwen3.5_4b_libero_rl_2node",
+        "train_qwen3.5_4b_libero_rl_sao_local",
+        "train_qwen3.5_4b_libero_rl_sao_3node",
     ],
 )
 def test_example_config_satisfies_the_rpent_contract(config_name):
@@ -612,9 +624,8 @@ def test_example_config_satisfies_the_rpent_contract(config_name):
         "train_qwen3.5_4b_libero_rl_ppo",
         "eval_qwen3.5_4b_libero_rl",
         "train_qwen3.5_4b_libero_rl_sao",
-        "train_qwen3.5_4b_libero_rl_local",
-        "train_qwen3.5_4b_libero_rl_smoke",
-        "train_qwen3.5_4b_libero_rl_2node",
+        "train_qwen3.5_4b_libero_rl_sao_local",
+        "train_qwen3.5_4b_libero_rl_sao_3node",
     ],
 )
 def test_example_configs_match_the_standalone_planner(config_name):
@@ -623,7 +634,7 @@ def test_example_configs_match_the_standalone_planner(config_name):
     sampling = cfg.algorithm.sampling_params
     assert (sampling.temperature, sampling.top_p, sampling.top_k) == (1.0, 0.95, 20)
     assert sampling.max_new_tokens == 32768
-    assert cfg.agentloop.max_turns == (25 if config_name.endswith("_smoke") else 100)
+    assert cfg.agentloop.max_turns == 100
     assert cfg.agentloop.observation_mode == "adaptive"
     if cfg.runner.task_type == "reasoning":
         for component in (cfg.actor, cfg.critic):
@@ -647,7 +658,9 @@ def test_adaptive_rows_disable_packing_but_keep_balancing():
     """Image payloads need row boundaries; balancing keeps optimizer steps equal."""
     from rlinf.config import validate_rpent_cfg
 
-    cfg = validate_rpent_cfg(compose(config_name="train_qwen3.5_4b_libero_rl_local"))
+    cfg = validate_rpent_cfg(
+        compose(config_name="train_qwen3.5_4b_libero_rl_sao_local")
+    )
     assert cfg.agentloop.observation_mode == "adaptive"
     assert cfg.actor.enable_dp_load_balance is True
     assert cfg.critic.enable_dp_load_balance is True
@@ -814,6 +827,7 @@ def test_original_libero_preserves_episode_arguments_and_planner_contract(config
     from rlinf.config import validate_rpent_cfg
 
     cfg = compose(config_name=config_name)
+    validate_rpent_cfg(cfg)
     before = OmegaConf.to_container(cfg, resolve=True)
     validate_rpent_cfg(cfg)
     assert OmegaConf.to_container(cfg, resolve=True) == before
@@ -841,9 +855,8 @@ def test_original_libero_preserves_episode_arguments_and_planner_contract(config
     [
         "train_qwen3.5_4b_libero_rl_ppo",
         "train_qwen3.5_4b_libero_rl_sao",
-        "train_qwen3.5_4b_libero_rl_local",
-        "train_qwen3.5_4b_libero_rl_smoke",
-        "train_qwen3.5_4b_libero_rl_2node",
+        "train_qwen3.5_4b_libero_rl_sao_local",
+        "train_qwen3.5_4b_libero_rl_sao_3node",
         "eval_qwen3.5_4b_libero_rl",
     ],
 )
@@ -851,6 +864,7 @@ def test_clean_libero_rl_selects_adaptive_without_legacy_services(config_name):
     from rlinf.config import validate_rpent_cfg
 
     cfg = compose(config_name=config_name)
+    validate_rpent_cfg(cfg)
     before = OmegaConf.to_container(cfg, resolve=True)
     validate_rpent_cfg(cfg)
     assert OmegaConf.to_container(cfg, resolve=True) == before
@@ -938,26 +952,28 @@ def test_invalid_standard_seeds_are_rejected(seeds):
 
 
 def test_distributed_recipe_matches_adaptive_student_evaluation():
-    cfg = compose(config_name="train_qwen3.5_4b_libero_rl_2node")
+    cfg = compose(config_name="train_qwen3.5_4b_libero_rl_sao_3node")
     assert cfg.cluster.num_nodes == 3
-    assert cfg.data.rollout_batch_size == 32 and cfg.data.shuffle
-    assert cfg.runner.max_epochs == 1 and cfg.runner.max_steps == 40
+    assert cfg.data.rollout_batch_size == 128 and cfg.data.shuffle
+    assert cfg.runner.max_epochs == 10 and cfg.runner.max_steps == -1
     assert cfg.runner.save_interval == 5
     assert cfg.tools.rpent.libero_type == "standard"
-    assert cfg.tools.rpent.episodes_per_worker == 8
+    assert cfg.tools.rpent.episodes_per_worker == 32
     assert cfg.tools.rpent.max_episode_steps == 10000
     assert cfg.agentloop.episode_timeout_s == 14400
     assert cfg.algorithm.sampling_params.presence_penalty == 1.5
     assert cfg.algorithm.sampling_params.repetition_penalty == 1.0
-    assert cfg.runner.synchronous
+    assert not cfg.runner.synchronous
     assert cfg.rollout.tensor_parallel_size == 1
+    assert cfg.rollout.max_running_requests == 128
+    assert cfg.rollout.gpu_memory_utilization == 0.7
     assert cfg.rollout.replica_affinity is False
     assert cfg.rollout.env_vars.PYTORCH_ALLOC_CONF == "expandable_segments:False"
     assert cfg.rollout.env_vars.PYTORCH_CUDA_ALLOC_CONF == "expandable_segments:False"
     assert cfg.rollout.enforce_eager is False
     assert cfg.rollout.sglang.enable_weights_cpu_backup
-    assert cfg.algorithm.recompute_logprobs
-    assert cfg.algorithm.importance_sampling_fix
+    assert not cfg.algorithm.recompute_logprobs
+    assert not cfg.algorithm.importance_sampling_fix
     compaction = OmegaConf.to_container(cfg.agentloop.history_compaction, resolve=True)
     assert compaction == {
         "max_messages": 80,
@@ -987,7 +1003,7 @@ def test_episode_benchmark_config_overrides_parent_path(monkeypatch):
     monkeypatch.setenv("MUJOCO_EGL_DEVICE_ID", "0")
     monkeypatch.setenv("EGL_DEVICE_ID", "0")
     worker = object.__new__(RPentAgentLoopWorker)
-    worker.cfg = compose(config_name="train_qwen3.5_4b_libero_rl_2node")
+    worker.cfg = compose(config_name="train_qwen3.5_4b_libero_rl_sao_3node")
     worker.cfg.tools.rpent.libero_config_path = "/sim/standard-config"
     env = worker._episode_env(7)
     assert env["LIBERO_CONFIG_PATH"] == "/sim/standard-config"
@@ -1001,7 +1017,7 @@ def test_distributed_recipe_still_rejects_pipeline_parallelism(role):
 
     cfg = compose(
         [f"{role}.model.pipeline_model_parallel_size=2"],
-        config_name="train_qwen3.5_4b_libero_rl_2node",
+        config_name="train_qwen3.5_4b_libero_rl_ppo",
     )
     with pytest.raises(ValueError, match="requires PP=CP=1"):
         validate_rpent_cfg(cfg)
@@ -1119,3 +1135,51 @@ def test_partial_rollout_batch_spreads_environment_slots_over_all_gpus(monkeypat
         worker._env_slots.get_nowait() for worker in workers for _ in range(4)
     )
     assert remaining == active
+
+
+@pytest.mark.parametrize("batch_size", [64, 128])
+def test_sao_defaults_allow_every_in_flight_episode_to_start(batch_size):
+    from rlinf.config import validate_rpent_cfg
+
+    cfg = compose(
+        [f"data.rollout_batch_size={batch_size}"],
+        config_name="train_qwen3.5_4b_libero_rl_sao_3node",
+    )
+    assert cfg.rollout.max_in_flight_rollouts is None
+    assert cfg.rollout.rollout_buffer_capacity is None
+    validate_rpent_cfg(cfg)
+    assert cfg.rollout.max_in_flight_rollouts == 2 * batch_size
+    assert cfg.rollout.rollout_buffer_capacity == 2 * batch_size
+    assert 8 * cfg.tools.rpent.episodes_per_worker >= cfg.rollout.max_in_flight_rollouts
+
+
+def test_sao_preserves_ppo_task_model_and_generation_settings():
+    ppo = compose()
+    sao = compose(config_name="train_qwen3.5_4b_libero_rl_sao")
+    for name in ["tools", "data", "cluster", "actor", "algorithm.sampling_params"]:
+        assert OmegaConf.to_container(OmegaConf.select(ppo, name), resolve=True) == (
+            OmegaConf.to_container(OmegaConf.select(sao, name), resolve=True)
+        )
+    assert ppo.agentloop.history_compaction == sao.agentloop.history_compaction
+    assert ppo.runner.seq_length == sao.runner.seq_length
+    assert sao.algorithm.loss_type == "dis" and sao.algorithm.adv_type == "sao_gae"
+    assert sao.critic.loss_type == "sao" and sao.critic.update_epochs == 2
+
+
+def test_clean_training_profiles_inherit_without_deployment_paths():
+    directory = Path(__file__).parents[2] / "examples/agent/rpent/config"
+    names = [
+        "train_qwen3.5_4b_ppo",
+        "train_qwen3.5_4b_libero_rl_ppo",
+        "train_qwen3.5_4b_libero_rl_sao",
+        "train_qwen3.5_4b_libero_rl_sao_3node",
+        "train_qwen3.5_4b_libero_rl_sao_local",
+    ]
+    for parent, name in zip(names, names[1:], strict=False):
+        cfg = OmegaConf.load(directory / f"{name}.yaml")
+        assert list(cfg.defaults) == [parent, "_self_"]
+        if name != names[-1]:
+            assert "/mnt/" not in (directory / f"{name}.yaml").read_text()
+            assert "/path/to/" not in (directory / f"{name}.yaml").read_text()
+    local = compose(config_name=names[-1])
+    assert not OmegaConf.missing_keys(local)
