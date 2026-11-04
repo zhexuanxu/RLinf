@@ -1719,6 +1719,12 @@ def validate_rpent_cfg(cfg: DictConfig) -> DictConfig:
             f"env_gpus={list(rpent.env_gpus)} and "
             f"episodes_per_worker={rpent.episodes_per_worker}."
         )
+    initializations = rpent.get("max_env_initializations_per_worker", 8)
+    if type(initializations) is not int or initializations < 1:
+        raise ValueError(
+            "tools.rpent.max_env_initializations_per_worker must be a positive "
+            f"integer, got {initializations!r}."
+        )
     if rpent.keep_episodes not in ("all", "failures", "none"):
         raise ValueError(
             "tools.rpent.keep_episodes must be all, failures or none, got "

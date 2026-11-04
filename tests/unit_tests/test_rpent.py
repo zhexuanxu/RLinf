@@ -673,6 +673,10 @@ def test_adaptive_rows_disable_packing_but_keep_balancing():
     "override,message",
     [
         ("tools.rpent.episodes_per_worker=0", "one episode per worker"),
+        (
+            "tools.rpent.max_env_initializations_per_worker=0",
+            "max_env_initializations_per_worker must be a positive",
+        ),
         ("tools.rpent.workflow=unknown", "tools.rpent.workflow"),
         ("actor.pack_traj=true", "actor.pack_traj=False"),
         ("actor.expect_multi_modal_inputs=false", "expect_multi_modal_inputs=True"),
@@ -1183,3 +1187,44 @@ def test_clean_training_profiles_inherit_without_deployment_paths():
             assert "/path/to/" not in (directory / f"{name}.yaml").read_text()
     local = compose(config_name=names[-1])
     assert not OmegaConf.missing_keys(local)
+
+
+@pytest.mark.parametrize("completion", ["ready", "exit", "cancel"])
+def test_environment_cold_start_permit_releases_before_episode_end(
+    tmp_path, completion
+):
+    async def run():
+        worker = object.__new__(RPentAgentLoopWorker)
+        worker._env_initializations = asyncio.Semaphore(1)
+        await worker._env_initializations.acquire()
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", "import time; time.sleep(60)"
+        )
+        watcher = asyncio.create_task(
+            worker._watch_environment_startup(process, tmp_path)
+        )
+        try:
+            await asyncio.sleep(0)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    worker._env_initializations.acquire(), timeout=0.02
+                )
+            if completion == "ready":
+                (tmp_path / "states.json").write_text("{}")
+            elif completion == "exit":
+                process.terminate()
+                await process.wait()
+            else:
+                watcher.cancel()
+            await asyncio.wait_for(asyncio.gather(watcher, return_exceptions=True), 2)
+            await asyncio.wait_for(worker._env_initializations.acquire(), 0.1)
+            if completion == "ready":
+                assert process.returncode is None
+        finally:
+            if process.returncode is None:
+                process.terminate()
+            await process.wait()
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+
+    asyncio.run(run())

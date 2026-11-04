@@ -119,6 +119,9 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         for slot in range(rpent.episodes_per_worker):
             index = self._rank + slot
             self._env_slots.put_nowait(rpent.env_gpus[index % len(rpent.env_gpus)])
+        self._env_initializations = asyncio.Semaphore(
+            rpent.get("max_env_initializations_per_worker", 8)
+        )
         # Loaded when view_env first returns images.
         self._image_processor = None
         # Episode processes run on this node and reach the endpoint locally.
@@ -199,11 +202,19 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         command = self._rpent_command(output, gpu)
         log = output / "episode.log"
         with log.open("wb") as log_file:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=log_file,
-                stderr=asyncio.subprocess.STDOUT,
-                env=self._episode_env(gpu),
+            await self._env_initializations.acquire()
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    stdout=log_file,
+                    stderr=asyncio.subprocess.STDOUT,
+                    env=self._episode_env(gpu),
+                )
+            except BaseException:
+                self._env_initializations.release()
+                raise
+            startup = asyncio.create_task(
+                self._watch_environment_startup(process, output)
             )
             try:
                 returncode = await asyncio.wait_for(
@@ -216,7 +227,11 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                     kind="process",
                 ) from None
             finally:
-                await _stop(process)
+                try:
+                    await _stop(process)
+                finally:
+                    startup.cancel()
+                    await asyncio.gather(startup, return_exceptions=True)
         if returncode == _EXIT_SETUP_FAILED:
             raise RPentEpisodeError(
                 f"RPent episode {episode.episode_id} did not start; see {log}",
@@ -240,6 +255,14 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         if not keep:
             shutil.rmtree(output)
         return outcome
+
+    async def _watch_environment_startup(self, process, output: Path) -> None:
+        """Release a cold-start permit after reset, process exit, or cancellation."""
+        try:
+            while process.returncode is None and not (output / "states.json").is_file():
+                await asyncio.sleep(0.5)
+        finally:
+            self._env_initializations.release()
 
     def _planner_options(self, base_url: str) -> dict:
         """Planner options of an episode whose policy is served at ``base_url``."""

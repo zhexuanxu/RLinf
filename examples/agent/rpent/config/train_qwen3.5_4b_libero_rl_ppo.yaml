@@ -51,6 +51,8 @@ tools:
     env_gpus: [0, 1, 2, 3, 4, 5, 6, 7]
     # Eight workers can run all 256 default SAO in-flight episodes.
     episodes_per_worker: 32
+    # Limit cold-start pressure; reset environments release these permits.
+    max_env_initializations_per_worker: 8
     output_dir: ???
     keep_episodes: all
     process_timeout_s: 15000
