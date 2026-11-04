@@ -12,23 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Text-only RPent planner episodes served by the RLinf rollout engine."""
+"""Original LIBERO and clean libero_rl planner episodes served by RLinf."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import math
+import os
 import shutil
 import time
 from collections import Counter
 from pathlib import Path
 from uuid import uuid4
 
+import torch
 from omegaconf import DictConfig, OmegaConf
 
 from rlinf.agents.rpent.episode import Episode, RPentEpisodeError, merge_prefix_turns
-from rlinf.agents.rpent.history import AppendOnlyHistory
+from rlinf.agents.rpent.history import (
+    AppendOnlyHistory,
+    render_image_prompt,
+    request_has_images,
+)
 from rlinf.agents.tokenization import get_agentic_tokenizer
 from rlinf.scheduler import Channel
 from rlinf.utils.placement import ModelParallelComponentPlacement
@@ -51,6 +57,8 @@ _EXIT_SETUP_FAILED = 75
 _STOP_GRACE_S = 60
 # The planner names this model in its requests; each worker serves one policy.
 _MODEL_NAME = "policy"
+# Closes the reasoning the generation prompt opened; the answer follows it.
+_THINK_END = "</think>"
 # A high retry rate stops the update only once this many episodes were retried,
 # so a single failure in a small batch does not.
 _MIN_RETRIED_EPISODES = 3
@@ -67,7 +75,8 @@ def _episode_task(answer: list[str]) -> dict:
 class RPentAgentLoopWorker(MultiAgentLoopWorker):
     """Run RPent planner episodes and keep the turns they sample from the policy.
 
-    Each episode runs RPent's ``robots.libero.rl_episode`` in its own process on
+    Each episode runs the selected ``robots.libero.rl_episode`` or
+    ``robots.libero_rl.rl_episode`` in its own process on
     this worker's node, which hosts the LIBERO simulators. The planner runs
     unchanged in that process and calls this worker's OpenAI endpoint, which
     samples each request from the rollout engine. A request that extends the previous turn is rendered as the
@@ -108,8 +117,10 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         rpent = cfg.tools.rpent
         self._env_slots = asyncio.Queue()
         for slot in range(rpent.episodes_per_worker):
-            index = self._rank * rpent.episodes_per_worker + slot
+            index = self._rank + slot
             self._env_slots.put_nowait(rpent.env_gpus[index % len(rpent.env_gpus)])
+        # Loaded when view_env first returns images.
+        self._image_processor = None
         # Episode processes run on this node and reach the endpoint locally.
         self._model_server = OpenAISessionServer(
             self._complete,
@@ -189,7 +200,10 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         log = output / "episode.log"
         with log.open("wb") as log_file:
             process = await asyncio.create_subprocess_exec(
-                *command, stdout=log_file, stderr=asyncio.subprocess.STDOUT
+                *command,
+                stdout=log_file,
+                stderr=asyncio.subprocess.STDOUT,
+                env=self._episode_env(gpu),
             )
             try:
                 returncode = await asyncio.wait_for(
@@ -231,36 +245,75 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         """Planner options of an episode whose policy is served at ``base_url``."""
         agentloop = self.cfg.agentloop
         compaction = agentloop.get("history_compaction")
-        return {
+        options = {
             "base_url": base_url,
             "model_name": _MODEL_NAME,
             "max_turns": agentloop.max_turns,
             "max_tokens": self.cfg.algorithm.sampling_params.max_new_tokens,
             "request_timeout_s": agentloop.model_request_timeout_s,
             "episode_timeout_s": agentloop.episode_timeout_s,
-            "no_images": True,
             "history_compaction": None
             if compaction is None
             else OmegaConf.to_container(compaction, resolve=True),
         }
+        if self.cfg.tools.rpent.get("workflow", "libero") == "libero_rl":
+            options.update(
+                observation_mode="adaptive", prompt=agentloop.get("prompt", "simple")
+            )
+        else:
+            options["no_images"] = True
+        return options
+
+    def _episode_env(self, gpu: int) -> dict[str, str]:
+        """Environment of an episode process assigned to ``gpu``.
+
+        Agent workers hold every GPU, so the worker's own environment names
+        GPU 0 as the render device. The episode process picks its device from
+        ``--cuda-device`` instead, and ``configure_egl_device`` only overrides
+        an inherited value when it is unset, so the inherited one has to go.
+        """
+        env = dict(os.environ)
+        env.pop("MUJOCO_EGL_DEVICE_ID", None)
+        env.pop("EGL_DEVICE_ID", None)
+        config_path = self.cfg.tools.rpent.get("libero_config_path")
+        if config_path is not None:
+            env["LIBERO_CONFIG_PATH"] = str(config_path)
+        return env
 
     def _rpent_command(self, output: Path, gpu: int) -> list[str]:
         """Command line of an episode process writing to ``output``."""
         rpent = self.cfg.tools.rpent
+        workflow = rpent.get("workflow", "libero")
         command = [
             rpent.python,
             "-m",
-            "robots.libero.rl_episode",
+            f"robots.{workflow}.rl_episode",
             "--output-dir",
             str(output),
             "--request",
             str(output / "request.json"),
-            "--vla-endpoint",
-            rpent.vla_endpoint,
-            "--sam3-endpoint",
-            rpent.sam3_endpoint,
-            "--libero-type",
-            rpent.libero_type,
+        ]
+        if workflow == "libero_rl":
+            command += [
+                "--observation-mode",
+                "adaptive",
+                "--prompt",
+                self.cfg.agentloop.get("prompt", "simple"),
+            ]
+            if rpent.get("sam3_endpoint") is not None:
+                command += ["--sam3-endpoint", rpent.sam3_endpoint]
+            if rpent.get("libero_type") is not None:
+                command += ["--libero-type", rpent.libero_type]
+        else:
+            command += [
+                "--vla-endpoint",
+                rpent.vla_endpoint,
+                "--sam3-endpoint",
+                rpent.sam3_endpoint,
+                "--libero-type",
+                rpent.libero_type,
+            ]
+        command += [
             "--max-episode-steps",
             str(rpent.max_episode_steps),
             "--cuda-device",
@@ -268,7 +321,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
             "--tokenizer-path",
             self.cfg.rollout.model.model_path,
         ]
-        if rpent.get("frozen_memory_dir") is not None:
+        if workflow == "libero" and rpent.get("frozen_memory_dir") is not None:
             command += ["--frozen-memory-dir", rpent.frozen_memory_dir]
         return command
 
@@ -288,18 +341,72 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
             f"outcome ({status.get('error_kind')}): {status.get('error')}"
         )
 
+    def _processor(self):
+        """Image processor of the served policy, loaded on first use."""
+        if self._image_processor is None:
+            from transformers import AutoProcessor
+
+            self._image_processor = AutoProcessor.from_pretrained(
+                self.cfg.rollout.model.model_path, trust_remote_code=True
+            )
+        return self._image_processor
+
+    def _multimodal_inputs(self, images: list[bytes]) -> dict:
+        """Preprocess a turn's images once, for both rollout and training.
+
+        The processor output is what the actor forwards to the vision tower, so
+        producing it here keeps the rollout prompt and the training row on the
+        same token layout.
+        """
+        from PIL import Image
+
+        processor = self._processor()
+        decoded = [
+            Image.open(__import__("io").BytesIO(image)).convert("RGB")
+            for image in images
+        ]
+        inputs = processor.image_processor(images=decoded, return_tensors="pt")
+        return {
+            # The vision tower is bf16, so fp32 payloads only cost host memory:
+            # a 1024x1024 frame is 24 MB in fp32 and halves per image row.
+            "pixel_values": inputs["pixel_values"].to(torch.bfloat16),
+            "image_grid_thw": inputs["image_grid_thw"],
+            "num_images": len(decoded),
+        }
+
+    async def _render_request(self, episode: Episode, request: dict):
+        """Return this turn's prompt tokens and the images they expand.
+
+        A request carrying images is rendered in full with the model's
+        processor, because the served engine only expands an image marker when
+        it is handed the image itself. Text-only turns append to the previous
+        turn's sampled tokens as usual.
+        """
+        if not request_has_images(request):
+            prompt_ids = await asyncio.to_thread(episode.history.render, request)
+            return prompt_ids, [], None
+        rendered = await asyncio.to_thread(
+            render_image_prompt, self.agentic_tokenizer, request, self._processor()
+        )
+        multimodal = await asyncio.to_thread(self._multimodal_inputs, rendered.images)
+        return rendered.input_ids, rendered.images, multimodal
+
     async def _complete(self, episode: Episode, request: dict) -> dict:
         """Sample one planner request, record the turn, and return its completion."""
         turn_idx = len(episode.turns)
-        prompt_ids = await asyncio.to_thread(episode.history.render, request)
+        prompt_ids, images, image_grid_thw = await self._render_request(
+            episode, request
+        )
+        sampling_params = {
+            "max_new_tokens": self._output_budget(len(prompt_ids)),
+            # SGLang skips tokenizer initialization for token-ID requests,
+            # and the model config's EOS can differ from the chat EOS.
+            "stop_token_ids": [self.tokenizer.eos_token_id],
+        }
+        # A text turn keeps the plain request; only an image turn carries bytes.
+        extra = {"image_data": images} if images else {}
         generated = await self.generate(
-            prompt_ids,
-            sampling_params={
-                "max_new_tokens": self._output_budget(len(prompt_ids)),
-                # SGLang skips tokenizer initialization for token-ID requests,
-                # and the model config's EOS can differ from the chat EOS.
-                "stop_token_ids": [self.tokenizer.eos_token_id],
-            },
+            prompt_ids, sampling_params=sampling_params, **extra
         )
         self._check_generation(generated, prompt_ids)
         response_ids = generated["output_ids"]
@@ -314,6 +421,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                 response_text=response_text,
                 response_logprobs=generated.get("logprobs"),
                 response_weight_versions=generated.get("weight_versions"),
+                response_images=image_grid_thw,
                 is_end=generated["finish_reason"] == "stop",
                 extra_fields={
                     "turn_id": turn_idx,
@@ -372,13 +480,26 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
     async def _parse_response(
         self, response_ids: list[int], tools: list | None, turn_idx: int
     ) -> tuple[str, list[dict], dict]:
-        """Decode a response into its text, tool calls and assistant message."""
+        """Decode a response into its text, tool calls and assistant message.
+
+        The generation prompt opens the think block, so a response runs from
+        the reasoning to ``</think>`` and then the answer. The reasoning goes
+        back as ``reasoning_content``, the field SGLang's reasoning parser
+        returns, so the planner sends the same message structure on both paths
+        and the chat template renders the block again from it.
+        """
         response_text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
-        content, requests = await self.toolcall_parser(
-            response_text.removesuffix(self.tokenizer.eos_token or ""), tools=tools
-        )
+        answer = response_text.removesuffix(self.tokenizer.eos_token or "")
+        reasoning, found, after = answer.partition(_THINK_END)
+        if found:
+            answer = after
+        else:
+            reasoning = ""
+        content, requests = await self.toolcall_parser(answer, tools=tools)
         calls = [{"name": item.name, "arguments": item.arguments} for item in requests]
         message = {"role": "assistant", "content": content.strip() or None}
+        if found:
+            message["reasoning_content"] = reasoning.strip()
         if calls:
             message["tool_calls"] = [
                 {

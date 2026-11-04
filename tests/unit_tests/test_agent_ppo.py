@@ -456,6 +456,101 @@ def test_ppo_targets_reject_mismatched_parallel_predictions():
     assert output_channel.empty()
 
 
+def test_dynamic_balance_returns_payloads_on_host(monkeypatch, tmp_path):
+    """Gathering payloads must not hold device tensors: the collective would
+    allocate them on the GPU inside the data-parallel group."""
+    from rlinf.scheduler import Worker
+    from rlinf.utils.data_iter_utils import get_seqlen_balanced_partitions
+    from rlinf.utils.distributed import RolloutDataBalance
+
+    monkeypatch.setattr(Worker, "torch_device_type", "cpu")
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    result = make_result()
+    _prepare_targets([result], 0.99, 0.95, True)
+    batch = result.to_actor_batch(6, 0)
+    batch["multi_modal_inputs"] = [
+        {"pixel_values": torch.zeros(2, 3), "image_grid_thw": torch.ones(1, 3)},
+        None,
+        {"pixel_values": torch.ones(1, 3), "image_grid_thw": torch.ones(1, 3)},
+    ]
+    batch.pop("idx_to_traj")
+    batch["loss_scales"] = batch["response_mask"].float()
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=(tmp_path / "host-payload-group").as_uri(),
+        rank=0,
+        world_size=1,
+    )
+    try:
+        balanced = RolloutDataBalance.from_rollout_batches_dynamic(
+            batch,
+            dp_world_size=1,
+            dp_rank=0,
+            dp_group=torch.distributed.group.WORLD,
+            rollout_batch_pad=DynamicRolloutResult.get_batch_pad(6, batch.keys()),
+            split_fix_chunk=2,
+            partitioning_tool=get_seqlen_balanced_partitions,
+        )
+    finally:
+        torch.distributed.destroy_process_group()
+
+    payloads = [entry for entry in balanced["multi_modal_inputs"] if entry]
+    assert len(payloads) == 2
+    for entry in payloads:
+        assert entry["pixel_values"].device.type == "cpu"
+        assert entry["image_grid_thw"].device.type == "cpu"
+
+
+def test_batch_merge_pads_rows_for_a_text_only_batch():
+    """A batch without images must still contribute one slot per row."""
+
+    def batch(payloads):
+        data = {
+            "input_ids": torch.zeros(3, 6, dtype=torch.long),
+            "idx_to_traj": [0, 1, 2],
+            "prompt_lengths": torch.ones(3, dtype=torch.int32),
+            "response_lengths": torch.ones(3, dtype=torch.int32),
+            "is_end": torch.zeros(3, dtype=torch.bool),
+        }
+        if payloads is not None:
+            data["multi_modal_inputs"] = payloads
+        return data
+
+    with_images = batch([None, {"tag": torch.tensor([1.0])}, None])
+    for order in ([batch(None), with_images], [with_images, batch(None)]):
+        merged = DynamicRolloutResult.merge_batches(
+            [dict(item) for item in order], group_size=3, adjust_traj_indices=True
+        )
+        payloads = merged["multi_modal_inputs"]
+        assert len(payloads) == merged["input_ids"].shape[0] == 6
+        assert sum(entry is not None for entry in payloads) == 1
+
+
+def test_actor_batch_keeps_payloads_when_the_first_row_is_text():
+    """A text-only leading row must not hide the later rows' images."""
+    result = make_result()
+    result.multi_modal_inputs = [None, {"tag": torch.tensor([5.0])}, None]
+    batch = result.to_actor_batch(6, 0)
+
+    assert batch["multi_modal_inputs"] == [None, {"tag": torch.tensor([5.0])}, None]
+    assert len(batch["multi_modal_inputs"]) == batch["input_ids"].shape[0]
+
+
+def test_agent_async_state_exposes_the_runner_metric_keys():
+    """The learner's async metrics read these two keys per agent worker."""
+    from rlinf.workers.agent.agent_loop import MultiAgentLoopWorker
+
+    worker = object.__new__(MultiAgentLoopWorker)
+    worker._async_in_flight = 3
+    worker._async_sending = 2
+
+    assert worker.get_async_rollout_state() == {
+        "in_flight": 3,
+        "waiting_for_buffer": 2,
+    }
+
+
 @pytest.mark.parametrize("synchronous", [False, True])
 @pytest.mark.parametrize("role", ["actor", "critic"])
 def test_megatron_batch_input_uses_default_queue(monkeypatch, role, synchronous):
@@ -740,6 +835,143 @@ def test_trajectory_packing_keeps_one_token_overlap_as_separate_rows(monkeypatch
     torch.testing.assert_close(packed["response_mask"], batch["response_mask"])
 
 
+def test_dynamic_balance_tolerates_a_rank_without_image_rows(monkeypatch, tmp_path):
+    """A rank whose rows are all text must not skip the payload collective."""
+    from rlinf.scheduler import Worker
+    from rlinf.utils.data_iter_utils import get_seqlen_balanced_partitions
+    from rlinf.utils.distributed import RolloutDataBalance
+
+    monkeypatch.setattr(Worker, "torch_device_type", "cpu")
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    result = make_result()
+    _prepare_targets([result], 0.99, 0.95, True)
+    batch = result.to_actor_batch(6, 0)
+    batch.pop("idx_to_traj")
+    batch["loss_scales"] = batch["response_mask"].float()
+    assert "multi_modal_inputs" not in batch
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=(tmp_path / "text-only-group").as_uri(),
+        rank=0,
+        world_size=1,
+    )
+    try:
+        balanced = RolloutDataBalance.from_rollout_batches_dynamic(
+            batch,
+            dp_world_size=1,
+            dp_rank=0,
+            dp_group=torch.distributed.group.WORLD,
+            rollout_batch_pad=DynamicRolloutResult.get_batch_pad(6, batch.keys()),
+            split_fix_chunk=2,
+            partitioning_tool=get_seqlen_balanced_partitions,
+        )
+    finally:
+        torch.distributed.destroy_process_group()
+
+    assert "multi_modal_inputs" not in balanced
+    assert balanced["input_ids"].shape[0] == 4
+
+
+def test_flat_gather_handles_ranks_with_different_row_counts(monkeypatch, tmp_path):
+    """A rank may hold fewer rows than its peer; the gather pads to the longest
+    and every rank slices back its own share."""
+    from rlinf.utils.distributed import _all_gather_cpu_tensors
+
+    torch.distributed.init_process_group(
+        "gloo", init_method=(tmp_path / "flat-gather").as_uri(), rank=0, world_size=1
+    )
+    try:
+        batches = {
+            "input_ids": torch.zeros(2, 4, dtype=torch.long),
+            "prompt_lengths": torch.ones(2, dtype=torch.int32),
+        }
+        gathered = _all_gather_cpu_tensors(batches, [2], torch.distributed.group.WORLD)
+    finally:
+        torch.distributed.destroy_process_group()
+
+    assert len(gathered) == 1
+    assert gathered[0]["input_ids"].shape == (2, 4)
+    assert gathered[0]["prompt_lengths"].dtype == torch.int32
+
+
+def test_payload_exchange_moves_only_the_rows_a_rank_trains():
+    """The assignment decides delivery: no rank keeps payloads it will not use."""
+    from rlinf.utils.distributed import _auxiliary_plan
+
+    # Two ranks of four rows each; the partition interleaves their rows.
+    partitions = [[0, 2, 4, 7], [1, 3, 5, 6]]
+    arranged, slots, outgoing = _auxiliary_plan(
+        ["own0", "own1", "own2", "own3"], [4, 4], partitions, rank=1, pad_value=None
+    )
+    # Rank 1 owns global rows 4-7, so its local list starts at "own0" = row 4.
+    # It trains rows 1, 3, 5 and 6; only rows 5 and 6 are its own.
+    assert arranged == [None, None, "own1", "own2"]
+    assert slots == {1: 0, 3: 1, 5: 2, 6: 3}
+    # Rank 0 trains rows 4 and 7, which rank 1 owns.
+    assert outgoing == {0: {4: "own0", 7: "own3"}}
+
+
+def test_payload_exchange_sends_a_peer_only_that_peer_rows():
+    """Only one rank's rows leave: the rest stays local."""
+    from rlinf.utils.distributed import _auxiliary_plan
+
+    # Rows 0-3 on rank 0. Rank 1 trains rows 1 and 3 only.
+    partitions = [[0, 2], [1, 3]]
+    arranged, _, outgoing = _auxiliary_plan(
+        ["a", "b", "c", "d"], [4, 0], partitions, rank=0, pad_value=None
+    )
+    assert arranged == ["a", "c"]
+    assert outgoing == {1: {1: "b", 3: "d"}}
+
+
+@pytest.mark.parametrize("use_default_group", [False, True])
+def test_dynamic_balance_carries_per_row_image_payloads(
+    monkeypatch, tmp_path, use_default_group
+):
+    """A row keeps its processor outputs through gather, padding and partition."""
+    from rlinf.scheduler import Worker
+    from rlinf.utils.data_iter_utils import get_seqlen_balanced_partitions
+    from rlinf.utils.distributed import RolloutDataBalance
+
+    monkeypatch.setattr(Worker, "torch_device_type", "cpu")
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu")
+    result = make_result()
+    _prepare_targets([result], 0.99, 0.95, True)
+    # Rows 0 and 2 carry images; row 1 is text only and pads with None.
+    batch = result.to_actor_batch(6, 0)
+    batch["multi_modal_inputs"] = [
+        {"tag": torch.tensor([7.0])},
+        None,
+        {"tag": torch.tensor([9.0])},
+    ]
+    batch.pop("idx_to_traj")
+    batch["loss_scales"] = batch["response_mask"].float()
+
+    torch.distributed.init_process_group(
+        "gloo", init_method=(tmp_path / "aux-group").as_uri(), rank=0, world_size=1
+    )
+    try:
+        balanced = RolloutDataBalance.from_rollout_batches_dynamic(
+            batch,
+            dp_world_size=1,
+            dp_rank=0,
+            dp_group=None if use_default_group else torch.distributed.group.WORLD,
+            rollout_batch_pad=DynamicRolloutResult.get_batch_pad(6, batch.keys()),
+            split_fix_chunk=2,
+            partitioning_tool=get_seqlen_balanced_partitions,
+        )
+    finally:
+        torch.distributed.destroy_process_group()
+
+    # Three rows pad to four, so the payload list tracks the padded row count.
+    assert len(balanced["multi_modal_inputs"]) == balanced["input_ids"].shape[0] == 4
+    tags = sorted(
+        float(entry["tag"]) for entry in balanced["multi_modal_inputs"] if entry
+    )
+    assert tags == [7.0, 9.0]
+
+
 @pytest.mark.parametrize("role", ["actor", "critic"])
 @pytest.mark.parametrize("pack_traj", [False, True])
 def test_ppo_batch_balance_before_minibatches_preserves_targets_and_loss(
@@ -984,6 +1216,31 @@ def test_qwen35_convertor_inverts_megatron_bridge_layouts():
     )
     with pytest.raises(NotImplementedError, match="rollout tensor parallel size 1"):
         Qwen35Convertor(SimpleNamespace(reshard_tp_size=2, model_config=shape))
+
+
+def test_qwen35_convertor_accepts_vision_language_keys():
+    """A VL bridge names the language model one level down: language_model.*."""
+    from types import SimpleNamespace
+
+    from rlinf.utils.convertor.utils import Qwen35Convertor
+
+    shape = SimpleNamespace(**QWEN3_5_SHAPE)
+    hidden = shape.hidden_size
+    megatron = {
+        "language_model.embedding.word_embeddings.weight": torch.randn(16, hidden),
+        "language_model.decoder.final_layernorm.weight": torch.randn(hidden),
+        "language_model.decoder.layers.3.self_attention.linear_qkv.layer_norm_weight": (
+            torch.randn(hidden)
+        ),
+    }
+    converted = Qwen35Convertor(
+        SimpleNamespace(reshard_tp_size=1, model_config=shape), strict=True
+    ).convert(megatron)
+    assert set(converted) == {
+        "model.language_model.embed_tokens.weight",
+        "model.language_model.norm.weight",
+        "model.language_model.layers.3.input_layernorm.weight",
+    }
 
 
 def test_qwen35_model_config_carries_gated_deltanet_sizes(tmp_path):
@@ -1471,6 +1728,180 @@ def test_sglang_cpu_backup_loads_unsynchronized_weights(
     )
 
 
+@pytest.mark.parametrize("num_nodes", [1, 2])
+def test_sglang_replicas_reserve_both_initialization_ports(monkeypatch, num_nodes):
+    import dataclasses
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from itertools import count
+
+    from omegaconf import OmegaConf
+
+    pytest.importorskip("sglang")
+    from rlinf.scheduler.manager.lock_manager import PortLockManager
+    from rlinf.scheduler.worker.lock import PortLock
+    from rlinf.scheduler.worker.worker import Worker
+    from rlinf.workers.rollout.sglang import sglang_worker
+
+    # Repeated candidates force contention in the real node-scoped lock.
+    manager = object.__new__(PortLockManager)
+    manager._port_locks = {}
+    manager._lock = threading.Lock()
+    candidates = count()
+    candidate_lock = threading.Lock()
+
+    def find_free_port(max_port_num=None):
+        with candidate_lock:
+            return 35000 + next(candidates) // 4
+
+    monkeypatch.setattr(Cluster, "find_free_port", staticmethod(find_free_port))
+
+    def server_args(**kwargs):
+        cls = dataclasses.make_dataclass(
+            "ServerArgs", [(key, object) for key in kwargs]
+        )
+        return cls(**kwargs)
+
+    monkeypatch.setattr(sglang_worker, "ServerArgs", server_args)
+    monkeypatch.setattr(sglang_worker, "Engine", lambda **kwargs: kwargs)
+
+    def initialize(rank):
+        worker = SimpleNamespace(
+            _cfg=SimpleNamespace(runner=SimpleNamespace(resume_dir=None)),
+            _cfg_rollout=OmegaConf.create(
+                {
+                    "enforce_eager": True,
+                    "validate_weight": False,
+                    "model": {
+                        "model_path": "/model",
+                        "precision": "bf16",
+                        "trust_remote_code": False,
+                    },
+                    "sglang": {
+                        "use_torch_compile": False,
+                        "torch_compile_max_bs": 4,
+                        "decode_log_interval": 100,
+                        "attention_backend": "triton",
+                    },
+                    "cuda_graph_max_bs": 4,
+                    "max_running_requests": 12,
+                    "tensor_parallel_size": 1,
+                    "gpu_memory_utilization": 0.7,
+                    "detokenize": False,
+                }
+            ),
+            _cluster_node_rank=rank % num_nodes,
+            _worker_name=f"rollout-{rank}",
+            _rank=rank,
+            weight_reload="sync",
+            log_on_first_rank=lambda message: None,
+        )
+        port_lock = object.__new__(PortLock)
+        port_lock._worker = worker
+        port_lock._lock_manager = manager
+        worker._port_lock = port_lock
+        worker.acquire_free_port = lambda: Worker.acquire_free_port(worker)
+        sglang_worker.SGLangWorker._init_engine(worker)
+        return worker, worker._engine
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        results = list(executor.map(initialize, range(16)))
+
+    assert len(manager._port_locks) == 32
+    for worker, args in results:
+        nccl_port = args["nccl_port"]
+        init_port = int(args["dist_init_addr"].rsplit(":", 1)[1])
+        assert nccl_port != init_port
+        for port in (nccl_port, init_port):
+            assert manager._port_locks[worker._cluster_node_rank, port] == (
+                worker._worker_name
+            )
+    assert next(candidates) > 32
+
+    # Exercise the installed vendor handoff without launching an engine.
+    from sglang.srt import server_args as vendor
+
+    def unexpected_free_port():
+        pytest.fail("SGLang must use the port reserved by RLinf.")
+
+    monkeypatch.setattr(vendor, "get_free_port", unexpected_free_port)
+    args = results[0][1]
+    vendor_args = object.__new__(vendor.ServerArgs)
+    vendor_args.nccl_port = args["nccl_port"]
+    vendor_args.dist_init_addr = args["dist_init_addr"]
+    ports = vendor.PortArgs.init_new(vendor_args)
+    try:
+        assert ports.nccl_port == args["nccl_port"]
+    finally:
+        for value in vars(ports).values():
+            if isinstance(value, str) and value.startswith("ipc://"):
+                Path(value.removeprefix("ipc://")).unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("cache_kind", ["legacy", "radix", "mamba", "swa"])
+@pytest.mark.parametrize("num_running", [0, 3])
+def test_sglang_running_state_uses_native_hybrid_pool_accounting(
+    cache_kind, num_running
+):
+    from types import MethodType
+    from unittest.mock import Mock
+
+    pytest.importorskip("sglang")
+    from sglang.srt.managers.scheduler import Scheduler as VendorScheduler
+
+    from rlinf.hybrid_engines.sglang.common.sgl_scheduler import Scheduler
+
+    cache = SimpleNamespace(evictable_size=lambda: 20)
+    allocator = SimpleNamespace(available_size=lambda: 50, size=100)
+    state = SimpleNamespace(
+        max_total_num_tokens=100,
+        max_running_requests=8,
+        token_to_kv_pool_allocator=allocator,
+        tree_cache=cache,
+        running_batch=SimpleNamespace(reqs=[object()] * num_running),
+        waiting_queue=[object(), object()],
+    )
+    expected_used = 30
+    if cache_kind != "legacy":
+        state.is_hybrid_ssm = cache_kind == "mamba"
+        state.is_hybrid_swa = cache_kind == "swa"
+        state.enable_hisparse = False
+        state.get_pool_stats = MethodType(VendorScheduler.get_pool_stats, state)
+        for name in ("_get_token_info", "_get_mamba_token_info", "_get_swa_token_info"):
+            setattr(state, name, MethodType(getattr(VendorScheduler, name), state))
+    if cache_kind in ("mamba", "swa"):
+        cache.evictable_size = Mock(side_effect=NotImplementedError)
+        cache.full_evictable_size = lambda: 20
+    if cache_kind == "mamba":
+        cache.supports_mamba = lambda: True
+        cache.is_tree_cache = lambda: True
+        cache.mamba_evictable_size = lambda: 2
+        state.req_to_token_pool = SimpleNamespace(
+            mamba_pool=SimpleNamespace(size=10, available_size=lambda: 3)
+        )
+    elif cache_kind == "swa":
+        allocator.available_size = Mock(side_effect=NotImplementedError)
+        allocator.full_available_size = lambda: 30
+        allocator.swa_available_size = lambda: 15
+        cache.swa_evictable_size = lambda: 5
+        state.full_tokens_per_layer = 100
+        state.swa_tokens_per_layer = 60
+        expected_used = 50
+
+    assert Scheduler.get_scheduler_running_state(state) == {
+        "num_running_reqs": num_running,
+        "max_running_reqs": 8,
+        "num_used_tokens": expected_used,
+        "max_total_num_tokens": 100,
+        "token_usage": expected_used / 100,
+        "num_queue_reqs": 2,
+    }
+    if cache_kind in ("mamba", "swa"):
+        cache.evictable_size.assert_not_called()
+    if cache_kind == "swa":
+        allocator.available_size.assert_not_called()
+
+
 @pytest.mark.placement
 @pytest.mark.parametrize("replica_affinity", [False, True])
 def test_serverless_shutdown_unblocks_the_replica_queue(replica_affinity):
@@ -1508,3 +1939,210 @@ def test_serverless_shutdown_unblocks_the_replica_queue(replica_affinity):
             await asyncio.gather(consumer, return_exceptions=True)
 
     asyncio.run(asyncio.wait_for(run(), timeout=5))
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not torch.distributed.is_nccl_available(),
+    reason="NCCL data-parallel balance requires CUDA",
+)
+def test_dynamic_balance_without_a_megatron_host_group_uses_nccl(tmp_path):
+    """FSDP callers pass NCCL and must not enter CPU tensor collectives."""
+    from rlinf.utils.distributed import RolloutDataBalance
+
+    torch.cuda.set_device(0)
+    torch.distributed.init_process_group(
+        "nccl", init_method=(tmp_path / "nccl-balance").as_uri(), rank=0, world_size=1
+    )
+    try:
+        batch = {
+            "input_ids": torch.arange(12).reshape(3, 4),
+            "prompt_lengths": torch.tensor([1, 2, 1]),
+            "response_lengths": torch.tensor([2, 1, 3]),
+            "response_mask": torch.tensor([[False, True, True, False]] * 3),
+        }
+        pad = {key: torch.zeros_like(value[:1]) for key, value in batch.items()}
+        result = RolloutDataBalance.from_rollout_batches_dynamic(
+            batch,
+            dp_world_size=1,
+            dp_rank=0,
+            dp_group=torch.distributed.group.WORLD,
+            rollout_batch_pad=pad,
+            split_fix_chunk=1,
+            partitioning_tool=lambda **kwargs: [[2, 0, 1]],
+        )
+        for key, value in batch.items():
+            torch.testing.assert_close(result[key], value[[2, 0, 1]])
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+@pytest.mark.parametrize("do_sample", [True, False])
+@pytest.mark.parametrize("presence_penalty", [None, 0.0, 1.5])
+def test_sglang_sampling_keeps_explicit_presence_penalty(do_sample, presence_penalty):
+    from omegaconf import OmegaConf
+
+    from rlinf.workers.rollout.sglang.sglang_worker import SGLangWorker
+
+    params = {
+        "do_sample": do_sample,
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.95,
+        "repetition_penalty": 1.0,
+        "max_new_tokens": 32768,
+    }
+    if presence_penalty is not None:
+        params["presence_penalty"] = presence_penalty
+    actual = SGLangWorker.get_sampling_param_from_config(OmegaConf.create(params))
+    if presence_penalty is None:
+        assert "presence_penalty" not in actual
+    else:
+        assert actual["presence_penalty"] == presence_penalty
+    assert actual["max_new_tokens"] == 32768
+    if do_sample:
+        assert actual["repetition_penalty"] == 1.0
+
+
+@pytest.mark.parametrize("kind", ["actor", "critic"])
+@pytest.mark.parametrize("mrope", [False, True])
+@pytest.mark.parametrize("tp", [1, 2])
+def test_multimodal_right_padding_trim_preserves_outputs_and_gradients(
+    monkeypatch, kind, mrope, tp
+):
+    """Only dense VL computation shrinks; PPO's full-width layout stays intact."""
+    pytest.importorskip("megatron.training")
+    from megatron.core import parallel_state
+
+    from rlinf.hybrid_engines.megatron.megatron_model_manager import (
+        MegatronModelManager,
+    )
+    from rlinf.hybrid_engines.megatron.utils import preprocess_packed_seqs
+
+    monkeypatch.setattr(
+        parallel_state, "get_tensor_model_parallel_world_size", lambda: tp
+    )
+    monkeypatch.setattr(parallel_state, "get_context_parallel_world_size", lambda: 1)
+    monkeypatch.setattr(parallel_state, "get_context_parallel_rank", lambda: 0)
+
+    class VisionModel(torch.nn.Module):
+        __module__ = "megatron.bridge.models.qwen_vl.test"
+        pre_process = post_process = True
+
+        def __init__(self):
+            super().__init__()
+            self.embedding = torch.nn.Embedding(20, 4)
+            self.output_layer = torch.nn.Linear(4, 7 if kind == "actor" else 1)
+            self.seen_shapes = []
+
+        def forward(
+            self,
+            input_ids,
+            attention_mask,
+            position_ids,
+            packed_seq_params,
+            pixel_values,
+            image_grid_thw,
+        ):
+            self.seen_shapes.append(tuple(input_ids.shape))
+            assert position_ids.shape[-1] == input_ids.shape[-1]
+            assert tuple(attention_mask.shape) == tuple(input_ids.shape)
+            assert pixel_values.shape == (5, 4)
+            assert image_grid_thw.shape == (5, 3)
+            hidden = self.embedding(input_ids) + pixel_values.mean(dim=0)
+            packed, _ = preprocess_packed_seqs(hidden, attention_mask)
+            return self.output_layer(packed)
+
+    torch.manual_seed(0)
+    original = VisionModel()
+    trimmed = copy.deepcopy(original)
+    tokens = torch.arange(32).reshape(2, 16) % 20
+    mask = torch.arange(16)[None] < torch.tensor([7, 11])[:, None]
+    positions = torch.arange(16).expand(2, -1)
+    if mrope:
+        positions = positions.unsqueeze(0).expand(3, -1, -1)
+    response_mask = torch.zeros_like(mask)
+    response_mask[0, [3, 6]] = True
+    response_mask[1, [5, 10]] = True
+    label = tokens.roll(-1, dims=1)
+    label_mask = response_mask.roll(-1, dims=1)
+    label_mask[:, -1] = False
+    pixels = torch.randn(5, 4)
+    grid = torch.ones(5, 3, dtype=torch.long)
+
+    def processor(logits, label, label_mask):
+        values = (
+            logits.log_softmax(-1).gather(-1, (label % 7).unsqueeze(-1)).squeeze(-1)
+        )
+        return {"log_probs": values.masked_fill(~label_mask, 0)}
+
+    outputs = []
+    for model, trim in [(original, False), (trimmed, True)]:
+        output = MegatronModelManager.custom_forward(
+            model,
+            tokens,
+            mask,
+            positions,
+            sequence_parallel=False,
+            trim_right_padding=trim,
+            logits_processor=processor if kind == "actor" else None,
+            logits_processor_args={"label": label, "label_mask": label_mask},
+            pixel_values=pixels,
+            image_grid_thw=grid,
+        )
+        output = output["log_probs"] if kind == "actor" else output[..., 0]
+        assert output.shape == (2, 16)
+        # Identical token-t -> preceding-state alignment in the production workers.
+        shifted = torch.nn.functional.pad(output[:, :-1], (1, 0))
+        loss = (shifted * response_mask).sum()
+        loss.backward()
+        outputs.append(output)
+    torch.testing.assert_close(outputs[0], outputs[1])
+    for before, after in zip(original.parameters(), trimmed.parameters(), strict=True):
+        torch.testing.assert_close(before.grad, after.grad)
+    assert original.seen_shapes == [(2, 16)]
+    assert trimmed.seen_shapes == [(2, 12 if tp == 2 else 11)]
+    # Caller-owned targets, payload ordering and masks were never changed.
+    assert tokens.shape == mask.shape == response_mask.shape == (2, 16)
+
+
+@pytest.mark.parametrize("valid", [0, 1, 7, 16])
+def test_multimodal_right_padding_trim_keeps_dummy_rows_and_full_shape(
+    monkeypatch, valid
+):
+    pytest.importorskip("megatron.training")
+    from megatron.core import parallel_state
+
+    from rlinf.hybrid_engines.megatron.megatron_model_manager import (
+        MegatronModelManager,
+    )
+    from rlinf.hybrid_engines.megatron.utils import preprocess_packed_seqs
+
+    monkeypatch.setattr(
+        parallel_state, "get_tensor_model_parallel_world_size", lambda: 1
+    )
+    monkeypatch.setattr(parallel_state, "get_context_parallel_world_size", lambda: 1)
+    monkeypatch.setattr(parallel_state, "get_context_parallel_rank", lambda: 0)
+
+    class DummyVision(torch.nn.Module):
+        __module__ = "megatron.bridge.models.qwen_vl.test"
+        pre_process = post_process = True
+
+        def forward(self, input_ids, attention_mask, position_ids, packed_seq_params):
+            assert input_ids.shape == (1, max(1, valid))
+            return preprocess_packed_seqs(
+                input_ids.float().unsqueeze(-1), attention_mask
+            )[0]
+
+    tokens = torch.arange(16).unsqueeze(0)
+    mask = tokens < valid
+    output = MegatronModelManager.custom_forward(
+        DummyVision(),
+        tokens,
+        mask,
+        tokens,
+        sequence_parallel=False,
+        trim_right_padding=True,
+    )
+    assert output.shape == (1, 16, 1)
+    torch.testing.assert_close(output[0, :valid, 0], tokens[0, :valid].float())
+    assert output[0, valid:].count_nonzero() == 0

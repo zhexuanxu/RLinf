@@ -1,6 +1,8 @@
 Synchronous PPO for the RPent LIBERO Planner
 ==============================================
 
+For the separate six-tool, adaptive multimodal integration and the local H100 SAO recipe, see :doc:`rpent_libero_rl`. The original workflow and defaults on this page remain available.
+
 Train Qwen3.5-4B as the planner of `RPent <https://github.com/RLinf/RPent>`__ on
 LIBERO-PRO tasks with synchronous PPO and an independent critic. RPent runs each
 episode: it asks the planner for the next tool call, executes it with the frozen

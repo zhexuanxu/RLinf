@@ -1748,10 +1748,65 @@ def validate_rpent_cfg(cfg: DictConfig) -> DictConfig:
             f"{agentloop.max_infra_retries} and {agentloop.max_infra_retry_rate}."
         )
 
+    workflow = rpent.get("workflow", "libero")
+    if workflow not in ("libero", "libero_rl"):
+        raise ValueError(
+            f"tools.rpent.workflow must be libero or libero_rl, got {workflow!r}."
+        )
+    if workflow == "libero_rl":
+        mode = agentloop.get("observation_mode", "adaptive")
+        if mode != "adaptive":
+            raise ValueError(
+                f"agentloop.observation_mode must be adaptive, got {mode!r}."
+            )
+        prompt = agentloop.get("prompt", "simple")
+        if prompt not in ("simple", "base", "base_gripper", "base_gripper_camera"):
+            raise ValueError(
+                "agentloop.prompt must be simple, base, base_gripper or "
+                f"base_gripper_camera, got {prompt!r}."
+            )
+        template_kwargs = agentloop.get("chat_template_kwargs") or {}
+        if template_kwargs.get("enable_thinking", True) is False:
+            # Without a think block the planner acts in zero reasoning tokens, which
+            # is how the 4B policy earned no reward at all.
+            raise ValueError(
+                "RPent planners reason on every turn: remove "
+                "agentloop.chat_template_kwargs.enable_thinking=false."
+            )
+        if agentloop.max_turns < 25:
+            raise ValueError(
+                "agentloop.max_turns caps the planner's model requests; LIBERO episodes "
+                f"need at least 25 and the standalone planner allows 100, got "
+                f"{agentloop.max_turns}."
+            )
+        compaction = agentloop.get("history_compaction")
+        if compaction is not None and not (
+            "target_tokens" in compaction or "max_messages" in compaction
+        ):
+            raise ValueError(
+                "agentloop.history_compaction needs target_tokens (image-aware tiers) "
+                "or max_messages (message window)."
+            )
     if cfg.runner.task_type == "reasoning":
         if not cfg.critic.get("use_critic_model", False):
             raise ValueError(
                 "RPent trains with PPO and needs critic.use_critic_model=True."
+            )
+        if not cfg.algorithm.recompute_logprobs and not cfg.rollout.get(
+            "return_logprobs", False
+        ):
+            # Training scores from the engine's own behavior logprobs here.
+            raise ValueError(
+                "RPent without algorithm.recompute_logprobs needs "
+                "rollout.return_logprobs=True."
+            )
+        if workflow == "libero_rl" and (
+            cfg.actor.get("pack_traj", True)
+            or not cfg.actor.get("expect_multi_modal_inputs", False)
+        ):
+            raise ValueError(
+                "libero_rl requires actor.pack_traj=False and "
+                "actor.expect_multi_modal_inputs=True for image rows."
             )
         if cfg.runner.get("synchronous", False):
             validate_agent_ppo_cfg(cfg, "RPent")
@@ -2249,6 +2304,16 @@ def build_transformer_config(cfg) -> "TransformerConfig":
                 model_parallel_config, field.name
             )
 
+    if isinstance(transformer_config_dict.get("attention_backend"), str):
+        from megatron.core.transformer.enums import AttnBackend
+
+        backend = transformer_config_dict["attention_backend"]
+        try:
+            transformer_config_dict["attention_backend"] = AttnBackend[backend]
+        except KeyError as error:
+            raise ValueError(
+                f"Unknown Megatron attention backend: {backend}"
+            ) from error
     transformer_config = TransformerConfig(**transformer_config_dict)
 
     # pass mcore customization configs directly to mcore

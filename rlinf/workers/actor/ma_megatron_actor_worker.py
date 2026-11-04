@@ -100,9 +100,11 @@ class MAMegatronActor(MegatronActor):
         self._init_auto_scheduler(role)
         self.is_dynamic_rollout_batch = self.cfg.agentloop.is_dynamic_rollout_batch
         assert self.is_dynamic_rollout_batch
-        assert self.enable_dp_load_balance, (
-            "enable_dp_load_balance must be True when is_dynamic_rollout_batch is True"
-        )
+        # Episodes contribute different row counts, so the ranks must regroup
+        # their rows before training to run the same number of micro-batches.
+        assert self.enable_dp_load_balance or self.cfg.actor.get(
+            "expect_multi_modal_inputs", False
+        ), "enable_dp_load_balance must be True when is_dynamic_rollout_batch is True"
         self.placement = placement
 
         assert self.placement_mode == PlacementMode.COLLOCATED or (
@@ -121,6 +123,27 @@ class MAMegatronActor(MegatronActor):
             raise ValueError(
                 "actor.response_only_logits requires context_parallel_size=1"
             )
+
+    @staticmethod
+    def _forward_multimodal_inputs(batch: dict) -> dict[str, torch.Tensor]:
+        """Concatenate the images of every row into this forward's inputs.
+
+        The vision tower maps its tokens by position, so the rows' image grids
+        are concatenated in row order and the model matches them against the
+        image markers in ``input_ids``.
+        """
+        payloads = [entry for entry in batch.get("multi_modal_inputs") or [] if entry]
+        if not payloads:
+            return {}
+        device = torch.cuda.current_device()
+        return {
+            "pixel_values": torch.cat([entry["pixel_values"] for entry in payloads]).to(
+                device
+            ),
+            "image_grid_thw": torch.cat(
+                [entry["image_grid_thw"] for entry in payloads]
+            ).to(device),
+        }
 
     def _scored_positions(
         self, batch: dict[str, torch.Tensor], attention_mask: torch.Tensor
@@ -238,6 +261,10 @@ class MAMegatronActor(MegatronActor):
                     logits_processor=logits_processor,
                     logits_processor_args=logits_processor_args,
                     temperature=self.cfg.algorithm.sampling_params.temperature,
+                    trim_right_padding=self.cfg.get("actor", {}).get(
+                        "trim_right_padding", False
+                    ),
+                    **self._forward_multimodal_inputs(batch),
                 )
 
             if not self.return_loss:
@@ -469,12 +496,32 @@ class MAMegatronActor(MegatronActor):
             self.cfg.data.rollout_batch_size
             // parallel_state.get_data_parallel_world_size()
         )
+        multimodal_inputs = []
         for _ in range(total_result_size_per_dp):
             batch, rollout_result = self.get_batch(input_channel)
             batches.append(batch)
+            # A result whose rows all lack images has no payload list, and its
+            # rows still need an entry so every row keeps its image or its None.
+            entries = rollout_result.multi_modal_inputs
+            if entries is None:
+                entries = [None] * rollout_result.num_sequence
+            elif len(entries) != rollout_result.num_sequence:
+                raise ValueError(
+                    f"a rollout result carries {len(entries)} image payloads for "
+                    f"{rollout_result.num_sequence} rows"
+                )
+            multimodal_inputs.extend(entries)
         batch = DynamicRolloutResult.merge_batches(
             batches, self.cfg.algorithm.group_size
         )
+        if any(entry is not None for entry in multimodal_inputs):
+            if len(multimodal_inputs) != batch["input_ids"].shape[0]:
+                raise ValueError(
+                    "each actor row needs one image payload, got "
+                    f"{len(multimodal_inputs)} for "
+                    f"{batch['input_ids'].shape[0]} rows"
+                )
+            batch["multi_modal_inputs"] = multimodal_inputs
         fixed_ppo_targets = self.cfg.critic.use_critic_model and "returns" in batch
         assert "recomputed_logprobs" in batch or "rollout_logprobs" in batch
         # Compute advantages and returns

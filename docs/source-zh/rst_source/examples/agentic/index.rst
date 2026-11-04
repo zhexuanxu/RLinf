@@ -115,5 +115,6 @@ RLinf的worker抽象、灵活的通信组件、以及对不同类型加速器的
    Search-R1 <searchr1/index>
    rStar2 <rstar2>
    RPent <rpent>
+   RPent libero_rl <rpent_libero_rl>
    数学推理 <math_reasoning/index>
    Qwen3 VL GRPO <qwen3_vl_geo3k>

@@ -70,12 +70,31 @@ class MAMegatronCritic(MegatronCritic):
                 key: val.to(self.torch_device_type) if torch.is_tensor(val) else val
                 for key, val in next(dataloader_iter).items()
             }
+            payloads = [
+                entry for entry in batch.get("multi_modal_inputs") or [] if entry
+            ]
+            multimodal_inputs = (
+                {
+                    "pixel_values": torch.cat(
+                        [entry["pixel_values"] for entry in payloads]
+                    ).to(self.torch_device_type),
+                    "image_grid_thw": torch.cat(
+                        [entry["image_grid_thw"] for entry in payloads]
+                    ).to(self.torch_device_type),
+                }
+                if payloads
+                else {}
+            )
             output = self.custom_forward(
                 model,
                 batch["input_ids"],
                 batch["attention_mask"],
                 batch["position_ids"],
                 sequence_parallel=self.transformer_config.sequence_parallel,
+                trim_right_padding=self.cfg.get("critic", {}).get(
+                    "trim_right_padding", False
+                ),
+                **multimodal_inputs,
             )
 
             def action_values(output):

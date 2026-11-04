@@ -510,10 +510,15 @@ class Scheduler(_Scheduler):
             )
 
     def get_scheduler_running_state(self):
-        num_used = self.max_total_num_tokens - (
-            self.token_to_kv_pool_allocator.available_size()
-            + self.tree_cache.evictable_size()
-        )
+        get_pool_stats = getattr(self, "get_pool_stats", None)
+        if get_pool_stats is not None:
+            # Hybrid caches account for full KV tokens and recurrent slots separately.
+            num_used = get_pool_stats().full_num_used
+        else:
+            num_used = self.max_total_num_tokens - (
+                self.token_to_kv_pool_allocator.available_size()
+                + self.tree_cache.evictable_size()
+            )
         num_running_reqs = len(self.running_batch.reqs)
         return {
             "num_running_reqs": num_running_reqs,

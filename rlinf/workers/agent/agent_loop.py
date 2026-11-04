@@ -57,6 +57,8 @@ class AgentLoopOutput:
     response_logprobs: Optional[list[float]] = None
     """Published rollout version that generated each response token."""
     response_weight_versions: Optional[list[int]] = None
+    """Images the prompt expanded, as the processor's token grid and PNG bytes."""
+    response_images: Optional[dict[str, Any]] = None
     """Number of chat turns, including user, assistant, tool."""
     num_turns: int = 0
     """Whether the sequence ends."""
@@ -148,7 +150,13 @@ class AgentLoopWorker(Worker):
         prompt_ids: list[int],
         sampling_params: Optional[dict] = None,
         rollout_name: Optional[str] = None,
+        image_data: Optional[list[bytes]] = None,
     ):
+        """Sample one turn; images the prompt stands for ride with the request.
+
+        The rollout engine expands the image markers in ``prompt_ids`` from
+        ``image_data`` itself, so the tokens stay the ones this turn trains on.
+        """
         channel_key = uuid4().hex
         if rollout_name is None:
             input_channel = self.generate_input_channel
@@ -156,12 +164,15 @@ class AgentLoopWorker(Worker):
         else:
             input_channel = self.solid_generate_input_channels[rollout_name]
             request_key = DEFAULT_KEY
+        request = {
+            "channel_key": channel_key,
+            "prompt_ids": prompt_ids,
+            "sampling_params": sampling_params,
+        }
+        if image_data:
+            request["image_data"] = image_data
         await input_channel.put(
-            {
-                "channel_key": channel_key,
-                "prompt_ids": prompt_ids,
-                "sampling_params": sampling_params,
-            },
+            request,
             key=request_key,
             async_op=True,
         ).async_wait()
@@ -733,6 +744,7 @@ class MultiAgentLoopWorker(AgentLoopWorker):
         if self.return_logprobs:
             rollout_logprobs = []
         weight_versions = []
+        images = []
         is_end = []
         rewards = []
         response_masks = []
@@ -755,6 +767,7 @@ class MultiAgentLoopWorker(AgentLoopWorker):
                     ), "response_logprobs should have the same length as response_ids"
                     rollout_logprobs.append(single_turn_output.response_logprobs)
                 weight_versions.append(single_turn_output.response_weight_versions)
+                images.append(single_turn_output.response_images)
                 is_end.append(single_turn_output.is_end)
                 rewards.append(single_turn_output.reward_score)
                 response_masks.append(single_turn_output.response_mask)
@@ -770,6 +783,7 @@ class MultiAgentLoopWorker(AgentLoopWorker):
             rollout_weight_versions=weight_versions
             if any(v is not None for v in weight_versions)
             else None,
+            multi_modal_inputs=images if any(v is not None for v in images) else None,
             is_end=is_end,
             rewards=rewards,
             # Rows without a mask train every response token.

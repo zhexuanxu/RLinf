@@ -48,7 +48,14 @@ def main(cfg) -> None:
         get_rollout_backend_worker(cfg)
         .create_group(cfg, placement)
         .launch(
-            cluster, name=cfg.rollout.group_name, placement_strategy=rollout_strategy
+            cluster,
+            name=cfg.rollout.group_name,
+            placement_strategy=rollout_strategy,
+            env_vars=OmegaConf.to_container(
+                cfg.rollout.get("env_vars", {}), resolve=True
+            )
+            if cfg.rollout.get("env_vars")
+            else None,
         )
     )
     agent_loop = RPentAgentLoopWorker.create_group(cfg, placement).launch(

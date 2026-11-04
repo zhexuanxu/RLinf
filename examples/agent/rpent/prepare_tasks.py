@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Write the LIBERO-PRO task files of the RPent PPO example.
+"""Write RPent task lists for either the original or clean integration.
+
+The libero_rl workflow selects standard LIBERO tasks and validates each seed
+against its task initial-state count. The default libero workflow retains
+the memory-based LIBERO-PRO split below.
 
 A task is used when it has all 50 initial states and its three frozen memory
 notes. One task per suite is held out. The other tasks train on seeds 1-32;
@@ -34,6 +38,7 @@ Output files, one JSON row per episode:
 import argparse
 import hashlib
 import json
+import os
 import random
 from pathlib import Path
 
@@ -145,16 +150,119 @@ def split_rows(tasks: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
     return rows, holdout
 
 
+STANDARD_SUITES = ("libero_object", "libero_goal", "libero_spatial", "libero_10")
+
+
+def parse_seeds(value: str) -> list[int]:
+    """Parse nonnegative seed IDs and inclusive ranges without duplicates."""
+    seeds = set()
+    for part in value.split(","):
+        bounds = part.strip().split("-")
+        if len(bounds) not in (1, 2) or not all(item.isdecimal() for item in bounds):
+            raise ValueError(f"Expected nonnegative seeds/ranges, got {part!r}.")
+        first, last = int(bounds[0]), int(bounds[-1])
+        if last < first:
+            raise ValueError(f"Seed range ends before it starts: {part!r}.")
+        seeds.update(range(first, last + 1))
+    return sorted(seeds)
+
+
+def load_standard_tasks() -> list[dict]:
+    """Read each standard LIBERO task and its available initial states."""
+    from libero.libero import benchmark
+
+    tasks = []
+    for suite in STANDARD_SUITES:
+        bench = benchmark.get_benchmark(suite)()
+        for task in range(bench.n_tasks):
+            tasks.append(
+                {
+                    "suite": suite,
+                    "task": task,
+                    "language": bench.get_task(task).language,
+                    "initial_states": len(bench.get_task_init_states(task)),
+                }
+            )
+    return tasks
+
+
+def standard_rows(tasks: list[dict], seeds: list[int], split: str) -> list[dict]:
+    """Build adaptive episodes with distinct, explicitly checked initial states."""
+    rows = []
+    for task in tasks:
+        for seed in seeds:
+            trials = task["initial_states"]
+            if not 0 <= seed < trials:
+                raise ValueError(
+                    f"{task['suite']}/t{task['task']} has {trials} initial states; "
+                    f"seed {seed} would alias seed {seed % trials if trials else '?'} "
+                    "through RPent's seed modulo initial-state count."
+                )
+            answer = {
+                "suite": task["suite"],
+                "task": task["task"],
+                "seed": seed,
+                "init_state_id": seed,
+            }
+            rows.append(
+                {
+                    "prompt": task["language"],
+                    "answer": json.dumps(answer, sort_keys=True),
+                    "query_id": f"{split}-{task['suite']}-{task['task']}-{seed}",
+                }
+            )
+    return rows
+
+
+def write_standard_tasks(args: argparse.Namespace) -> None:
+    """Write a checked standard benchmark manifest for the clean workflow."""
+    if args.libero_config_path is not None:
+        os.environ["LIBERO_CONFIG_PATH"] = str(args.libero_config_path)
+    tasks = load_standard_tasks()
+    seeds = parse_seeds(args.seeds)
+    rows = standard_rows(tasks, seeds, args.split)
+    payload = "".join(json.dumps(item) + "\n" for item in rows).encode()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    (args.output_dir / f"{args.split}.jsonl").write_bytes(payload)
+    manifest = {
+        "workflow": "libero_rl",
+        "libero_type": args.libero_type,
+        "tasks": tasks,
+        "seeds": seeds,
+        "init_state_mapping": "seed modulo initial_states; seeds checked below initial_states",
+        "files": {
+            args.split: {
+                "rows": len(rows),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        },
+    }
+    (args.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--memory-dir",
         type=Path,
-        required=True,
         help="Frozen LIBERO memory corpus, the same as tools.rpent.frozen_memory_dir.",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--workflow", choices=("libero", "libero_rl"), default="libero")
+    parser.add_argument("--libero-type", choices=("standard",), default="standard")
+    parser.add_argument("--libero-config-path", type=Path)
+    parser.add_argument(
+        "--seeds", default="1-32", help="Clean workflow seeds, e.g. 1-32."
+    )
+    parser.add_argument(
+        "--split", choices=("train", "dev", "test", "eval"), default="train"
+    )
     args = parser.parse_args()
+    if args.workflow == "libero_rl":
+        write_standard_tasks(args)
+        return
+    if args.memory_dir is None:
+        parser.error("--memory-dir is required for --workflow libero")
 
     tasks, excluded = load_tasks(args.memory_dir)
     rows, holdout = split_rows(tasks)

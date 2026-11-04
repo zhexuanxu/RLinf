@@ -143,6 +143,8 @@ class SGLangWorker(Worker):
                 "repetition_penalty": cfg_sampling_params.repetition_penalty,
                 "max_new_tokens": cfg_sampling_params.max_new_tokens,
             }
+        if "presence_penalty" in cfg_sampling_params:
+            sampling_params["presence_penalty"] = cfg_sampling_params.presence_penalty
         return sampling_params
 
     def _init_engine(self):
@@ -172,6 +174,13 @@ class SGLangWorker(Worker):
             "moe_dp_size": self._cfg_rollout.sglang.get("moe_dp_size", 1),
             "moe_a2a_backend": self._cfg_rollout.sglang.get("moe_a2a_backend", None),
         }
+        for name in (
+            "context_length",
+            "mamba_full_memory_ratio",
+            "max_mamba_cache_size",
+        ):
+            if name in self._cfg_rollout.sglang:
+                version_dependent_args[name] = self._cfg_rollout.sglang[name]
         for name in list(version_dependent_args):
             if name in _SERVER_ARGS_FIELDS:
                 continue
@@ -233,6 +242,8 @@ class SGLangWorker(Worker):
             attention_backend=self._cfg_rollout.sglang.attention_backend,
             log_level="info",
             max_running_requests=self._cfg_rollout.max_running_requests,
+            # Reserve both ports before SGLang starts any child process.
+            nccl_port=self.acquire_free_port(),
             dist_init_addr=f"127.0.0.1:{str(self.acquire_free_port())}",
             tool_call_parser=self._cfg_rollout.sglang.get("tool_call_parser", None),
             trust_remote_code=self._cfg_rollout.model.trust_remote_code,
@@ -549,6 +560,7 @@ class SGLangWorker(Worker):
         channel_key: str,
         prompt_ids: list[int],
         sampling_params: Optional[dict] = None,
+        image_data: Optional[list] = None,
     ):
         final_sampling_params = self._sampling_params
         if sampling_params is not None and len(sampling_params) > 0:
@@ -560,6 +572,7 @@ class SGLangWorker(Worker):
             result = await self._engine.async_generate(
                 input_ids=prompt_ids,
                 sampling_params=final_sampling_params,
+                image_data=image_data or None,
                 return_logprob=self._return_logprobs,
             )
         except Exception as error:
@@ -615,6 +628,7 @@ class SGLangWorker(Worker):
                     rollout_request["channel_key"],
                     rollout_request["prompt_ids"],
                     rollout_request.get("sampling_params", None),
+                    rollout_request.get("image_data"),
                 )
 
     async def stop_serverless(self) -> None:

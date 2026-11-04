@@ -1,6 +1,8 @@
 RPent LIBERO planner 的同步 PPO 训练
 =========================================
 
+独立的六工具 adaptive 多模态接口及本机 H100 SAO 配置见 :doc:`rpent_libero_rl`。本页的原版工作流与默认配置完整保留。
+
 本页用同步 PPO 和独立 critic，把 Qwen3.5-4B 训练成 `RPent <https://github.com/RLinf/RPent>`__ 在 LIBERO-PRO 任务上的 planner。每个 episode 由 RPent 驱动：它向 planner 要下一次工具调用，用冻结的 Pi0.5 policy 和 SAM3 执行，最后给出任务结果。RLinf 用 SGLang 生成 planner 的每一轮回复，用 Megatron 训练 actor 和 critic。
 
 概述
@@ -146,7 +148,7 @@ planner 以文本形式收到工具结果，物体位置由 SAM3 的 ``segment``
 
    bash examples/agent/rpent/run_train.sh train_qwen3.5_4b_ppo
 
-配置把 8 个 agent worker 放在 node 1 上（``cluster.component_placement`` 里的 ``agentloop``）。每个 worker 同时最多跑 ``tools.rpent.episodes_per_worker`` 个 episode，仿真器在 ``tools.rpent.env_gpus`` 上渲染。每个 episode 在自己的进程里新建 LIBERO 环境，episode 结束或者 worker 退出时，这个进程和它的仿真器也随之结束。``tools.rpent.frozen_memory_dir`` 必须是生成任务文件时用的记忆目录；``tools.rpent.keep_episodes``（默认 ``failures``）决定哪些 episode 在 ``tools.rpent.output_dir`` 下保留产物。配置每 10 个 step 保存一次 checkpoint。
+配置把 8 个 agent worker 放在 node 1 上（``cluster.component_placement`` 里的 ``agentloop``）。每个 worker 同时最多跑 ``tools.rpent.episodes_per_worker`` 个 episode，仿真器在 ``tools.rpent.env_gpus`` 上渲染。每个 episode 在自己的进程里新建 LIBERO 环境，episode 结束或者 worker 退出时，这个进程和它的仿真器也随之结束。``tools.rpent.frozen_memory_dir`` 必须是生成任务文件时用的记忆目录；``tools.rpent.keep_episodes``\ （默认 ``failures``）决定哪些 episode 在 ``tools.rpent.output_dir`` 下保留产物。配置每 10 个 step 保存一次 checkpoint。
 
 Rollout 与训练顺序
 ------------------

@@ -339,6 +339,7 @@ class MegatronModelManager:
                 "pipeline_model_parallel_size",
                 "expert_model_parallel_size",
                 "context_parallel_size",
+                "attention_backend",
                 "gradient_accumulation_fusion",
                 "moe_aux_loss_coeff",
                 "moe_router_bias_update_rate",
@@ -503,12 +504,19 @@ class MegatronModelManager:
     def _attach_value_head(self, model_chunks: list) -> list:
         """Replace the language-model head of bridge-built critic chunks."""
         for chunk in model_chunks:
-            if chunk.post_process:
+            if not chunk.post_process:
+                continue
+            head = self._value_head(
+                chunk.config.hidden_size, chunk.config.sequence_parallel
+            ).to(next(chunk.parameters()).device)
+            if hasattr(chunk, "output_layer"):
                 # A value head never shares the input embedding weights.
                 chunk.share_embeddings_and_output_weights = False
-                chunk.output_layer = self._value_head(
-                    chunk.config.hidden_size, chunk.config.sequence_parallel
-                ).to(next(chunk.parameters()).device)
+                chunk.output_layer = head
+            else:
+                # A vision-language chunk keeps its head on the language model.
+                chunk.language_model.share_embeddings_and_output_weights = False
+                chunk.language_model.output_layer = head
         return model_chunks
 
     def optimizer_step(self, increment):
@@ -634,6 +642,49 @@ class MegatronModelManager:
         if self._cfg.get("offload_optimizer", True):
             self.offload_megatron_optimizer()
 
+    # Fields Bridge reads to decide whether the source checkpoint carries MTP
+    # layers. They mirror `MTP_CONFIG_FIELDS` in megatron.bridge.
+    _MTP_LAYER_FIELDS = (
+        "num_nextn_predict_layers",
+        "mtp_num_hidden_layers",
+        "mtp_num_layers",
+    )
+
+    def _mark_export_without_mtp(self) -> None:
+        """State that the exported policy has no MTP layers.
+
+        The trained model drops the MTP head, so the weight export cannot yield
+        the ``mtp.*`` tensors the source checkpoint declares. Bridge only removes
+        them from its expected key set when a config field reads zero; otherwise
+        every source shard stays incomplete and the export writes no weights at
+        all while still reporting success.
+        """
+        pretrained = getattr(self.bridge, "hf_pretrained", None)
+        config = getattr(pretrained, "config", pretrained)
+        for target in (getattr(config, "text_config", None), config):
+            if target is None:
+                continue
+            for field in self._MTP_LAYER_FIELDS:
+                value = getattr(target, field, None)
+                if value is None:
+                    continue
+                if int(value) != 0:
+                    setattr(target, field, 0)
+                break
+
+    @staticmethod
+    def _require_exported_weights(hf_save_path: str) -> None:
+        """Fail loudly when an export wrote configuration but no weight shard."""
+        if not os.path.isdir(hf_save_path):
+            raise RuntimeError(
+                f"Hugging Face export produced no directory: {hf_save_path}"
+            )
+        if not any(name.endswith(".safetensors") for name in os.listdir(hf_save_path)):
+            raise RuntimeError(
+                f"Hugging Face export wrote no weight shards under {hf_save_path}. "
+                "The trainer would report a policy checkpoint that no rollout can load."
+            )
+
     def save_checkpoint(
         self,
         save_path: str,
@@ -648,6 +699,7 @@ class MegatronModelManager:
             if self.mbridge and not self.is_dedicated_critic_model:
                 # save mbridge checkpoint to hf checkpoint
                 hf_save_path = os.path.join(save_path, "hf_checkpoint")
+                self._mark_export_without_mtp()
                 self.bridge.save_hf_pretrained(
                     self.model,
                     hf_save_path,
@@ -655,6 +707,7 @@ class MegatronModelManager:
                     show_progress=(torch.distributed.get_rank() == 0),
                     strict=True,
                 )
+                self._require_exported_weights(hf_save_path)
             # for the next training, we also need to save the megatron checkpoint
 
             args = get_args()
@@ -737,24 +790,45 @@ class MegatronModelManager:
         max_batch_seqlen: int = 4096,
         padding_seqlen: Optional[int] = None,
         keep_left_padding: bool = False,
+        trim_right_padding: bool = False,
         **model_forward_kwargs,
     ):
         """Default forward pass for GPT models with optional sequence packing."""
         pre_process = unwrap_model(model).pre_process
         post_process = unwrap_model(model).post_process
         if pack_seqs:
+            # Bridge Qwen-VL embeds images before its own THD/CP packing.
+            packs_in_model = any(
+                cls.__module__.startswith("megatron.bridge.models.qwen_vl.")
+                for cls in type(unwrap_model(model)).__mro__
+            )
             batch_size, seq_len = attention_mask.shape[:2]
             input_ids_rmpad, packed_seq_params = preprocess_packed_seqs(
                 input_ids,
                 attention_mask,
-                pre_process=pre_process,
+                pre_process=pre_process and not packs_in_model,
                 padding_seqlen=padding_seqlen,
             )
             input_ids_rmpad = input_ids_rmpad.contiguous()
+            model_attention_mask = attention_mask if packs_in_model else None
+            model_position_ids = position_ids
+            if packs_in_model and trim_right_padding:
+                # Qwen-VL embeds its dense inputs before packing. Do not run its
+                # vision/language path over context-cap padding. Keep the original
+                # mask below so logprobs/values return with the caller's full width.
+                columns = attention_mask.any(dim=0).nonzero(as_tuple=True)[0]
+                used = int(columns[-1]) + 1 if columns.numel() else 1
+                tp = parallel_state.get_tensor_model_parallel_world_size()
+                cp = parallel_state.get_context_parallel_world_size()
+                alignment = tp * (2 * cp if cp > 1 else 1)
+                used = min(seq_len, (used + alignment - 1) // alignment * alignment)
+                input_ids_rmpad = input_ids_rmpad[:, :used].contiguous()
+                model_attention_mask = attention_mask[:, :used].contiguous()
+                model_position_ids = position_ids[..., :used].contiguous()
             output_orig = model(
                 input_ids=input_ids_rmpad,
-                attention_mask=None,
-                position_ids=position_ids,
+                attention_mask=model_attention_mask,
+                position_ids=model_position_ids,
                 packed_seq_params=packed_seq_params,
                 **model_forward_kwargs,
             )

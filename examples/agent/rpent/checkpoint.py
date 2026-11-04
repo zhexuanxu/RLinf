@@ -12,16 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Move Qwen3.5 planner weights between SGLang serving and Megatron training.
+"""Extract a text planner or export a trained policy into its serving VLM.
 
-Megatron trains the language model alone through Megatron-Bridge's
-``Qwen3_5ForCausalLM`` bridge, while SGLang serves the full
-``Qwen3_5ForConditionalGeneration`` checkpoint.
-
-``extract`` writes the language model of the served model as the text-only
-checkpoint the actor and critic start from. ``export`` writes a training
-checkpoint's policy into a copy of the served model, keeping its vision tower,
-config and processor, so SGLang can serve the trained policy.
+The original LIBERO workflow trains an extracted language model. The clean
+libero_rl workflow trains the full VLM with frozen vision components. Export
+accepts either layout and preserves the serving processor and vision weights.
 """
 
 import argparse
@@ -36,6 +31,7 @@ from safetensors.torch import save_file
 VLM_LANGUAGE = "model.language_model."
 VLM_VISION = "model.visual."
 TEXT_MODEL = "model."
+
 TOKENIZER_FILES = (
     "tokenizer.json",
     "tokenizer_config.json",
@@ -81,12 +77,40 @@ def extract(vlm: Path, output: Path) -> None:
             shutil.copy2(vlm / name, output / name)
 
 
+def _language_name(key: str) -> str | None:
+    """Return one exported weight name without its model prefix.
+
+    A language-backbone export uses ``model.<name>``; a full-model export nests
+    the language weights as ``model.language_model.<name>``. Unknown
+    prefixes return ``None``.
+    """
+    for prefix in (VLM_LANGUAGE, TEXT_MODEL):
+        if key.startswith(prefix):
+            return key.removeprefix(prefix)
+    return None
+
+
 def export(checkpoint: Path, vlm: Path, output: Path) -> None:
     """Write a Megatron checkpoint's policy into a copy of the served VLM."""
     served = _load(vlm)
     trained = _load(checkpoint / "actor/hf_checkpoint")
-    embedding = trained.get(TEXT_MODEL + "embed_tokens.weight")
     lm_head = trained.pop("lm_head.weight", None)
+    unexpected = [
+        key
+        for key in trained
+        if not key.startswith(
+            (VLM_LANGUAGE, VLM_VISION, TEXT_MODEL, TEXT_MODEL + "visual.")
+        )
+    ]
+    if unexpected:
+        raise ValueError(f"expected language weights only, got {unexpected[:5]}")
+    trained = {
+        TEXT_MODEL + name: value
+        for key, value in trained.items()
+        if (name := _language_name(key)) is not None
+        and not key.removeprefix(TEXT_MODEL).startswith("visual.")
+    }
+    embedding = trained.get(TEXT_MODEL + "embed_tokens.weight")
     tied = json.loads((vlm / "config.json").read_text())["text_config"].get(
         "tie_word_embeddings", False
     )

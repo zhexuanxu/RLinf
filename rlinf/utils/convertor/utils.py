@@ -625,6 +625,10 @@ class Qwen35Convertor(BaseConvertor):
     def convert(self, state_dict: dict) -> dict:
         converted, renamed = {}, {}
         for key, tensor in state_dict.items():
+            # A vision-language model nests its language model one level down;
+            # the served checkpoint names the same weights from the root.
+            if key.startswith("language_model."):
+                key = key.removeprefix("language_model.")
             match = self._LAYER.fullmatch(key)
             split = match and self._splits.get(match["name"])
             if split:

@@ -116,5 +116,6 @@ The following examples include math reasoning RL and agentic AI workflows, such 
    Search-R1 <searchr1/index>
    rStar2 <rstar2>
    RPent <rpent>
+   RPent libero_rl <rpent_libero_rl>
    Math Reasoning <math_reasoning/index>
    Qwen3 VL GRPO <qwen3_vl_geo3k>

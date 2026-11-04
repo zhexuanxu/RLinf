@@ -58,6 +58,10 @@ def chat_completion(
     }
 
 
+_MAX_REQUEST_BYTES = 256 * 1024 * 1024
+"""Largest planner request the episode endpoint accepts."""
+
+
 @dataclass
 class _Session:
     state: Any
@@ -95,7 +99,10 @@ class OpenAISessionServer:
         """Start serving; port zero binds an available port atomically."""
         if self._runner is not None:
             return
-        app = web.Application()
+        # A planner request carries the whole episode history, and an image
+        # observation is megabytes of base64, so the aiohttp default of 1 MiB
+        # rejects real rollouts with 413.
+        app = web.Application(client_max_size=_MAX_REQUEST_BYTES)
         app.router.add_post("/sessions/{session_id}/v1/chat/completions", self._chat)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()

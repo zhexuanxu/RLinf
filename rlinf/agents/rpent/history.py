@@ -12,31 +12,86 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Render RPent planner chat requests into prompt token IDs."""
+"""Render RPent planner chat requests into prompt token IDs and images."""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
+import io
 import json
+from dataclasses import dataclass, field
+from typing import Any
 
 from rlinf.agents.tokenization import AgenticTokenizer
+
+IMAGE_DATA_PREFIX = "data:"
+"""A data URI carries the bytes of one image inside its `image_url` part."""
+
+
+class TemplateMessageError(ValueError):
+    """A planner message the renderer cannot turn into prompt tokens."""
+
+
+def _image_bytes(part: dict) -> bytes | None:
+    """Decode one `image_url` content part, or return None if it is not one."""
+    if part.get("type") != "image_url":
+        return None
+    url = (part.get("image_url") or {}).get("url")
+    if not isinstance(url, str) or not url.startswith(IMAGE_DATA_PREFIX):
+        raise TemplateMessageError(
+            f"image parts must carry a base64 data URI, got {url!r}"
+        )
+    header, _, payload = url.partition(",")
+    if ";base64" not in header:
+        raise TemplateMessageError(f"image data URI is not base64: {header!r}")
+    try:
+        return base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise TemplateMessageError(
+            f"image data URI does not decode: {error}"
+        ) from error
+
+
+def message_images(messages: list[dict]) -> list[bytes]:
+    """Return the images embedded in a request's messages, in order."""
+    images = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            images.extend(
+                image for part in content if (image := _image_bytes(part)) is not None
+            )
+    return images
 
 
 def template_messages(messages: list[dict]) -> list[dict]:
     """Return messages in the form the chat template accepts.
 
     Tool-call arguments become mappings; calls whose arguments are not a JSON
-    object are kept as text in the message content.
+    object are kept as text in the message content. Image parts keep their
+    content list so the chat template can place a vision marker for each one.
     """
     messages = copy.deepcopy(messages)
     for message in messages:
         if message.get("content") is None:
             message["content"] = ""
         if not isinstance(message["content"], str):
-            raise ValueError(
-                f"RPent text prompts need string message content, got "
-                f"{type(message['content']).__name__}"
-            )
+            if not isinstance(message["content"], list):
+                raise TemplateMessageError(
+                    f"RPent prompts need string or content-list messages, got "
+                    f"{type(message['content']).__name__}"
+                )
+            for part in message["content"]:
+                kind = part.get("type") if isinstance(part, dict) else None
+                if kind not in ("text", "image_url"):
+                    raise TemplateMessageError(
+                        f"unsupported content part {part!r}; RPent prompts carry "
+                        "text and base64 image_url parts"
+                    )
+                _image_bytes(part) if kind == "image_url" else None
+            continue
         calls, malformed = [], []
         for call in message.get("tool_calls", []):
             arguments = call["function"]["arguments"]
@@ -56,6 +111,17 @@ def template_messages(messages: list[dict]) -> list[dict]:
     return messages
 
 
+@dataclass
+class ImagePrompt:
+    """Prompt tokens of one image-bearing planner request and its images."""
+
+    input_ids: list[int]
+    images: list[bytes] = field(default_factory=list)
+    """PNG bytes of each image, in the order the template placed its marker."""
+    image_grid_thw: Any = None
+    """Processor token grid of the images, kept for the training forward."""
+
+
 def render_prompt(tokenizer: AgenticTokenizer, request: dict) -> list[int]:
     """Render a whole chat request with the model's chat template."""
     text = tokenizer.apply_chat_template(
@@ -65,6 +131,43 @@ def render_prompt(tokenizer: AgenticTokenizer, request: dict) -> list[int]:
         add_generation_prompt=True,
     )
     return tokenizer.tokenizer(text, add_special_tokens=False)["input_ids"]
+
+
+def request_has_images(request: dict) -> bool:
+    """Whether a planner request carries image content parts."""
+    return any(
+        isinstance(message.get("content"), list) for message in request["messages"]
+    )
+
+
+def render_image_prompt(
+    tokenizer: AgenticTokenizer,
+    request: dict,
+    processor: Any,
+) -> ImagePrompt:
+    """Render an image-bearing request into tokens the image processor expanded.
+
+    The chat template writes one vision marker per image, so the plain render
+    holds a single placeholder for each. Expanding it with the model's
+    processor turns every placeholder into its grid of pad tokens, which is
+    what both the served engine and the training forward score.
+    """
+    from PIL import Image
+
+    messages = template_messages(request["messages"])
+    images = message_images(messages)
+    if not images:
+        raise TemplateMessageError("render_image_prompt needs at least one image")
+    text = tokenizer.apply_chat_template(
+        messages, tools=request.get("tools"), tokenize=False, add_generation_prompt=True
+    )
+    decoded = [Image.open(io.BytesIO(image)).convert("RGB") for image in images]
+    inputs = processor(text=[text], images=decoded, return_tensors="pt")
+    return ImagePrompt(
+        input_ids=inputs["input_ids"][0].tolist(),
+        images=images,
+        image_grid_thw=inputs["image_grid_thw"],
+    )
 
 
 class AppendOnlyHistory:

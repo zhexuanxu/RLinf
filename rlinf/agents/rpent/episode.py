@@ -71,6 +71,10 @@ def merge_prefix_turns(
             last is not None
             and turn.prompt_ids[: len(history)] == history
             and sum(last.response_mask) + sum(mask) <= max_scored_tokens
+            # A row carries one image set, so a turn that expands images of its
+            # own must start a new row rather than fold its grid away.
+            and turn.response_images is None
+            and last.response_images is None
         ):
             gap = len(turn.prompt_ids) - len(history)
             last.response_ids = (turn.prompt_ids + turn.response_ids)[

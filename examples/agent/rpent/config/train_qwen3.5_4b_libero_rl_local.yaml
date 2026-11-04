@@ -1,0 +1,24 @@
+# Single-node offload settings; supply deployment paths through Hydra overrides.
+defaults:
+- train_qwen3.5_4b_libero_rl_sao
+- _self_
+tools:
+  rpent:
+    sam3_endpoint: http://127.0.0.1:8101
+rollout:
+  sglang:
+    context_length: 262144
+    mamba_full_memory_ratio: 0.2
+actor:
+  response_only_logits: false
+  offload_weight: true
+  offload_grad: true
+  offload_optimizer: true
+  model:
+    attention_backend: flash
+critic:
+  offload_weight: true
+  offload_grad: true
+  offload_optimizer: true
+  model:
+    attention_backend: flash

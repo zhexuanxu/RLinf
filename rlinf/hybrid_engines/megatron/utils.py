@@ -25,6 +25,22 @@ except (ImportError, ModuleNotFoundError) as e:
     raise ImportError("Megatron core was not found.") from e
 
 
+def _resolve_output_layer(module: torch.nn.Module) -> torch.nn.Module:
+    """Return the layer that produces logits for ``module``.
+
+    A vision-language wrapper keeps its language model -- and that model's
+    output layer -- one level down.
+    """
+    layer = getattr(module, "output_layer", None)
+    if layer is None:
+        layer = getattr(getattr(module, "language_model", None), "output_layer", None)
+    if layer is None:
+        raise AttributeError(
+            f"{type(module).__name__} has no output layer to restrict."
+        )
+    return layer
+
+
 @contextmanager
 def output_layer_positions(module: torch.nn.Module, positions: torch.Tensor):
     """Evaluate ``module.output_layer`` only at ``positions`` of a packed sequence.
@@ -36,7 +52,8 @@ def output_layer_positions(module: torch.nn.Module, positions: torch.Tensor):
     Context parallelism is not supported.
     """
 
-    sequence_parallel = getattr(module.output_layer, "sequence_parallel", False)
+    output_layer = _resolve_output_layer(module)
+    sequence_parallel = getattr(output_layer, "sequence_parallel", False)
 
     def select_positions(_, args, kwargs):
         hidden, *rest = args
@@ -61,13 +78,9 @@ def output_layer_positions(module: torch.nn.Module, positions: torch.Tensor):
         logits, bias = output
         return logits[: len(positions)], bias
 
-    hook = module.output_layer.register_forward_pre_hook(
-        select_positions, with_kwargs=True
-    )
+    hook = output_layer.register_forward_pre_hook(select_positions, with_kwargs=True)
     output_hook = (
-        module.output_layer.register_forward_hook(trim_padding)
-        if sequence_parallel
-        else None
+        output_layer.register_forward_hook(trim_padding) if sequence_parallel else None
     )
     try:
         yield

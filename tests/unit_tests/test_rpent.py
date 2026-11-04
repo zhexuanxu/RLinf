@@ -47,42 +47,54 @@ TOOLS = [
 ]
 
 
-def test_extract_original_checkpoint_excludes_vision_and_mtp(tmp_path):
+@pytest.mark.parametrize("layout", ["text", "vision_language"])
+def test_export_accepts_both_trained_checkpoint_layouts(tmp_path, layout):
+    """Both Megatron export layouts must map into the served language keys."""
     import importlib.util
 
     import torch
     from safetensors.torch import load_file, save_file
 
-    # Load by path: Megatron-LM ships its own ``examples`` package.
     path = Path(__file__).parents[2] / "examples/agent/rpent/checkpoint.py"
     spec = importlib.util.spec_from_file_location("rpent_checkpoint", path)
     checkpoint = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(checkpoint)
 
-    source = tmp_path / "vlm"
-    source.mkdir()
-    language = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-    save_file(
-        {
-            "model.language_model.embed_tokens.weight": language,
-            "model.visual.patch_embed.weight": torch.ones(2, 3),
-            "mtp.layers.0.mlp.down_proj.weight": torch.zeros(2, 3),
-        },
-        source / "model.safetensors",
-    )
-    (source / "config.json").write_text(
-        json.dumps({"text_config": {"model_type": "qwen3_5_text"}})
+    vlm = tmp_path / "vlm"
+    vlm.mkdir()
+    served = {
+        "model.language_model.embed_tokens.weight": torch.zeros(2, 3),
+        "model.visual.patch_embed.weight": torch.ones(2, 3),
+    }
+    save_file(served, vlm / "model.safetensors")
+    (vlm / "config.json").write_text(
+        json.dumps({"text_config": {"tie_word_embeddings": True}})
     )
 
-    output = tmp_path / "text"
-    checkpoint.extract(source, output)
+    trained_dir = tmp_path / "run" / "actor" / "hf_checkpoint"
+    trained_dir.mkdir(parents=True)
+    trained = {
+        "embed_tokens.weight": torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    }
+    prefix = "model.language_model." if layout == "vision_language" else "model."
+    payload = {prefix + name: tensor for name, tensor in trained.items()}
+    if layout == "vision_language":
+        payload["model.visual.patch_embed.weight"] = torch.ones(2, 3)
+    save_file(payload, trained_dir / "model.safetensors")
+
+    output = tmp_path / "exported"
+    checkpoint.export(tmp_path / "run", vlm, output)
 
     tensors = load_file(output / "model.safetensors")
-    assert set(tensors) == {"model.embed_tokens.weight"}
-    assert torch.equal(tensors["model.embed_tokens.weight"], language)
-    assert json.loads((output / "config.json").read_text())["architectures"] == [
-        "Qwen3_5ForCausalLM"
-    ]
+    assert set(tensors) == set(served)
+    assert torch.equal(
+        tensors["model.language_model.embed_tokens.weight"],
+        trained["embed_tokens.weight"],
+    )
+    assert torch.equal(
+        tensors["model.visual.patch_embed.weight"],
+        served["model.visual.patch_embed.weight"],
+    )
 
 
 @pytest.fixture
@@ -156,7 +168,8 @@ def test_tool_calls_with_non_object_arguments_stay_visible_as_text():
     assert rendered[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
     assert rendered[1]["tool_calls"] == []
     assert "{not json" in rendered[1]["content"]
-    with pytest.raises(ValueError, match="string message content"):
+    # Content lists carry images; anything else is rejected rather than dropped.
+    with pytest.raises(ValueError, match="unsupported content part"):
         template_messages([{"role": "user", "content": [{"type": "image"}]}])
 
 
@@ -166,6 +179,7 @@ def test_merge_prefix_turns_masks_tool_tokens_and_splits_at_rewrites():
             prompt_ids=prompt,
             response_ids=response,
             response_logprobs=[-float(token) for token in response],
+            response_weight_versions=[0] * len(response),
             is_end=True,
             reward_score=reward,
             extra_fields={"turn_id": turn_id, "tool_names": [f"tool{turn_id}"]},
@@ -184,9 +198,12 @@ def test_merge_prefix_turns_masks_tool_tokens_and_splits_at_rewrites():
     assert first.response_ids == [3, 4, 9, 8, 5, 6]
     assert first.response_mask == [1, 1, 0, 0, 1, 1]
     assert first.response_logprobs == [-3.0, -4.0, 0.0, 0.0, -5.0, -6.0]
+    # Versions stay aligned with response_ids; tool tokens carry a version.
+    assert first.response_weight_versions == [0] * 6
     assert first.extra_fields["turn_ids"] == [0, 1]
     assert first.extra_fields["tool_names"] == ["tool1"]
     assert second.response_ids == [8, 10, 11] and second.response_mask == [1, 0, 1]
+    assert second.response_weight_versions == [0, 0, 0]
     assert second.reward_score == 0.0 and second.extra_fields["turn_ids"] == [2, 3]
     # Inputs are not modified, and the scored-token budget splits a row.
     assert turns[0].response_mask is None and turns[0].response_ids == [3, 4]
@@ -195,7 +212,7 @@ def test_merge_prefix_turns_masks_tool_tokens_and_splits_at_rewrites():
     assert budgeted[1].prompt_ids == [1, 2, 3, 4, 9, 8]
 
 
-# Stands in for RPent's ``robots.libero.rl_episode``: it plans against the
+# Stands in for RPent's ``robots.libero_rl.rl_episode``: it plans against the
 # worker's policy endpoint and writes the outcome, as the real process does.
 FAKE_EPISODE = """
 import argparse, json, os, signal, sys, time, urllib.error, urllib.request
@@ -301,7 +318,7 @@ def make_agent(tmp_path, monkeypatch):
     )
     # Builds the patched agentic tokenizer class that skips sglang's markers.
     qwen35_agentic_tokenizer(monkeypatch)
-    package = tmp_path / "fake-rpent" / "robots" / "libero"
+    package = tmp_path / "fake-rpent" / "robots" / "libero_rl"
     package.mkdir(parents=True)
     for init_file in (package.parent / "__init__.py", package / "__init__.py"):
         init_file.touch()
@@ -320,6 +337,8 @@ def make_agent(tmp_path, monkeypatch):
         process_timeout_s=30,
         keep_episodes="all",
         env_gpus=(0, 1),
+        thinking=False,
+        reply="step {turn}\n\n",
     ):
         fake.state_dir = tmp_path / f"fake-state-{len(list(tmp_path.iterdir()))}"
         fake.state_dir.mkdir()
@@ -353,7 +372,7 @@ def make_agent(tmp_path, monkeypatch):
                 "agentloop": {
                     "toolcall_parser": "qwen3.5",
                     "agentic_tokenizer": "qwen3_5",
-                    "chat_template_kwargs": {"enable_thinking": False},
+                    "chat_template_kwargs": {"enable_thinking": thinking},
                     "print_outputs": False,
                     "max_turns": 4,
                     "model_request_timeout_s": 5,
@@ -365,8 +384,8 @@ def make_agent(tmp_path, monkeypatch):
                 },
                 "tools": {
                     "rpent": {
+                        "workflow": "libero_rl",
                         "python": sys.executable,
-                        "vla_endpoint": "http://vla",
                         "sam3_endpoint": "http://sam3",
                         "libero_type": "pro",
                         "max_episode_steps": 10,
@@ -386,8 +405,8 @@ def make_agent(tmp_path, monkeypatch):
         async def generate(prompt_ids, sampling_params):
             turn = len(worker.prompts)
             response = tokenizer(
-                f"step {turn}\n\n<tool_call>\n<function=look>\n<parameter=x>\n1\n"
-                "</parameter>\n</function>\n</tool_call><|im_end|>"
+                reply.format(turn=turn) + "<tool_call>\n<function=look>\n"
+                "<parameter=x>\n1\n</parameter>\n</function>\n</tool_call><|im_end|>"
             )["input_ids"]
             worker.prompts.append((prompt_ids, sampling_params, response))
             return {
@@ -562,7 +581,7 @@ def test_retry_rate_above_the_limit_stops_the_update(make_agent, retried, stops)
         assert result["rpent/infra_retries/process"] == 0.2
 
 
-def compose(overrides=(), config_name="train_qwen3.5_4b_ppo"):
+def compose(overrides=(), config_name="train_qwen3.5_4b_libero_rl_ppo"):
     from hydra import compose, initialize_config_dir
 
     config_dir = Path(__file__).parents[2] / "examples/agent/rpent/config"
@@ -570,11 +589,70 @@ def compose(overrides=(), config_name="train_qwen3.5_4b_ppo"):
         return compose(config_name=config_name, overrides=list(overrides))
 
 
-@pytest.mark.parametrize("config_name", ["train_qwen3.5_4b_ppo", "eval_qwen3.5_4b"])
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "train_qwen3.5_4b_ppo",
+        "eval_qwen3.5_4b",
+        "train_qwen3.5_4b_libero_rl_sao",
+        "train_qwen3.5_4b_libero_rl_local",
+        "train_qwen3.5_4b_libero_rl_smoke",
+        "train_qwen3.5_4b_libero_rl_2node",
+    ],
+)
 def test_example_config_satisfies_the_rpent_contract(config_name):
     from rlinf.config import validate_rpent_cfg
 
     validate_rpent_cfg(compose(config_name=config_name))
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "train_qwen3.5_4b_libero_rl_ppo",
+        "eval_qwen3.5_4b_libero_rl",
+        "train_qwen3.5_4b_libero_rl_sao",
+        "train_qwen3.5_4b_libero_rl_local",
+        "train_qwen3.5_4b_libero_rl_smoke",
+        "train_qwen3.5_4b_libero_rl_2node",
+    ],
+)
+def test_example_configs_match_the_standalone_planner(config_name):
+    """The served policy sees what the standalone RPent planner sends its model."""
+    cfg = compose(config_name=config_name)
+    sampling = cfg.algorithm.sampling_params
+    assert (sampling.temperature, sampling.top_p, sampling.top_k) == (1.0, 0.95, 20)
+    assert sampling.max_new_tokens == 32768
+    assert cfg.agentloop.max_turns == (25 if config_name.endswith("_smoke") else 100)
+    assert cfg.agentloop.observation_mode == "adaptive"
+    if cfg.runner.task_type == "reasoning":
+        for component in (cfg.actor, cfg.critic):
+            assert not component.megatron.ckpt_convertor.hf_model_path.endswith("-text")
+            assert component.model.freeze_vision_model
+            assert component.model.freeze_vision_projection
+    assert cfg.agentloop.chat_template_kwargs.enable_thinking is True
+    assert cfg.runner.seq_length == 262144
+    assert cfg.tools.rpent.process_timeout_s > cfg.agentloop.episode_timeout_s
+    compaction = cfg.agentloop.history_compaction
+    if "target_tokens" in compaction:
+        assert compaction.target_tokens <= 0.7 * cfg.runner.seq_length
+        # A compacted prompt still gets the whole response plus schema headroom.
+        assert cfg.runner.seq_length - compaction.target_tokens >= 32768 + 16384
+    else:
+        assert compaction.context_window == cfg.runner.seq_length
+        assert compaction.max_fraction == 0.7
+
+
+def test_adaptive_rows_disable_packing_but_keep_balancing():
+    """Image payloads need row boundaries; balancing keeps optimizer steps equal."""
+    from rlinf.config import validate_rpent_cfg
+
+    cfg = validate_rpent_cfg(compose(config_name="train_qwen3.5_4b_libero_rl_local"))
+    assert cfg.agentloop.observation_mode == "adaptive"
+    assert cfg.actor.enable_dp_load_balance is True
+    assert cfg.critic.enable_dp_load_balance is True
+    assert cfg.actor.pack_traj is False
+    assert cfg.actor.expect_multi_modal_inputs is True
 
 
 # Shared synchronous agent PPO settings are covered by the SearchR1 tests.
@@ -582,10 +660,18 @@ def test_example_config_satisfies_the_rpent_contract(config_name):
     "override,message",
     [
         ("tools.rpent.episodes_per_worker=0", "one episode per worker"),
+        ("tools.rpent.workflow=unknown", "tools.rpent.workflow"),
+        ("actor.pack_traj=true", "actor.pack_traj=False"),
+        ("actor.expect_multi_modal_inputs=false", "expect_multi_modal_inputs=True"),
         ("tools.rpent.keep_episodes=some", "keep_episodes"),
         ("agentloop.toolcall_parser=qwen2.5", "Qwen3.5 chats"),
-        ("agentloop.minimum_output_tokens=4096", "minimum_output_tokens"),
+        ("agentloop.minimum_output_tokens=65536", "minimum_output_tokens"),
         ("critic.use_critic_model=false", "critic.use_critic_model=True"),
+        ("agentloop.chat_template_kwargs.enable_thinking=false", "enable_thinking"),
+        ("agentloop.max_turns=10", "max_turns"),
+        ("agentloop.prompt=fancy", "agentloop.prompt"),
+        ("agentloop.observation_mode=text", "must be adaptive"),
+        ("agentloop.observation_mode=image", "must be adaptive"),
     ],
 )
 def test_invalid_settings_fail_before_launch(override, message):
@@ -611,3 +697,425 @@ def test_evaluation_reports_success_overall_and_per_suite():
             "libero_spatial": {"episodes": 1, "success_rate": 1.0},
         },
     }
+
+
+THINK_REPLY = "{turn} thoughts\n</think>\n\nstep {turn}\n\n"
+PIXEL = {
+    "type": "image_url",
+    "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+}
+
+
+def thinking_tokenizer(monkeypatch):
+    """The Qwen3.5 agentic tokenizer with the think block open, as training runs it."""
+    from rlinf.agents.tokenization import Qwen35AgenticTokenizer, get_agentic_tokenizer
+
+    monkeypatch.setattr(Qwen35AgenticTokenizer, "reasoning_parser", None)
+    return get_agentic_tokenizer(
+        Qwen35ToyTokenizer(), "qwen3_5", {"enable_thinking": True}
+    )
+
+
+def test_thinking_prompts_open_the_think_block(monkeypatch, qwen35):
+    request = {"messages": [{"role": "user", "content": "task"}], "tools": TOOLS}
+    thinking = thinking_tokenizer(monkeypatch)
+    opened = thinking.tokenizer.decode(render_prompt(thinking, request))
+    assert opened.endswith("<|im_start|>assistant\n<think>\n")
+    # The original LIBERO recipe disables thinking.
+    closed = qwen35.tokenizer.decode(render_prompt(qwen35, request))
+    assert closed.endswith("<think>\n\n</think>\n\n")
+
+
+@pytest.mark.parametrize("framed", [True, False])
+def test_images_keep_earlier_reasoning_only_as_tool_responses(monkeypatch, framed):
+    """The Qwen3.5 template drops reasoning before the last user query.
+
+    A tool's images arrive as a user message; RPent frames it as a tool
+    response so that it does not count as a query. The unframed form is what
+    a plain pydantic-ai client sends, and it loses the first turn's reasoning.
+    """
+    thinking = thinking_tokenizer(monkeypatch)
+    call = {
+        "id": "c",
+        "type": "function",
+        "function": {"name": "look", "arguments": {}},
+    }
+    picture = [{"type": "text", "text": "frame"}, PIXEL]
+    if framed:
+        picture = [
+            {"type": "text", "text": "<tool_response>\n"},
+            *picture,
+            {"type": "text", "text": "\n</tool_response>"},
+        ]
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "looking",
+            "reasoning_content": "FIRST THOUGHTS",
+            "tool_calls": [call],
+        },
+        {"role": "tool", "tool_call_id": "c", "content": "See file 1."},
+        {"role": "user", "content": picture},
+        {
+            "role": "assistant",
+            "content": "moving",
+            "reasoning_content": "SECOND THOUGHTS",
+            "tool_calls": [call],
+        },
+        {"role": "tool", "tool_call_id": "c", "content": "ok"},
+    ]
+    text = thinking.tokenizer.decode(
+        render_prompt(thinking, {"messages": messages, "tools": TOOLS})
+    )
+    assert "SECOND THOUGHTS" in text
+    assert ("FIRST THOUGHTS" in text) is framed
+
+
+def test_responses_return_reasoning_content_and_continue_the_prompt(make_agent):
+    """Reasoning goes back as ``reasoning_content`` and stays in the next prompt."""
+    worker = make_agent(
+        FakeRPent(turns=2, success=True), thinking=True, reply=THINK_REPLY
+    )
+    tokenizer = worker.tokenizer
+
+    _, _, message = asyncio.run(
+        worker._parse_response(
+            tokenizer(
+                THINK_REPLY.format(turn=0) + "<tool_call>\n<function=look>\n"
+                "<parameter=x>\n1\n</parameter>\n</function>\n</tool_call><|im_end|>"
+            )["input_ids"],
+            TOOLS,
+            0,
+        )
+    )
+    assert message["reasoning_content"] == "0 thoughts"
+    assert message["content"] == "step 0"
+    assert [c["function"]["name"] for c in message["tool_calls"]] == ["look"]
+    _, _, plain = asyncio.run(
+        worker._parse_response(tokenizer("step<|im_end|>")["input_ids"], TOOLS, 0)
+    )
+    assert "reasoning_content" not in plain and plain["content"] == "step"
+
+    result = run_query(worker)
+    (row,) = result.single_turn_outputs
+    (first, _, first_response), (second, _, _) = worker.prompts
+    # The planner echoed the reply with its reasoning, so the prompt continued.
+    assert tokenizer.decode(first).endswith("<think>\n")
+    assert second[: len(first) + len(first_response)] == first + first_response
+    assert "0 thoughts\n</think>" in tokenizer.decode(second)
+    assert row.extra_fields["turn_ids"] == [0, 1]
+
+
+@pytest.mark.parametrize("config_name", ["train_qwen3.5_4b_ppo", "eval_qwen3.5_4b"])
+def test_original_libero_preserves_episode_arguments_and_planner_contract(config_name):
+    """Existing configurations keep their VLA, memory and text-only requests."""
+    from rlinf.config import validate_rpent_cfg
+
+    cfg = compose(config_name=config_name)
+    before = OmegaConf.to_container(cfg, resolve=True)
+    validate_rpent_cfg(cfg)
+    assert OmegaConf.to_container(cfg, resolve=True) == before
+    worker = object.__new__(RPentAgentLoopWorker)
+    worker.cfg = cfg
+    command = worker._rpent_command(Path("/tmp/episode"), 2)
+    assert command[2] == "robots.libero.rl_episode"
+    assert command[command.index("--vla-endpoint") + 1] == cfg.tools.rpent.vla_endpoint
+    assert (
+        command[command.index("--sam3-endpoint") + 1] == cfg.tools.rpent.sam3_endpoint
+    )
+    assert (
+        command[command.index("--frozen-memory-dir") + 1]
+        == cfg.tools.rpent.frozen_memory_dir
+    )
+    assert "--observation-mode" not in command and "--prompt" not in command
+    planner = worker._planner_options("http://localhost:1234/v1")
+    assert planner["no_images"] is True
+    assert "observation_mode" not in planner and "prompt" not in planner
+    assert cfg.agentloop.chat_template_kwargs.enable_thinking is False
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "train_qwen3.5_4b_libero_rl_ppo",
+        "train_qwen3.5_4b_libero_rl_sao",
+        "train_qwen3.5_4b_libero_rl_local",
+        "train_qwen3.5_4b_libero_rl_smoke",
+        "train_qwen3.5_4b_libero_rl_2node",
+        "eval_qwen3.5_4b_libero_rl",
+    ],
+)
+def test_clean_libero_rl_selects_adaptive_without_legacy_services(config_name):
+    from rlinf.config import validate_rpent_cfg
+
+    cfg = compose(config_name=config_name)
+    before = OmegaConf.to_container(cfg, resolve=True)
+    validate_rpent_cfg(cfg)
+    assert OmegaConf.to_container(cfg, resolve=True) == before
+    worker = object.__new__(RPentAgentLoopWorker)
+    worker.cfg = cfg
+    command = worker._rpent_command(Path("/tmp/episode"), 1)
+    assert command[2] == "robots.libero_rl.rl_episode"
+    assert command[command.index("--observation-mode") + 1] == "adaptive"
+    assert "--vla-endpoint" not in command and "--frozen-memory-dir" not in command
+    planner = worker._planner_options("http://localhost:1234/v1")
+    assert planner["observation_mode"] == "adaptive" and planner["prompt"] == "simple"
+    assert "no_images" not in planner
+
+
+def test_original_libero_text_checkpoint_extraction(tmp_path):
+    """The legacy text-only actor still has an extraction command."""
+    import importlib.util
+
+    import torch
+    from safetensors.torch import load_file, save_file
+
+    path = Path(__file__).parents[2] / "examples/agent/rpent/checkpoint.py"
+    spec = importlib.util.spec_from_file_location("rpent_checkpoint", path)
+    checkpoint = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checkpoint)
+    vlm, output = tmp_path / "vlm", tmp_path / "text"
+    vlm.mkdir()
+    language = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    save_file(
+        {
+            "model.language_model.embed_tokens.weight": language,
+            "model.visual.patch_embed.weight": torch.ones(2, 3),
+            "mtp.fc.weight": torch.ones(2, 3),
+        },
+        vlm / "model.safetensors",
+    )
+    (vlm / "config.json").write_text(json.dumps({"text_config": {"hidden_size": 3}}))
+    (vlm / "tokenizer_config.json").write_text("{}")
+    checkpoint.extract(vlm, output)
+    weights = load_file(output / "model.safetensors")
+    assert set(weights) == {"model.embed_tokens.weight"}
+    assert torch.equal(weights["model.embed_tokens.weight"], language)
+    assert json.loads((output / "config.json").read_text())["architectures"] == [
+        "Qwen3_5ForCausalLM"
+    ]
+    assert (output / "tokenizer_config.json").read_bytes() == (
+        vlm / "tokenizer_config.json"
+    ).read_bytes()
+
+
+def _task_writer():
+    import importlib.util
+
+    path = Path(__file__).parents[2] / "examples/agent/rpent/prepare_tasks.py"
+    spec = importlib.util.spec_from_file_location("rpent_prepare_tasks", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_standard_task_manifest_keeps_distinct_initial_states():
+    writer = _task_writer()
+    tasks = [
+        {"suite": suite, "task": task, "language": "move", "initial_states": 50}
+        for suite in writer.STANDARD_SUITES
+        for task in range(10)
+    ]
+    seeds = writer.parse_seeds("1-16,17-32,1")
+    rows = writer.standard_rows(tasks, seeds, "train")
+    answers = [json.loads(row["answer"]) for row in rows]
+    assert len(rows) == 1280
+    assert len({row["query_id"] for row in rows}) == 1280
+    assert {item["seed"] for item in answers} == set(range(1, 33))
+    assert all(item["seed"] == item["init_state_id"] for item in answers)
+    assert all("memory_entries" not in item for item in answers)
+    for seed in [-1, 50, 66]:
+        with pytest.raises(ValueError, match="would alias"):
+            writer.standard_rows(tasks, [seed], "train")
+
+
+@pytest.mark.parametrize("seeds", ["", "-1", "3-1", "1-2-3", "0,a"])
+def test_invalid_standard_seeds_are_rejected(seeds):
+    with pytest.raises(ValueError):
+        _task_writer().parse_seeds(seeds)
+
+
+def test_distributed_recipe_matches_adaptive_student_evaluation():
+    cfg = compose(config_name="train_qwen3.5_4b_libero_rl_2node")
+    assert cfg.cluster.num_nodes == 3
+    assert cfg.data.rollout_batch_size == 32 and cfg.data.shuffle
+    assert cfg.runner.max_epochs == 1 and cfg.runner.max_steps == 40
+    assert cfg.runner.save_interval == 5
+    assert cfg.tools.rpent.libero_type == "standard"
+    assert cfg.tools.rpent.episodes_per_worker == 8
+    assert cfg.tools.rpent.max_episode_steps == 10000
+    assert cfg.agentloop.episode_timeout_s == 14400
+    assert cfg.algorithm.sampling_params.presence_penalty == 1.5
+    assert cfg.algorithm.sampling_params.repetition_penalty == 1.0
+    assert cfg.runner.synchronous
+    assert cfg.rollout.tensor_parallel_size == 1
+    assert cfg.rollout.replica_affinity is False
+    assert cfg.rollout.env_vars.PYTORCH_ALLOC_CONF == "expandable_segments:False"
+    assert cfg.rollout.env_vars.PYTORCH_CUDA_ALLOC_CONF == "expandable_segments:False"
+    assert cfg.rollout.enforce_eager is False
+    assert cfg.rollout.sglang.enable_weights_cpu_backup
+    assert cfg.algorithm.recompute_logprobs
+    assert cfg.algorithm.importance_sampling_fix
+    compaction = OmegaConf.to_container(cfg.agentloop.history_compaction, resolve=True)
+    assert compaction == {
+        "max_messages": 80,
+        "keep_messages": 40,
+        "context_window": 262144,
+        "max_fraction": 0.7,
+        "preserve_first_user_message": True,
+        "receipts": False,
+    }
+    assert cfg.actor.response_only_logits
+    assert cfg.actor.trim_right_padding and cfg.critic.trim_right_padding
+    for component in [cfg.actor, cfg.critic]:
+        assert component.model.tensor_model_parallel_size == 2
+        assert component.model.context_parallel_size == 1
+        assert component.model.sequence_parallel is True
+        assert component.offload_weight and component.offload_grad
+        assert component.offload_optimizer
+        assert component.tokenizer.tokenizer_model == cfg.rollout.model.model_path
+        assert (
+            component.megatron.ckpt_convertor.hf_model_path
+            == cfg.rollout.model.model_path
+        )
+
+
+def test_episode_benchmark_config_overrides_parent_path(monkeypatch):
+    monkeypatch.setenv("LIBERO_CONFIG_PATH", "/parent/pro-config")
+    monkeypatch.setenv("MUJOCO_EGL_DEVICE_ID", "0")
+    monkeypatch.setenv("EGL_DEVICE_ID", "0")
+    worker = object.__new__(RPentAgentLoopWorker)
+    worker.cfg = compose(config_name="train_qwen3.5_4b_libero_rl_2node")
+    worker.cfg.tools.rpent.libero_config_path = "/sim/standard-config"
+    env = worker._episode_env(7)
+    assert env["LIBERO_CONFIG_PATH"] == "/sim/standard-config"
+    assert "MUJOCO_EGL_DEVICE_ID" not in env and "EGL_DEVICE_ID" not in env
+    assert os.environ["LIBERO_CONFIG_PATH"] == "/parent/pro-config"
+
+
+@pytest.mark.parametrize("role", ["actor", "critic"])
+def test_distributed_recipe_still_rejects_pipeline_parallelism(role):
+    from rlinf.config import validate_rpent_cfg
+
+    cfg = compose(
+        [f"{role}.model.pipeline_model_parallel_size=2"],
+        config_name="train_qwen3.5_4b_libero_rl_2node",
+    )
+    with pytest.raises(ValueError, match="requires PP=CP=1"):
+        validate_rpent_cfg(cfg)
+
+
+def test_component_allocator_environment_is_applied_at_worker_launch(monkeypatch):
+    """Rollout overrides reach Ray allocation, without mutating learner defaults."""
+    import os
+    import sys
+    from types import SimpleNamespace
+
+    from rlinf.scheduler.cluster.cluster import Cluster, PathEnvMergeMode
+    from rlinf.scheduler.hardware import AcceleratorUtil
+    from rlinf.scheduler.worker.worker import Worker
+    from rlinf.scheduler.worker.worker_group import WorkerGroup
+
+    aliases = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
+    inherited = dict.fromkeys(aliases, "expandable_segments:True")
+    for key, value in inherited.items():
+        monkeypatch.setenv(key, value)
+    overrides = dict.fromkeys(aliases, "expandable_segments:False")
+    allocations = []
+    node_group = SimpleNamespace(
+        get_node_env_vars=lambda rank: inherited,
+        get_node_python_interpreter_path=lambda rank: None,
+    )
+    node = SimpleNamespace(
+        accelerator_type="NV_GPU",
+        accelerator_model="H100",
+        python_interpreter_path=sys.executable,
+    )
+
+    def allocate(**kwargs):
+        allocations.append(
+            Cluster.merge_worker_env_vars(
+                inherited, kwargs["env_vars"], PathEnvMergeMode.APPEND
+            )
+        )
+        return object()
+
+    cluster = SimpleNamespace(
+        get_node_ip=lambda rank: "127.0.0.1",
+        get_node_info=lambda rank: node,
+        get_node_group=lambda label: node_group,
+        allocate=allocate,
+    )
+    placement = SimpleNamespace(
+        rank=0,
+        cluster_node_rank=0,
+        placement_node_rank=0,
+        local_accelerator_rank=0,
+        local_rank=0,
+        local_world_size=1,
+        visible_accelerators=["0"],
+        isolate_accelerator=True,
+        local_hardware_ranks=[0],
+        node_group_label="cluster",
+    )
+    strategy = SimpleNamespace(get_placement=lambda cluster, isolate: [placement])
+    monkeypatch.setattr(AcceleratorUtil, "get_accelerator_env_var", lambda *args: {})
+    monkeypatch.setattr(WorkerGroup, "_attach_cls_func", lambda self: None)
+    monkeypatch.setattr(WorkerGroup, "_is_ready", lambda self: None, raising=False)
+    rollout = WorkerGroup(Worker, (), {}).launch(
+        cluster,
+        placement_strategy=strategy,
+        name="allocator_rollout",
+        catch_system_failure=False,
+        env_vars=overrides,
+    )
+    WorkerGroup(Worker, (), {}).launch(
+        cluster,
+        placement_strategy=strategy,
+        name="allocator_actor",
+        catch_system_failure=False,
+    )
+    assert {key: allocations[0][key] for key in aliases} == overrides
+    assert {key: allocations[1][key] for key in aliases} == inherited
+    assert {key: os.environ[key] for key in aliases} == inherited
+    overrides[aliases[0]] = "changed-after-launch"
+    assert rollout._env_vars[aliases[0]] == "expandable_segments:False"
+
+
+def test_partial_rollout_batch_spreads_environment_slots_over_all_gpus(monkeypatch):
+    """Eight workers with four active episodes each must use all eight GPUs."""
+    from collections import Counter
+
+    from rlinf.agents.rpent import rpent_agent_loop
+
+    def init_base(self, cfg, placement):
+        self._rank = placement.rank
+        self.tokenizer = SimpleNamespace(eos_token_id=1)
+
+    monkeypatch.setattr(rpent_agent_loop.MultiAgentLoopWorker, "__init__", init_base)
+    monkeypatch.setattr(
+        rpent_agent_loop, "get_agentic_tokenizer", lambda *args: object()
+    )
+    monkeypatch.setattr(
+        rpent_agent_loop, "OpenAISessionServer", lambda *args, **kwargs: object()
+    )
+    cfg = OmegaConf.create(
+        {
+            "rollout": {"return_logprobs": True},
+            "agentloop": {"agentic_tokenizer": "qwen3_5"},
+            "tools": {"rpent": {"episodes_per_worker": 8, "env_gpus": list(range(8))}},
+        }
+    )
+    workers = [
+        RPentAgentLoopWorker(cfg, SimpleNamespace(rank=rank)) for rank in range(8)
+    ]
+    active = Counter(
+        worker._env_slots.get_nowait() for worker in workers for _ in range(4)
+    )
+    assert active == Counter(dict.fromkeys(range(8), 4))
+    remaining = Counter(
+        worker._env_slots.get_nowait() for worker in workers for _ in range(4)
+    )
+    assert remaining == active
