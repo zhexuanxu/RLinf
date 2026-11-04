@@ -1753,8 +1753,82 @@ def validate_rpent_cfg(cfg: DictConfig) -> DictConfig:
             raise ValueError(
                 "RPent trains with PPO and needs critic.use_critic_model=True."
             )
-        validate_agent_ppo_cfg(cfg, "RPent")
+        if cfg.runner.get("synchronous", False):
+            validate_agent_ppo_cfg(cfg, "RPent")
+        else:
+            validate_async_agent_ppo_cfg(cfg, "RPent")
     return cfg
+
+
+def validate_async_agent_ppo_cfg(cfg: DictConfig, task: str) -> None:
+    """Check the settings asynchronous SAO PPO (``AsyncAgentPPORunner``) relies on.
+
+    Args:
+        cfg: The full run config.
+        task: Task name used in error messages.
+    """
+    if (
+        cfg.actor.training_backend != "megatron"
+        or cfg.critic.training_backend != "megatron"
+        or cfg.rollout.rollout_backend != "sglang"
+    ):
+        raise ValueError(
+            f"{task} async PPO requires Megatron actor/critic and SGLang rollout."
+        )
+    if cfg.algorithm.get("loss_type", "actor") != "dis":
+        raise ValueError(f"{task} async PPO requires algorithm.loss_type=dis (SAO).")
+    if cfg.algorithm.adv_type != "sao_gae":
+        raise ValueError(
+            f"{task} async PPO requires algorithm.adv_type=sao_gae, got "
+            f"{cfg.algorithm.adv_type}."
+        )
+    if cfg.algorithm.get("gae_lambda_alpha", 1.5) < 1:
+        raise ValueError(f"{task} async PPO requires gae_lambda_alpha >= 1.")
+    if cfg.algorithm.recompute_logprobs:
+        raise ValueError(
+            f"{task} async PPO trains from rollout logprobs; set "
+            "algorithm.recompute_logprobs=False."
+        )
+    if cfg.algorithm.get("n_minibatches", 1) != 1:
+        raise ValueError(f"{task} async PPO requires algorithm.n_minibatches=1.")
+    if cfg.agentloop.get("truncate_response", True):
+        raise ValueError(
+            f"{task} async PPO requires agentloop.truncate_response=False."
+        )
+    if cfg.algorithm.group_size != 1:
+        raise ValueError(f"{task} async PPO requires algorithm.group_size=1.")
+    if cfg.critic.get("loss_type", "ppo") not in ("ppo", "sao"):
+        raise ValueError(f"{task} requires critic.loss_type=ppo or sao.")
+    update_epochs = cfg.critic.get("update_epochs", 1)
+    if type(update_epochs) is not int or update_epochs < 1:
+        raise ValueError(f"{task} requires a positive integer critic.update_epochs.")
+    if cfg.rollout.tensor_parallel_size != 1 or cfg.rollout.pipeline_parallel_size != 1:
+        raise ValueError(f"{task} async PPO currently requires rollout TP=PP=1.")
+
+    with open_dict(cfg.rollout):
+        cfg.rollout.setdefault("max_weight_staleness", None)
+        for key in ("max_in_flight_rollouts", "rollout_buffer_capacity"):
+            if cfg.rollout.get(key) is None:
+                cfg.rollout[key] = 2 * cfg.data.rollout_batch_size
+    with open_dict(cfg.algorithm):
+        cfg.algorithm.setdefault("gae_lambda_alpha", 1.5)
+    if (
+        type(cfg.rollout.max_in_flight_rollouts) is not int
+        or cfg.rollout.max_in_flight_rollouts < 1
+        or type(cfg.rollout.rollout_buffer_capacity) is not int
+        or cfg.rollout.rollout_buffer_capacity < cfg.data.rollout_batch_size
+    ):
+        raise ValueError(
+            f"{task} requires rollout.max_in_flight_rollouts > 0 and "
+            "rollout.rollout_buffer_capacity >= data.rollout_batch_size."
+        )
+    if cfg.rollout.max_weight_staleness is not None and (
+        type(cfg.rollout.max_weight_staleness) is not int
+        or cfg.rollout.max_weight_staleness < 0
+    ):
+        raise ValueError(
+            "rollout.max_weight_staleness must be null or a nonnegative integer."
+        )
 
 
 def validate_reasoning_eval_cfg(cfg: DictConfig) -> DictConfig:

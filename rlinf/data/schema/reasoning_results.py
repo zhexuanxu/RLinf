@@ -835,6 +835,12 @@ class DynamicRolloutResult:
     # size of belows are num_sequence
     input_ids: list[list[int]]
     rollout_logprobs: Optional[list[list[float]]] = None
+    # Published policy version that generated each response token, one entry per
+    # row. Async PPO uses the oldest to reject trajectories staler than the
+    # configured bound.
+    rollout_weight_versions: Optional[list[list[int]]] = None
+    # Async runner sample id of each row, kept for retries and checkpointing.
+    rollout_ids: Optional[list[int]] = None
     recomputed_logprobs: Optional[torch.Tensor] = None
     ref_logprobs: Optional[torch.Tensor] = None
     prompt_lengths: list[int]
@@ -1014,6 +1020,27 @@ class DynamicRolloutResult:
             )
             batch["rollout_logprobs"] = logprobs.to(device)
 
+        if self.rollout_weight_versions is not None:
+            if any(
+                len(versions) != length
+                for versions, length in zip(
+                    self.rollout_weight_versions, self.response_lengths
+                )
+            ):
+                raise ValueError(
+                    "rollout_weight_versions must match each row's response length"
+                )
+            batch["rollout_weight_versions"] = batch_pad_to_fixed_len(
+                [
+                    torch.as_tensor([-1] * prompt + versions, dtype=torch.long)
+                    for prompt, versions in zip(
+                        self.prompt_lengths, self.rollout_weight_versions
+                    )
+                ],
+                max_batch_len=seq_length,
+                pad_token=-1,
+            ).to(device)
+
         if self.recomputed_logprobs is not None:
             batch["recomputed_logprobs"] = self.recomputed_logprobs.to(device)
         if self.ref_logprobs is not None:
@@ -1065,6 +1092,9 @@ class DynamicRolloutResult:
             ),
             "rollout_logprobs": torch.zeros(
                 *pad_seq_shape, dtype=torch.float32, device=torch.cuda.current_device()
+            ),
+            "rollout_weight_versions": torch.full(
+                pad_seq_shape, -1, dtype=torch.long, device=torch.cuda.current_device()
             ),
             "rewards": torch.zeros(
                 1, dtype=torch.float32, device=torch.cuda.current_device()
@@ -1221,6 +1251,7 @@ class DynamicRolloutResult:
             "response_lengths",
             "recomputed_logprobs",
             "rollout_logprobs",
+            "rollout_weight_versions",
             "ref_logprobs",
             "rewards",
             "advantages",
@@ -1307,6 +1338,11 @@ class DynamicRolloutResult:
             assert k in tensor_keys, k
             packed_batch[k] = torch.cat(v, dim=0)
         packed_batch["idx_to_traj"] = new_idx_to_traj
+        if "rollout_weight_versions" in packed_batch:
+            # Inter-turn tokens are not generated actions and have no version.
+            packed_batch["rollout_weight_versions"].masked_fill_(
+                ~packed_batch["response_mask"], -1
+            )
         num_sequence_after = len(new_idx_to_traj)
         folding_scale = context.get("folding_scale", [])
         if "group_level" in folding_scale:
@@ -1364,6 +1400,14 @@ class DynamicRolloutResult:
                     if res.response_mask is not None
                     else [[1] * length for length in res.response_lengths]
                 )
+            for name in ("rollout_weight_versions", "rollout_ids"):
+                value = getattr(res, name)
+                if value is not None:
+                    setattr(
+                        merged_result,
+                        name,
+                        (getattr(merged_result, name) or []) + list(value),
+                    )
 
             # Merge tensor fields (size: num_sequence)
             if res.recomputed_logprobs is not None:
@@ -1474,6 +1518,14 @@ class DynamicRolloutResult:
                 rollout_logprobs=split_rollout_logprobs,
                 response_mask=rollout_result.response_mask[start_idx:end_idx]
                 if rollout_result.response_mask is not None
+                else None,
+                rollout_weight_versions=rollout_result.rollout_weight_versions[
+                    start_idx:end_idx
+                ]
+                if rollout_result.rollout_weight_versions is not None
+                else None,
+                rollout_ids=rollout_result.rollout_ids[start_idx:end_idx]
+                if rollout_result.rollout_ids is not None
                 else None,
                 recomputed_logprobs=split_recomputed_logprobs,
                 ref_logprobs=split_ref_logprobs,

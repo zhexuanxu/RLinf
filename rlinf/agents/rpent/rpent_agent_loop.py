@@ -125,6 +125,13 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         await self._model_server.start()
         return await super().run_agentloop_rollout(input_channel, output_channel)
 
+    async def run_async_rollout(
+        self, input_channel: Channel, output_channel: Channel
+    ) -> None:
+        """Serve episodes continuously; the endpoint must run before any starts."""
+        await self._model_server.start()
+        return await super().run_async_rollout(input_channel, output_channel)
+
     async def run_one_query(self, prompt_ids: list[int], answer: list[str]):
         """Run one episode, retrying service failures with fresh episode IDs."""
         task = _episode_task(answer)
@@ -306,6 +313,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                 response_ids=response_ids,
                 response_text=response_text,
                 response_logprobs=generated.get("logprobs"),
+                response_weight_versions=generated.get("weight_versions"),
                 is_end=generated["finish_reason"] == "stop",
                 extra_fields={
                     "turn_id": turn_idx,

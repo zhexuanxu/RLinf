@@ -104,7 +104,31 @@ class TokenizerManager(_TokenizerManager):
         if obj is None:
             obj = SyncHFWeightInput()
         self.auto_create_handle_loop()
-        await self.sync_hf_weight_communicator(obj)
+        responses = await self.sync_hf_weight_communicator(obj)
+        if obj.weight_version is not None and any(
+            response.weight_version != obj.weight_version for response in responses
+        ):
+            raise RuntimeError(
+                "Not all rollout schedulers acknowledged the published weight version."
+            )
+
+    async def pause_for_weight_update(self):
+        """Gate new generation calls until scheduler retraction is acknowledged."""
+        async with self.is_pause_cond:
+            self.is_pause = True
+            return await self.run_task_method(
+                TaskMethodInput(method_name="pause_for_weight_update")
+            )
+
+    async def resume_after_weight_update(self):
+        """Acknowledge scheduler resumption before admitting further generation calls."""
+        async with self.is_pause_cond:
+            result = await self.run_task_method(
+                TaskMethodInput(method_name="resume_after_weight_update")
+            )
+            self.is_pause = False
+            self.is_pause_cond.notify_all()
+            return result
 
     async def abort_generation(
         self,
@@ -116,12 +140,35 @@ class TokenizerManager(_TokenizerManager):
 
     # to return output_ids and response_text simaltaneously in sglang 0.4.x.
     # copied from srt/managers/tokenizer_manager.py (0.4.6) and only add "output_ids" in out_dict when isinstance(recv_obj, BatchStrOut) is True
+    def _accumulate_weight_versions(self, recv_obj) -> None:
+        """Join each output batch's per-token versions onto the request state.
+
+        A retracted request resumes generation, so one request can report
+        several batches; each batch carries only its own newly generated
+        tokens.
+        """
+        versions = (getattr(recv_obj, "customized_info", None) or {}).get(
+            "rollout_weight_versions"
+        )
+        if versions is None:
+            return
+        for index, rid in enumerate(recv_obj.rids):
+            state = self.rid_to_state.get(rid)
+            if state is None:
+                continue
+            accumulated = list(getattr(state, "rlinf_weight_versions", []))
+            accumulated.extend(versions[index])
+            state.rlinf_weight_versions = accumulated
+            versions[index] = list(accumulated)
+
     def _handle_batch_output(
         self,
         recv_obj,
     ):
         import json
         import time
+
+        self._accumulate_weight_versions(recv_obj)
 
         # for sglang 0.5.0 and later, we use the original _handle_batch_output
         if not self.patch_return_output_ids:

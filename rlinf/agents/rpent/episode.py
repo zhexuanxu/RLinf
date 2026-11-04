@@ -79,6 +79,17 @@ def merge_prefix_turns(
             last.response_mask += [0] * gap + mask
             if last.response_logprobs is not None:
                 last.response_logprobs += [0.0] * gap + list(turn.response_logprobs)
+            if last.response_weight_versions is not None:
+                if turn.response_weight_versions is None:
+                    last.response_weight_versions = None
+                else:
+                    # Tool output between turns is not policy-generated; the
+                    # preceding version keeps every entry nonnegative, and the
+                    # zero mask excludes those tokens from staleness.
+                    carried = last.response_weight_versions[-1]
+                    last.response_weight_versions += [carried] * gap + list(
+                        turn.response_weight_versions
+                    )
             last.response_text, last.is_end = turn.response_text, turn.is_end
             last.reward_score = turn.reward_score
             last.extra_fields = {
@@ -94,6 +105,9 @@ def merge_prefix_turns(
                 response_logprobs=None
                 if turn.response_logprobs is None
                 else list(turn.response_logprobs),
+                response_weight_versions=None
+                if turn.response_weight_versions is None
+                else list(turn.response_weight_versions),
                 extra_fields={
                     **turn.extra_fields,
                     "turn_ids": [turn.extra_fields.get("turn_id")],

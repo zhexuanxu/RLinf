@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Train a text-only RPent planner with synchronous PPO."""
+"""Train an RPent planner with synchronous PPO or asynchronous SAO PPO."""
 
 import json
 
@@ -24,6 +24,7 @@ from rlinf.config import validate_cfg
 from rlinf.data.datasets.reasoning import create_reasoning_datasets
 from rlinf.models.tokenization.hf import hf_tokenizer
 from rlinf.runners.agent_ppo_runner import AgentPPORunner
+from rlinf.runners.async_agent_ppo_runner import AsyncAgentPPORunner
 from rlinf.scheduler import Cluster
 from rlinf.utils.logging import get_logger
 from rlinf.utils.placement import ModelParallelComponentPlacement
@@ -68,7 +69,8 @@ def main(cfg) -> None:
 
     tokenizer = hf_tokenizer(cfg.actor.tokenizer.tokenizer_model)
     train_ds, val_ds = create_reasoning_datasets(cfg, tokenizer)
-    runner = AgentPPORunner(
+    runner_cls = AgentPPORunner if cfg.runner.synchronous else AsyncAgentPPORunner
+    runner = runner_cls(
         cfg=cfg,
         placement=placement,
         train_dataset=train_ds,

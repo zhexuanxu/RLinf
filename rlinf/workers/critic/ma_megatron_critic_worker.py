@@ -94,9 +94,18 @@ class MAMegatronCritic(MegatronCritic):
                 return output, id_func
 
             def loss_func(output):
-                return self._compute_value_loss(
-                    action_values(output), batch, batch["response_mask"]
-                )
+                values = action_values(output)
+                old_values = batch.get("values")
+                if isinstance(old_values, list):
+                    # PPO clipping needs the values from before this update; the
+                    # first pass of a multi-update step records them in place.
+                    if self._capture_old_values:
+                        for old_value, value in zip(
+                            old_values, values.detach(), strict=True
+                        ):
+                            old_value.copy_(value)
+                    batch["values"] = torch.stack(old_values)
+                return self._compute_value_loss(values, batch, batch["response_mask"])
 
             return output, loss_func
 
@@ -155,9 +164,7 @@ class MAMegatronCritic(MegatronCritic):
         batch = DynamicRolloutResult.merge_batches(
             batches, self.cfg.algorithm.group_size
         )
-        assert "values" in batch and "returns" in batch, (
-            "Multi-agent critic training requires fixed old values and returns."
-        )
+        assert "returns" in batch, "Multi-agent critic requires fixed returns."
         rollout_metrics = (
             self._compute_rollout_metrics(batch) if compute_rollout_metrics else None
         )
@@ -172,35 +179,45 @@ class MAMegatronCritic(MegatronCritic):
 
         if self.enable_dp_load_balance:
             batch = self._dp_load_balance(batch)
+        if self.role_cfg.get("loss_type", "ppo") == "ppo" and "values" not in batch:
+            # Row views keep the reference through minibatch splits and shuffles,
+            # so the first epoch can record the pre-update values in place.
+            batch["values"] = list(
+                torch.empty_like(
+                    batch["returns"], device=self.torch_device_type, dtype=torch.float32
+                ).unbind()
+            )
+        update_epochs = self.role_cfg.get("update_epochs", 1)
         if self.use_profiler:
-            self.profiler.init_fwd_bwd_schedule(self.cfg.algorithm.n_minibatches)
+            self.profiler.init_fwd_bwd_schedule(self.num_train_steps * update_epochs)
 
-        global_batches = get_iterator_k_split(
-            batch,
-            num_splits=self.num_train_steps,
-            shuffle=self.cfg.algorithm.get("shuffle_rollout", True),
-            shuffle_seed=self.role_cfg.seed,
-        )
         training_metrics_list = []
         with self.worker_timer("run_training"):
-            for global_batch in global_batches:
-                if self.cfg.algorithm.use_valid_token_scale:
-                    self._setup_valid_token_scale(global_batch)
-                dp_size = parallel_state.get_data_parallel_world_size()
-                configure_batch_sizes(
-                    rank=torch.distributed.get_rank(),
-                    mbs=self.role_cfg.micro_batch_size,
-                    gbs=global_batch["input_ids"].shape[0] * dp_size,
-                    dp=dp_size,
+            for epoch in range(update_epochs):
+                self._capture_old_values = epoch == 0
+                global_batches = get_iterator_k_split(
+                    batch,
+                    num_splits=self.num_train_steps,
+                    shuffle=self.cfg.algorithm.get("shuffle_rollout", True),
+                    shuffle_seed=self.role_cfg.seed + epoch,
                 )
-                training_metrics = self.training_step(global_batch)
-                training_metrics_list.append(training_metrics)
+                for global_batch in global_batches:
+                    if self.cfg.algorithm.use_valid_token_scale:
+                        self._setup_valid_token_scale(global_batch)
+                    dp_size = parallel_state.get_data_parallel_world_size()
+                    configure_batch_sizes(
+                        rank=torch.distributed.get_rank(),
+                        mbs=self.role_cfg.micro_batch_size,
+                        gbs=global_batch["input_ids"].shape[0] * dp_size,
+                        dp=dp_size,
+                    )
+                    training_metrics = self.training_step(global_batch)
+                    training_metrics_list.append(training_metrics)
 
         self._gather_weights_among_dp()
         if output_channel is not None:
-            self.put_result(
-                DynamicRolloutResult.merge_result_list(results), output_channel
-            )
+            for result in results:
+                self.put_result(result, output_channel)
         if do_offload:
             self._offload_weight_and_optimizer()
         # Shared training devices must be able to reuse the activation cache.

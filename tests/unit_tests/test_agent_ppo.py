@@ -294,6 +294,7 @@ def test_megatron_valid_token_scale_matches_unsplit_gradient(
         worker.cfg = OmegaConf.create(
             {
                 "runner": {"task_type": "reasoning"},
+                "critic": {},
                 "algorithm": {
                     "loss_type": "actor",
                     "use_valid_token_scale": False,
@@ -1468,3 +1469,42 @@ def test_sglang_cpu_backup_loads_unsynchronized_weights(
     assert worker._engine["load_format"] == (
         "auto" if backup or resume_dir is None else "dummy"
     )
+
+
+@pytest.mark.placement
+@pytest.mark.parametrize("replica_affinity", [False, True])
+def test_serverless_shutdown_unblocks_the_replica_queue(replica_affinity):
+    from omegaconf import OmegaConf
+
+    from rlinf.workers.rollout.sglang.sglang_worker import SGLangWorker
+
+    Cluster(num_nodes=1)
+    incoming = Channel.create(f"shutdown-input-{replica_affinity}")
+    outgoing = Channel.create(f"shutdown-output-{replica_affinity}")
+    assert incoming.qsize() == outgoing.qsize() == 0
+    worker = object.__new__(SGLangWorker)
+    worker._rank = 3
+    worker._cfg_rollout = OmegaConf.create({"replica_affinity": replica_affinity})
+    request_key = worker._rank if replica_affinity else "default_queue"
+
+    async def run():
+        consumer = asyncio.create_task(worker.rollout_serverless(incoming, outgoing))
+        try:
+            while not hasattr(worker, "_serverless_group"):
+                await asyncio.sleep(0)
+            await asyncio.sleep(0.05)
+            await worker.stop_serverless()
+            await asyncio.wait_for(consumer, timeout=2)
+            for _ in range(100):
+                if incoming.empty(key=request_key):
+                    break
+                await asyncio.sleep(0.01)
+            assert incoming.empty(key=request_key)
+            assert incoming.empty()
+        finally:
+            # Release a receiver even when an incorrect stop key fails this test.
+            incoming.put(None, key=request_key)
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))
