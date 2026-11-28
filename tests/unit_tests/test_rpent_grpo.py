@@ -1511,3 +1511,42 @@ def test_aggregate_agent_metrics_handles_sparse_per_env_keys() -> None:
     assert agg["rpent/robolab/success_rate"] == pytest.approx(1.0)
     assert agg["rpent/episodes"] == pytest.approx(4.0)
     assert agg["rpent/max_turns"] == pytest.approx(6.0)
+
+
+def test_rpent_async_infra_failure_discards_group_instead_of_crashing() -> None:
+    """In async mode, exhausting infra retries raises GroupDiscarded; sync mode still raises."""
+    import asyncio
+
+    from rlinf.agents.rpent.agent_loop import RPentAgentLoopWorker, RPentEpisodeError
+    from rlinf.workers.agent.agent_loop import GroupDiscarded
+
+    task_json = json.dumps(
+        {"environment": "robolab", "task_name": "BrokenTask", "seed": 0}
+    )
+
+    def _make_worker(synchronous: bool):
+        worker = RPentAgentLoopWorker.__new__(RPentAgentLoopWorker)
+        worker.cfg = OmegaConf.create(
+            {
+                "runner": {"synchronous": synchronous, "async_mode": not synchronous},
+                "agentloop": {"max_infra_retries": 1},
+            }
+        )
+        warnings: list[str] = []
+        worker.log_warning = warnings.append
+
+        async def _always_fail(_task):
+            raise RPentEpisodeError("HTTP 500 AttributeError: no bowl", kind="env_setup")
+
+        worker._run_episode = _always_fail
+        return worker, warnings
+
+    async_worker, async_warnings = _make_worker(synchronous=False)
+    with pytest.raises(GroupDiscarded) as exc_info:
+        asyncio.run(async_worker.run_one_query([], [task_json]))
+    assert exc_info.value.reason == "rpent_env_setup"
+    assert any("Discarding async RPent group" in w for w in async_warnings)
+
+    sync_worker, _ = _make_worker(synchronous=True)
+    with pytest.raises(RPentEpisodeError, match="no bowl"):
+        asyncio.run(sync_worker.run_one_query([], [task_json]))

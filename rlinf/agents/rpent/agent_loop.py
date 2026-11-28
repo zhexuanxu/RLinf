@@ -45,6 +45,7 @@ from rlinf.scheduler import Channel
 from rlinf.utils.placement import ModelParallelComponentPlacement
 from rlinf.workers.agent.agent_loop import (
     AgentLoopOutput,
+    GroupDiscarded,
     MultiAgentLoopOutput,
     MultiAgentLoopWorker,
 )
@@ -602,6 +603,12 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                     {"type": type(exc).__name__, "kind": exc.kind, "message": str(exc)}
                 )
                 if attempt == retries:
+                    if not self.cfg.runner.get("synchronous", True):
+                        self.log_warning(
+                            f"Discarding async RPent group after {retries + 1} failed attempts "
+                            f"({exc.kind}) for task={task.get('task_name') or task.get('suite')}: {exc}"
+                        )
+                        raise GroupDiscarded(reason=f"rpent_{exc.kind}") from exc
                     raise
                 self.log_warning(
                     f"Retrying RPent infrastructure failure ({attempt + 1}/{retries}): {exc!r}"
