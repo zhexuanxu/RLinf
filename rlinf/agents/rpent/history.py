@@ -50,6 +50,8 @@ def _image_tokens(png_bytes: bytes) -> int:
 
 
 def _argument_hint(name: str, environment: str) -> str:
+    if environment == "maniskill" and name == "execute_actions":
+        return "Use the declared actions for this robot. Set observe to none, all, or a declared camera."
     if environment == "metaworld" and name in {
         "execute_actions",
         "move_to",
@@ -185,8 +187,7 @@ def _strip_message_thinking(msg: LogicalMessage) -> LogicalMessage:
     ):
         return msg
     new_wire = tuple(
-        {k: v for k, v in item.items() if k != "reasoning_content"}
-        for item in msg.wire
+        {k: v for k, v in item.items() if k != "reasoning_content"} for item in msg.wire
     )
     return LogicalMessage(
         kind=msg.kind,
@@ -276,7 +277,9 @@ class EpisodeConversation:
                             },
                             {
                                 "type": "image_url",
-                                "image_url": {"url": f"{IMAGE_PLACEHOLDER_PREFIX}{fid}"},
+                                "image_url": {
+                                    "url": f"{IMAGE_PLACEHOLDER_PREFIX}{fid}"
+                                },
                             },
                             {"type": "text", "text": "</observation>"},
                         ]
@@ -344,7 +347,9 @@ class EpisodeConversation:
         est_before = self.estimate_tokens()
         start_img_idx = 1 if cfg.preserve_opening_images else 0
         image_indices = [
-            i for i in range(start_img_idx, len(self.messages)) if self.messages[i].images
+            i
+            for i in range(start_img_idx, len(self.messages))
+            if self.messages[i].images
         ]
         keep_img = max(0, cfg.keep_recent_images)
         drop_img_set = (
@@ -355,7 +360,9 @@ class EpisodeConversation:
             i
             for i in range(1, len(self.messages))
             if self.messages[i].kind == "assistant"
-            and any(w.get("reasoning_content") is not None for w in self.messages[i].wire)
+            and any(
+                w.get("reasoning_content") is not None for w in self.messages[i].wire
+            )
         ]
         keep_think = max(0, cfg.keep_recent_thinking)
         drop_think_set = (

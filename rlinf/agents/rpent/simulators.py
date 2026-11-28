@@ -25,7 +25,7 @@ from omegaconf import DictConfig
 from torch.utils.data import ConcatDataset
 
 _SIMULATORS = frozenset(
-    {"libero", "robotwin", "robocasa", "robodojo", "metaworld", "robolab"}
+    {"libero", "robotwin", "robocasa", "robodojo", "metaworld", "robolab", "maniskill"}
 )
 
 

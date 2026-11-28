@@ -101,7 +101,7 @@ def test_merge_prefix_turns_respects_chain_and_budget():
     assert len(split) == 2
 
 
-@pytest.mark.parametrize("second", ["robotwin", "metaworld"])
+@pytest.mark.parametrize("second", ["robotwin", "metaworld", "maniskill"])
 def test_mixed_simulators_and_sampler_quotas(second):
     cfg = OmegaConf.create(
         {
@@ -162,7 +162,7 @@ def test_aggregate_metrics_and_qwen35_bf16_norm():
     assert torch.equal(got, (t.float() + 1.0).to(torch.bfloat16))
 
 
-@pytest.mark.parametrize("second", ["robotwin", "metaworld"])
+@pytest.mark.parametrize("second", ["robotwin", "metaworld", "maniskill"])
 def test_validate_sim_pool_capacity(second):
     from rlinf.agents.rpent.simulators import SimulatorSpec
     from rlinf.runners.rpent_runner import validate_sim_pool_capacity
@@ -221,7 +221,6 @@ def test_validate_sim_pool_capacity(second):
 
 
 def test_zero_base64_conversation_history_and_local_staging():
-
     from rlinf.agents.rpent.agent_loop import (
         _BINARY_EXECUTE_MEDIA_TYPE,
         _unpack_execute_response,
@@ -457,13 +456,19 @@ def test_sglang_multimodal_double_retraction_and_idle_pause(monkeypatch) -> None
             self.reqs = [self.reqs[i] for i in keep_indices]
 
     req = Req(
-        "mm-active", "", [1, 2, 3, 4], SamplingParams(max_new_tokens=20), return_logprob=True
+        "mm-active",
+        "",
+        [1, 2, 3, 4],
+        SamplingParams(max_new_tokens=20),
+        return_logprob=True,
     )
     req.output_ids = [10, 11]
     req.output_token_logprobs_val = [-0.2, -0.3]
     req.logprob_start_len = 4
     # Simulate an already-extended M-RoPE tensor from a prior retraction (4 + 2 = 6 cols).
-    mm_item = SimpleNamespace(feature=torch.zeros(2, 4), precomputed_embeddings=None, image_grid_thw=None)
+    mm_item = SimpleNamespace(
+        feature=torch.zeros(2, 4), precomputed_embeddings=None, image_grid_thw=None
+    )
     req.multimodal_inputs = SimpleNamespace(
         mrope_positions=torch.arange(6).unsqueeze(0).expand(3, -1).clone(),
         mm_items=[mm_item],
@@ -518,7 +523,9 @@ def test_sglang_multimodal_double_retraction_and_idle_pause(monkeypatch) -> None
     monkeypatch.setattr(
         _Scheduler,
         "release_memory_occupation",
-        lambda self, _r: None if self.is_fully_idle() else (_ for _ in ()).throw(AssertionError("not idle")),
+        lambda self, _r: None
+        if self.is_fully_idle()
+        else (_ for _ in ()).throw(AssertionError("not idle")),
     )
     monkeypatch.setattr(_Scheduler, "resume_memory_occupation", lambda self, _r: None)
 
@@ -533,9 +540,7 @@ def test_sglang_multimodal_double_retraction_and_idle_pause(monkeypatch) -> None
 
     scheduler.resume_memory_occupation(SimpleNamespace(tags=["weights"]))
     assert scheduler.waiting_queue == []
-    scheduler.resume_memory_occupation(
-        SimpleNamespace(tags=["kv_cache", "cuda_graph"])
-    )
+    scheduler.resume_memory_occupation(SimpleNamespace(tags=["kv_cache", "cuda_graph"]))
     assert scheduler.waiting_queue == [req, late]
 
     # Cycle 2: engine is idle at pause time -> late request arriving while offloaded is still parked!
@@ -680,7 +685,9 @@ def test_rpent_sync_and_async_configs_resolve_and_validate(monkeypatch) -> None:
     assert "NCCL_IB_HCA" not in resolved_unset
     monkeypatch.setenv("NCCL_IB_HCA", "mlx5_0,mlx5_1")
     with initialize_config_dir(config_dir=str(cfg_dir), version_base="1.1"):
-        async_27b_with_hca = compose(config_name="train_qwen3.8_27b_rpent_async_grpo_5env")
+        async_27b_with_hca = compose(
+            config_name="train_qwen3.8_27b_rpent_async_grpo_5env"
+        )
     assert _env_vars(async_27b_with_hca.rollout)["NCCL_IB_HCA"] == "mlx5_0,mlx5_1"
 
     monkeypatch.setattr(cfg_mod, "Cluster", lambda *a, **k: None)
@@ -896,7 +903,6 @@ def test_prepare_robolab_tasks(tmp_path) -> None:
 
 @pytest.fixture
 def mixed_robolab_cfg(monkeypatch):
-
     from hydra import compose, initialize_config_dir
 
     monkeypatch.setenv("ROBOLAB_POOL_URL", "http://robolab.invalid")
@@ -1198,6 +1204,8 @@ def test_harness_v2_rlinf_rpent_parity_and_chain_switch() -> None:
     try:
         from robots.rl.conversation import (
             CompactionConfig as RPentCompactionConfig,
+        )
+        from robots.rl.conversation import (
             EpisodeConversation as RPentEpisodeConversation,
         )
     except ImportError:
@@ -1378,7 +1386,9 @@ def test_uneven_dp_pad_rows_balance_and_loss_normalization(monkeypatch) -> None:
         "multi_modal_inputs": [{"pixel_values": torch.zeros(1)}, None],
         "rewards": torch.tensor([1.0, 0.0]),
     }
-    padded = pad_actor_batch_rows(batch, divisor=2, dp_group=None, device="cpu", min_row_len=16)
+    padded = pad_actor_batch_rows(
+        batch, divisor=2, dp_group=None, device="cpu", min_row_len=16
+    )
     assert len(padded["input_ids"]) == 4
     assert len(padded["multi_modal_inputs"]) == 4
     assert padded["multi_modal_inputs"][2:] == [None, None]
@@ -1404,20 +1414,27 @@ def test_uneven_dp_pad_rows_balance_and_loss_normalization(monkeypatch) -> None:
     ]
     # Simulate all 6 ranks in-process with a shared in-memory all_to_all buffer
     rank_results = [
-        [SimpleNamespace(input_ids=[list(range(c))], tag=(r, i)) for i, c in enumerate(costs)]
+        [
+            SimpleNamespace(input_ids=[list(range(c))], tag=(r, i))
+            for i, c in enumerate(costs)
+        ]
         for r, costs in enumerate(per_rank_costs)
     ]
 
     def _run_balance_all_ranks():
         # Run a two-phase simulation: capture sends from all ranks, then deliver receives
-        monkeypatch.setattr(torch.distributed, "get_world_size", lambda g=None: world_size)
+        monkeypatch.setattr(
+            torch.distributed, "get_world_size", lambda g=None: world_size
+        )
         monkeypatch.setattr(torch.distributed, "get_backend", lambda g=None: "gloo")
 
         def _fake_all_gather_obj(out, obj, group=None):
             for idx, rank_costs in enumerate(per_rank_costs):
                 out[idx] = rank_costs
 
-        monkeypatch.setattr(torch.distributed, "all_gather_object", _fake_all_gather_obj)
+        monkeypatch.setattr(
+            torch.distributed, "all_gather_object", _fake_all_gather_obj
+        )
 
         # Phase A: capture outgoing sizes & byte payloads from each rank
         send_chunks: list[list[bytes]] = [[b""] * world_size for _ in range(world_size)]
@@ -1425,7 +1442,14 @@ def test_uneven_dp_pad_rows_balance_and_loss_normalization(monkeypatch) -> None:
             monkeypatch.setattr(torch.distributed, "get_rank", lambda g=None, _r=r: _r)
             sizes_seen: list[list[int]] = []
 
-            def _capture_a2a(output, input, output_split_sizes=None, input_split_sizes=None, group=None, _r=r):
+            def _capture_a2a(
+                output,
+                input,
+                output_split_sizes=None,
+                input_split_sizes=None,
+                group=None,
+                _r=r,
+            ):
                 if input_split_sizes is None:
                     sizes_seen.append(input.tolist())
                     output.zero_()
@@ -1447,17 +1471,28 @@ def test_uneven_dp_pad_rows_balance_and_loss_normalization(monkeypatch) -> None:
         for r in range(world_size):
             monkeypatch.setattr(torch.distributed, "get_rank", lambda g=None, _r=r: _r)
 
-            def _deliver_a2a(output, input, output_split_sizes=None, input_split_sizes=None, group=None, _r=r):
+            def _deliver_a2a(
+                output,
+                input,
+                output_split_sizes=None,
+                input_split_sizes=None,
+                group=None,
+                _r=r,
+            ):
                 if input_split_sizes is None:
                     for src in range(world_size):
                         output[src] = len(send_chunks[src][_r])
                 else:
                     joined = b"".join(send_chunks[src][_r] for src in range(world_size))
                     if joined:
-                        output.copy_(torch.frombuffer(bytearray(joined), dtype=torch.uint8))
+                        output.copy_(
+                            torch.frombuffer(bytearray(joined), dtype=torch.uint8)
+                        )
 
             monkeypatch.setattr(torch.distributed, "all_to_all_single", _deliver_a2a)
-            balanced_buckets.append(balance_rollout_groups(rank_results[r], dp_group=None))
+            balanced_buckets.append(
+                balance_rollout_groups(rank_results[r], dp_group=None)
+            )
         return balanced_buckets
 
     balanced = _run_balance_all_ranks()
@@ -1536,7 +1571,9 @@ def test_rpent_async_infra_failure_discards_group_instead_of_crashing() -> None:
         worker.log_warning = warnings.append
 
         async def _always_fail(_task):
-            raise RPentEpisodeError("HTTP 500 AttributeError: no bowl", kind="env_setup")
+            raise RPentEpisodeError(
+                "HTTP 500 AttributeError: no bowl", kind="env_setup"
+            )
 
         worker._run_episode = _always_fail
         return worker, warnings

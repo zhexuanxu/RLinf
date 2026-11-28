@@ -188,31 +188,51 @@ def write_metaworld_tasks(args: argparse.Namespace) -> None:
 
 
 def write_robolab_tasks(args: argparse.Namespace) -> None:
-    """Expand the RPent RoboLab catalog into one episode task per task and seed."""
+    """Read instructions and provenance from the RoboLab catalog."""
     source = args.robolab_catalog
     raw_catalog = source.read_bytes()
     catalog = json.loads(raw_catalog)
     tasks = catalog["tasks"]
-    if not isinstance(tasks, dict) or not tasks or catalog["task_count"] != len(tasks):
-        raise ValueError("RoboLab catalog task_count must match a nonempty task map.")
-    seeds = parse_seeds(args.seeds)
+    if not isinstance(tasks, dict) or catalog["task_count"] != len(tasks):
+        raise ValueError("RoboLab task_count must match its task map.")
+    write_catalog_tasks(
+        args,
+        "robolab",
+        {
+            name: entry.get("instruction") if isinstance(entry, dict) else None
+            for name, entry in tasks.items()
+        },
+        {
+            "source": source.name,
+            "source_revision": catalog["source_revision"],
+            "source_metadata_sha256": catalog["source_metadata_sha256"],
+            "catalog_sha256": hashlib.sha256(raw_catalog).hexdigest(),
+        },
+    )
 
+
+def write_catalog_tasks(
+    args: argparse.Namespace, environment: str, tasks: dict, provenance: dict
+) -> None:
+    """Write one episode per task instruction and seed."""
+    if not tasks:
+        raise ValueError(f"{environment} requires at least one task.")
+    seeds = parse_seeds(args.seeds)
     rows = []
-    for task_name, entry in sorted(tasks.items()):
-        instruction = entry.get("instruction") if isinstance(entry, dict) else None
+    for task_name, instruction in sorted(tasks.items()):
         if (
             not task_name.strip()
             or not isinstance(instruction, str)
             or not instruction.strip()
         ):
             raise ValueError(
-                f"RoboLab task {task_name!r} requires a name and instruction."
+                f"{environment} task {task_name!r} requires a name and instruction."
             )
         for seed in seeds:
-            answer = {"environment": "robolab", "task_name": task_name, "seed": seed}
+            answer = {"environment": environment, "task_name": task_name, "seed": seed}
             rows.append(
                 {
-                    "query_id": f"robolab-{task_name}-seed{seed}",
+                    "query_id": f"{environment}-{task_name}-seed{seed}",
                     "prompt": instruction,
                     "answer": json.dumps(answer, sort_keys=True),
                 }
@@ -222,11 +242,8 @@ def write_robolab_tasks(args: argparse.Namespace) -> None:
         args.split,
         rows,
         {
-            "environment": "robolab",
-            "source": source.name,
-            "source_revision": catalog["source_revision"],
-            "source_metadata_sha256": catalog["source_metadata_sha256"],
-            "catalog_sha256": hashlib.sha256(raw_catalog).hexdigest(),
+            "environment": environment,
+            **provenance,
             "task_count": len(tasks),
             "seeds": seeds,
         },
@@ -277,6 +294,11 @@ def main() -> None:
     mode.add_argument(
         "--robotwin-seeds", type=Path, help="RPent RoboTwin task/seed table"
     )
+    mode.add_argument(
+        "--maniskill-catalog",
+        type=Path,
+        help="Prepare RPent's default RGB-D ManiSkill tasks",
+    )
     mode.add_argument("--robolab-catalog", type=Path, help="RPent RoboLab task catalog")
     parser.add_argument(
         "--seeds", default="all", help="Native seeds or ranges, e.g. 0-1"
@@ -287,12 +309,27 @@ def main() -> None:
     args = parser.parse_args()
     if args.metaworld:
         write_metaworld_tasks(args)
-    elif args.robolab_catalog is not None:
+    elif args.robolab_catalog:
         if args.seeds == "all":
             parser.error(
                 "RoboLab requires explicit --seeds (for example, --seeds 0-2)."
             )
         write_robolab_tasks(args)
+    elif args.maniskill_catalog:
+        if args.seeds == "all":
+            parser.error(
+                "ManiSkill requires explicit --seeds (for example, --seeds 0-2)."
+            )
+        raw_catalog = args.maniskill_catalog.read_bytes()
+        write_catalog_tasks(
+            args,
+            "maniskill",
+            json.loads(raw_catalog)["tasks"],
+            {
+                "source": args.maniskill_catalog.name,
+                "catalog_sha256": hashlib.sha256(raw_catalog).hexdigest(),
+            },
+        )
     elif args.robotwin_seeds is not None:
         write_robotwin_tasks(args)
     else:
