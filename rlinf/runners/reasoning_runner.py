@@ -278,6 +278,9 @@ class ReasoningRunner:
             self.critic.load_checkpoint(critic_checkpoint_path).wait()
 
         # load data
+        self._load_dataloader_checkpoint()
+
+    def _load_dataloader_checkpoint(self):
         dataloader_local_path = os.path.join(self.cfg.runner.resume_dir, "data/data.pt")
         if os.path.exists(dataloader_local_path):
             dataloader_state_dict = torch.load(

@@ -661,7 +661,11 @@ def test_rpent_sync_and_async_configs_resolve_and_validate(monkeypatch) -> None:
     assert async_27b_cfg.algorithm.group_size == 4
     assert async_27b_cfg.rollout_buffer.max_inflight_groups == 36
     assert async_27b_cfg.cluster.component_placement.agentloop == "0-17"
-    assert str(async_27b_cfg.agentloop.env_vars.RLINF_TIMEOUT) == "201600"
+    assert str(async_27b_cfg.agentloop.env_vars.RLINF_TIMEOUT) == "28800"
+    assert list(async_27b_cfg.algorithm.loss_scales) == []
+    assert async_27b_cfg.algorithm.use_valid_token_scale is True
+    assert async_27b_cfg.actor.multimodal.prefetch_batches == 2
+    assert async_27b_cfg.actor.multimodal.cleanup_after_step is True
     assert len(mixed_simulators(async_27b_cfg)) == 5
 
     # Verify optional RDMA env vars are cleanly omitted when unset and forwarded when set
@@ -1550,3 +1554,292 @@ def test_rpent_async_infra_failure_discards_group_instead_of_crashing() -> None:
     sync_worker, _ = _make_worker(synchronous=True)
     with pytest.raises(RPentEpisodeError, match="no bowl"):
         asyncio.run(sync_worker.run_one_query([], [task_json]))
+
+
+def test_image_replay_bf16_storage_and_safe_cleanup(tmp_path) -> None:
+    """store_pixels persists BF16 tensors and cleanup_replay_dirs removes only training_images."""
+    import torch
+    from safetensors.torch import load_file
+
+    from rlinf.utils.image_replay import (
+        cleanup_replay_dirs,
+        collect_replay_dirs,
+        collect_result_replay_dirs,
+        replay_pixels,
+        store_pixels,
+    )
+
+    ep_dir = tmp_path / "ep_abc123"
+    img_dir = ep_dir / "training_images"
+    fp32_pixels = torch.randn(8, 12, dtype=torch.float32)
+    entry = {
+        "pixel_values": fp32_pixels,
+        "image_grid_thw": torch.tensor([[1, 2, 4]], dtype=torch.long),
+    }
+    store_pixels(entry, img_dir)
+
+    assert "pixel_values" not in entry
+    assert len(entry["pixel_refs"]) == 1
+    saved_path = Path(entry["pixel_refs"][0]["path"])
+    assert load_file(str(saved_path))["pixels"].dtype == torch.bfloat16
+    replayed = replay_pixels(entry)
+    assert replayed.dtype == torch.bfloat16
+    assert torch.equal(replayed, fp32_pixels.to(torch.bfloat16))
+
+    # Artifact file in ep_dir must be preserved when training_images is deleted.
+    artifact_file = ep_dir / "trajectory.json"
+    artifact_file.write_text("{}")
+    other_dir = tmp_path / "do_not_delete"
+    other_dir.mkdir()
+    (other_dir / "keep.txt").write_text("keep")
+
+    dirs = collect_replay_dirs([entry])
+    assert dirs == {img_dir.resolve()}
+    assert collect_result_replay_dirs({"multi_modal_inputs": [entry]}) == {img_dir.resolve()}
+
+    removed = cleanup_replay_dirs([*dirs, other_dir])
+    assert removed == 1
+    assert not img_dir.exists()
+    assert artifact_file.exists()
+    assert (other_dir / "keep.txt").exists()
+
+    # Without extra artifacts, empty episode dir is also removed cleanly.
+    ep2_dir = tmp_path / "ep_empty"
+    img2_dir = ep2_dir / "training_images"
+    entry2 = {
+        "pixel_values": fp32_pixels,
+        "image_grid_thw": torch.tensor([[1, 2, 4]], dtype=torch.long),
+    }
+    store_pixels(entry2, img2_dir)
+    assert cleanup_replay_dirs(collect_replay_dirs([entry2])) == 1
+    assert not ep2_dir.exists()
+
+
+def test_qwen35_parser_null_before_string_and_oneof() -> None:
+    """Optional string|null schema parses literal null/None as Python None."""
+    from rlinf.agents.tool_call.parsers import Qwen35ToolCallParser
+
+    anyof_schema = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+    oneof_schema = {"oneOf": [{"type": "string"}, {"type": "null"}]}
+    assert Qwen35ToolCallParser._argument("null", anyof_schema) is None
+    assert Qwen35ToolCallParser._argument("None", anyof_schema) is None
+    assert Qwen35ToolCallParser._argument("hello", anyof_schema) == "hello"
+    assert Qwen35ToolCallParser._argument("null", oneof_schema) is None
+    assert Qwen35ToolCallParser._argument("null", {"type": "string"}) == "null"
+
+
+def test_restore_source_dp_normalization_always_uniform(monkeypatch) -> None:
+    """restore_source_dp_normalization applies uniform global scaling even for even DP groups."""
+    import torch
+    from rlinf.algorithms.loss_scales import restore_source_dp_normalization
+
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda g=None: 4)
+    global_counts = torch.tensor([16, 8, 8, 8], dtype=torch.long)
+    monkeypatch.setattr(
+        torch.distributed,
+        "all_reduce",
+        lambda tensor, op=None, group=None: tensor.copy_(global_counts),
+    )
+    batch = {
+        "extra:source_dp": torch.tensor([0, 0, 1, 2, 3], dtype=torch.long),
+        "advantages": [torch.tensor([1.0]) for _ in range(5)],
+    }
+    restore_source_dp_normalization(
+        batch,
+        {"folding_scale": ["group_level"], "uneven_dp_groups": False},
+        dp_group=None,
+        device="cpu",
+    )
+    expected = 40.0 / (4 * 5)
+    for adv in batch["advantages"]:
+        assert adv.item() == pytest.approx(expected)
+
+
+def test_rpent_history_alignment_and_rollback() -> None:
+    """Verify Qwen3.5 smart_resize tokens, retry cutoff, NaN guard, and request() rollback."""
+    import io
+    from PIL import Image
+
+    from rlinf.agents.rpent.history import (
+        AppendOnlyHistory,
+        CompactionConfig,
+        EpisodeConversation,
+        LogicalMessage,
+        _image_tokens,
+        find_safe_cutoff,
+        merge_prefix_turns,
+    )
+    from rlinf.workers.agent.agent_loop import AgentLoopOutput
+
+    def _png(w: int, h: int) -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (w, h), (10, 20, 30)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    assert _image_tokens(_png(512, 512)) == 256
+    assert _image_tokens(_png(320, 240)) == 80
+    assert _image_tokens(_png(768, 432)) == 336
+    assert _image_tokens(_png(640, 480)) == 300
+
+    # find_safe_cutoff must not split between an assistant turn and its retry feedback.
+    msgs = [
+        LogicalMessage(kind="opening", wire=({"role": "user", "content": "start"},)),
+        LogicalMessage(kind="assistant", wire=({"role": "assistant", "content": "bad"},)),
+        LogicalMessage(kind="retry", wire=({"role": "user", "content": "fix"},)),
+    ]
+    assert find_safe_cutoff(msgs, keep_messages=1) == 1
+
+    # NaN and malformed short box/z_range must trigger retry rather than IndexError.
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "back_project",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "box": {"type": "array"},
+                        "z_range_cm": {"type": "array"},
+                    },
+                },
+            },
+        }
+    ]
+    conv = EpisodeConversation(
+        system_prompt="sys",
+        user_message="task",
+        initial_observation_text="{}",
+        tools=tools,
+        environment="libero",
+        compaction=CompactionConfig(strategy="dynamic", keep_recent_thinking=1),
+    )
+    err_kind, _, _, should_retry = conv.validate_or_retry(
+        [{"id": "call_0_0", "name": "back_project", "arguments": {"box": [1, 2]}}]
+    )
+    assert err_kind == "tool_arguments" and should_retry is True
+
+    conv2 = EpisodeConversation(
+        system_prompt="sys",
+        user_message="task",
+        initial_observation_text="{}",
+        tools=tools,
+        environment="libero",
+    )
+    err_kind, _, _, should_retry = conv2.validate_or_retry(
+        [{"id": "call_0_0", "name": "back_project", "arguments": {"z_range_cm": [float("nan"), 1.0]}}]
+    )
+    assert err_kind == "tool_arguments" and should_retry is True
+
+    # AppendOnlyHistory.request() rolls back on uncommitted continue/exit.
+    fake_tok = SimpleNamespace(tokenizer=SimpleNamespace(convert_tokens_to_ids=lambda _: 999))
+    hist = AppendOnlyHistory(fake_tok)
+    assert hist.chain_id == 0
+    for _ in range(1):
+        with hist.request() as _commit:
+            hist._begin_chain()
+            assert hist.chain_id == 1
+            continue
+    assert hist.chain_id == 0
+    with hist.request() as commit:
+        hist._begin_chain()
+        commit()
+    assert hist.chain_id == 1
+
+    # merge_prefix_turns handles version_start=None on first turn symmetrically.
+    t0 = AgentLoopOutput(
+        prompt_ids=[1, 2],
+        response_ids=[3, 4],
+        response_text="a",
+        version_start=None,
+        version_end=None,
+        extra_fields={"turn_id": 0, "chain_id": 1},
+    )
+    t1 = AgentLoopOutput(
+        prompt_ids=[1, 2, 3, 4, 5],
+        response_ids=[6, 7],
+        response_text="b",
+        version_start=2,
+        version_end=3,
+        extra_fields={"turn_id": 1, "chain_id": 1},
+    )
+    merged = merge_prefix_turns([t0, t1], max_scored_tokens=100)
+    assert len(merged) == 1
+    assert merged[0].version_start == 2
+    assert merged[0].version_end == 3
+
+
+def test_unpack_execute_response_strict_bounds() -> None:
+    """Truncated or trailing binary execute frames raise ValueError cleanly."""
+    import struct
+
+    from rlinf.agents.rpent.agent_loop import _unpack_execute_response
+
+    meta = b'{"ok":true}'
+    valid = struct.pack("!I", len(meta)) + meta + struct.pack("!I", 1) + struct.pack("!I", 3) + b"abc"
+    parsed_meta, imgs = _unpack_execute_response(valid)
+    assert parsed_meta == {"ok": True}
+    assert imgs == [b"abc"]
+
+    with pytest.raises(ValueError):
+        _unpack_execute_response(valid[:-1])
+    with pytest.raises(ValueError):
+        _unpack_execute_response(valid + b"extra")
+
+
+def test_rpent_config_guards_and_runner_resume() -> None:
+    """Verify config guards and AsyncAgentRunner dataloader checkpoint override."""
+    from rlinf.config import validate_rpent_async_cfg
+    from rlinf.runners.async_agent_runner import AsyncAgentRunner
+
+    bad_loss_cfg = OmegaConf.create(
+        {
+            "runner": {"async_mode": False, "synchronous": True},
+            "tools": {"rpent": {"max_episode_steps": 100}},
+            "algorithm": {"loss_scales": ["group_level", "agent_level", "turn_level"], "use_valid_token_scale": True},
+        }
+    )
+    with pytest.raises(ValueError, match="turn_level"):
+        validate_rpent_async_cfg(bad_loss_cfg)
+
+    bad_async_cfg = OmegaConf.create(
+        {
+            "runner": {"async_mode": True, "synchronous": True},
+            "tools": {"rpent": {"max_episode_steps": 100}},
+            "algorithm": {"loss_scales": [], "use_valid_token_scale": True},
+        }
+    )
+    with pytest.raises(ValueError, match="synchronous=False"):
+        validate_rpent_async_cfg(bad_async_cfg)
+
+    # AsyncAgentRunner._load_dataloader_checkpoint delegates to _load_buffer_checkpoint.
+    runner = AsyncAgentRunner.__new__(AsyncAgentRunner)
+    called = []
+    runner._load_buffer_checkpoint = lambda: called.append("buffer")
+    runner.train_dataloader = SimpleNamespace(
+        load_state_dict=lambda _: (_ for _ in ()).throw(AssertionError("must not touch base train_dataloader"))
+    )
+    runner._load_dataloader_checkpoint()
+    assert called == ["buffer"]
+
+
+def test_megatron_ensure_onloaded_respects_disaggregated_offload_flags() -> None:
+    """Disaggregated mode (offload_grad=False) must not offload grads after save_checkpoint."""
+    from rlinf.hybrid_engines.megatron.megatron_model_manager import MegatronModelManager
+
+    mgr = MegatronModelManager.__new__(MegatronModelManager)
+    mgr.is_weight_offloaded = False
+    mgr.is_optimizer_offloaded = False
+    mgr._cfg = OmegaConf.create({"offload_weight": False, "offload_grad": False, "offload_optimizer": False})
+    calls: list[str] = []
+    mgr.offload_model_weights_and_grad = lambda **kw: calls.append(f"wg:{kw}")
+    mgr.offload_megatron_optimizer = lambda: calls.append("opt")
+
+    with mgr.ensure_onloaded_and_then_offload():
+        pass
+    assert calls == []
+
+    # Collocated mode still offloads as configured.
+    mgr._cfg = OmegaConf.create({"offload_weight": True, "offload_grad": True, "offload_optimizer": True})
+    with mgr.ensure_onloaded_and_then_offload():
+        pass
+    assert calls == ["wg:{'offload_grad': True, 'offload_weight': True}", "opt"]

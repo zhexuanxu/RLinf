@@ -342,6 +342,10 @@ class RPentGRPORunner(AgentRunner):
         except BaseException as exc:
             selection_error = exc
         finally:
+            try:
+                self.rollout.finish_generation_cohort(cohort_id).wait()
+            except BaseException as exc:
+                selection_error = selection_error or exc
             for early in early_cancel_handles:
                 try:
                     early.wait()
@@ -350,10 +354,6 @@ class RPentGRPORunner(AgentRunner):
             cancel_handle = self.agent_loop.cancel_rollout_candidates(
                 cohort_id, selected_ids
             )
-            try:
-                self.rollout.finish_generation_cohort(cohort_id).wait()
-            except BaseException as exc:
-                selection_error = selection_error or exc
             try:
                 cleanup = cancel_handle.wait()
             finally:
@@ -635,17 +635,18 @@ class RPentGRPORunner(AgentRunner):
                 )
 
                 global_pbar.update(1)
+                run_time_exceeded = self.run_timer.is_finished()
                 _, save_model, is_train_end = check_progress(
                     self.global_steps,
                     self.max_steps,
                     self.cfg.runner.val_check_interval,
                     self.cfg.runner.save_interval,
                     1.0,
-                    run_time_exceeded=not self.run_timer.is_finished(),
+                    run_time_exceeded=run_time_exceeded,
                 )
                 if save_model:
                     self._save_checkpoint()
-                if is_train_end:
+                if is_train_end or run_time_exceeded:
                     self._stop_rollouts()
                     self.metric_logger.finish()
                     return

@@ -2600,9 +2600,28 @@ def _validate_async_agent_cfg(
 
 
 def validate_rpent_async_cfg(cfg: DictConfig) -> DictConfig:
-    """Validate async agentic RL requirements for non-SearchR1 tasks (e.g. RPent)."""
+    """Validate RPent and async agentic RL requirements for non-SearchR1 tasks."""
+    is_rpent = bool(
+        OmegaConf.select(cfg, "env.rpent", default=None)
+        or OmegaConf.select(cfg, "tools.rpent", default=None)
+    )
+    if is_rpent:
+        loss_scales = list(OmegaConf.select(cfg, "algorithm.loss_scales", default=[]) or [])
+        if "turn_level" in loss_scales and OmegaConf.select(
+            cfg, "algorithm.use_valid_token_scale", default=False
+        ):
+            raise ValueError(
+                "RPent configs cannot combine algorithm.loss_scales=['turn_level'] with "
+                "algorithm.use_valid_token_scale=True (causes double normalization under "
+                "compaction chains). Use loss_scales=[] with use_valid_token_scale=True "
+                "(DAPO token-mean GRPO)."
+            )
     if not cfg.runner.get("async_mode", False):
         return cfg
+    if cfg.runner.get("synchronous", True):
+        raise ValueError(
+            "runner.async_mode=True requires runner.synchronous=False."
+        )
     reward_cfg = cfg.get("reward", None)
     if reward_cfg is not None and reward_cfg.get("reward_type", None) == "searchr1":
         return cfg

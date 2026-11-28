@@ -412,7 +412,9 @@ class MAMegatronActor(DynamicMegatronBatchMixin, MegatronActor):
                     loss_scale = (
                         mask.sum()
                         / self.global_valid_token.clamp_min(1)
-                        * parallel_state.get_data_parallel_world_size()
+                        * parallel_state.get_data_parallel_world_size(
+                            with_context_parallel=True
+                        )
                         * self.num_microbatches
                     )
                     loss *= loss_scale.item()
@@ -488,6 +490,9 @@ class MAMegatronActor(DynamicMegatronBatchMixin, MegatronActor):
         self._payload_channels = payload_channels
 
         batch, rollout_results = self.get_step_batch(input_channel)
+        from rlinf.utils.image_replay import cleanup_replay_dirs, collect_replay_dirs
+
+        step_replay_dirs = collect_replay_dirs(batch.get("multi_modal_inputs"))
         fixed_ppo_targets = self.cfg.critic.get("use_critic_model", False)
         assert "recomputed_logprobs" in batch or "rollout_logprobs" in batch
         batch = self.compute_advantages_and_returns(batch)
@@ -584,6 +589,14 @@ class MAMegatronActor(DynamicMegatronBatchMixin, MegatronActor):
 
         # Gather weights if overlap_param_gather before the next weight sync
         self._gather_weights_among_dp()
+
+        if step_replay_dirs and (self.cfg.actor.get("multimodal") or {}).get(
+            "cleanup_after_step", True
+        ):
+            # Ensure every TP/CP/PP/DP rank has finished reading replay files.
+            torch.distributed.barrier()
+            if self.is_data_io_rank:
+                cleanup_replay_dirs(step_replay_dirs)
 
         if fixed_ppo_targets:
             clear_memory()

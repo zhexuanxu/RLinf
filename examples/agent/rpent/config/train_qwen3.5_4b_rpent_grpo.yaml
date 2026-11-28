@@ -51,10 +51,7 @@ algorithm:
   shuffle_rollout: false
   loss_type: actor
   loss_agg_func: token-mean
-  loss_scales:
-    - group_level
-    - agent_level
-    - turn_level
+  loss_scales: []
   use_valid_token_scale: true
   kl_beta: 0.0
   kl_penalty_type: low_var_kl
@@ -113,7 +110,6 @@ agentloop:
   is_dynamic_rollout_batch: true
   print_outputs: false
   max_turns: 50
-  model_request_timeout_s: 3600
   episode_timeout_s: 7200
   merge_prefix_turns: true
   history_compaction:
@@ -127,7 +123,6 @@ agentloop:
     max_tokens: 48000
     max_fraction: 0.7
     preserve_first_user_message: true
-    receipts: false
   max_infra_retries: 3
   max_infra_retry_rate: 1.0
   env_vars:
@@ -135,7 +130,7 @@ agentloop:
     PATH: /opt/venv/reason/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     CUDA_HOME: /usr/local/cuda
     LD_LIBRARY_PATH: ${oc.env:RPENT_LD_LIBRARY_PATH,/usr/local/cuda/compat:/usr/lib/x86_64-linux-gnu:/usr/local/cuda/lib64}
-    RLINF_TIMEOUT: "${oc.env:RLINF_TIMEOUT,201600}"
+    RLINF_TIMEOUT: "${oc.env:RLINF_TIMEOUT,28800}"
 
 tools:
   rpent:
@@ -192,7 +187,7 @@ rollout:
     PATH: /opt/venv/reason/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     CUDA_HOME: /usr/local/cuda
     LD_LIBRARY_PATH: ${oc.env:RPENT_LD_LIBRARY_PATH,/usr/local/cuda/compat:/usr/lib/x86_64-linux-gnu:/usr/local/cuda/lib64}
-    RLINF_TIMEOUT: "${oc.env:RLINF_TIMEOUT,201600}"
+    RLINF_TIMEOUT: "${oc.env:RLINF_TIMEOUT,28800}"
     SGLANG_EXTERNAL_MM_PROCESSOR_PACKAGE: rlinf.hybrid_engines.sglang.multimodal
     SGLANG_MM_BUFFER_SIZE_MB: "0"
     PYTORCH_ALLOC_CONF: expandable_segments:False
@@ -290,7 +285,7 @@ actor:
     empty_cache_after_backward: true
     ddp_bucket_size: null
     distributed_backend: nccl
-    distributed_timeout_minutes: 201600
+    distributed_timeout_minutes: 28800
     ckpt_format: torch
     use_dist_ckpt: false
     tp_comm_bootstrap_backend: nccl
@@ -300,15 +295,16 @@ actor:
     ckpt_convertor:
       model: Qwen3.5-4B
       hf_model_path: ${rollout.model.model_path}
-  multimodal: {}
-  expect_multi_modal_inputs: true
-  trim_right_padding: true
+  multimodal:
+    prefetch_batches: 2
+    prefetch_bytes: 4294967296
+    cleanup_after_step: true
   env_vars:
     PYTHONPATH: ${oc.env:RPENT_ROOT,/path/to/rpent_ppo}/RLinf:${oc.env:RPENT_ROOT,/path/to/rpent_ppo}/RPent:/opt/venv/reason/Megatron-LM
     PATH: /opt/venv/reason/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     CUDA_HOME: /usr/local/cuda
     LD_LIBRARY_PATH: ${oc.env:RPENT_LD_LIBRARY_PATH,/usr/local/cuda/compat:/usr/lib/x86_64-linux-gnu:/usr/local/cuda/lib64}
-    RLINF_TIMEOUT: "${oc.env:RLINF_TIMEOUT,201600}"
+    RLINF_TIMEOUT: "${oc.env:RLINF_TIMEOUT,28800}"
     PYTORCH_ALLOC_CONF: expandable_segments:False
     PYTORCH_CUDA_ALLOC_CONF: expandable_segments:False
     NCCL_MAX_CTAS: "8"

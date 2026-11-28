@@ -201,14 +201,8 @@ def restore_source_dp_normalization(
     sources = batch["extra:source_dp"].long()
     counts = torch.bincount(sources, minlength=world_size).to(device)
     torch.distributed.all_reduce(counts, group=dp_group)
-    if context.get("uneven_dp_groups", False):
-        # When rollout_batch_size is not divisible by dp_world_size, source DP
-        # ranks pull ceil(G/DP) vs floor(G/DP) groups; normalize uniformly by
-        # the global sequence count so all groups carry identical weight.
-        ratio = counts.sum().float().item() / (world_size * len(sources))
-        batch["advantages"] = [row * ratio for row in batch["advantages"]]
-        return
-    ratios = counts.cpu()[sources].float() / len(sources)
-    batch["advantages"] = [
-        row * ratio for row, ratio in zip(batch["advantages"], ratios)
-    ]
+    # Normalize uniformly by global sequence count per DP rank so all groups
+    # carry identical weight regardless of which source DP rank originally
+    # generated them (both even and uneven DP group layouts).
+    ratio = counts.sum().float().item() / (world_size * len(sources))
+    batch["advantages"] = [row * ratio for row in batch["advantages"]]

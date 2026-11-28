@@ -88,7 +88,7 @@ ulimit -n 1048576
 export RPENT_ROOT=/path/to/rpent_ppo
 export RPENT_ENV_HOST=<DEDICATED_SIM_NODE_IP>
 export RPENT_MODEL_PATH="${RPENT_ROOT}/models/Qwen3.8-27B"
-export RLINF_TIMEOUT=201600
+export RLINF_TIMEOUT=28800
 export RAY_ADDRESS="<HEAD_CONTROL_IP>:6379"
 export NCCL_SOCKET_IFNAME=eth0
 export GLOO_SOCKET_IFNAME=eth0
@@ -149,7 +149,13 @@ The issues below are **general, recurring failure modes** when scaling multimoda
 - **Root Cause**: RLinf defaults `RLINF_TIMEOUT` to `180` minutes (`3h`) on all Gloo/NCCL channels. When `num_agentloop_workers` (e.g., placing `agentloop: 0-47` = 48 workers) exceeds `rollout_buffer.max_inflight_groups` (e.g., `18` or `36`), the excess workers remain permanently idle and blocked on `dataloader_channel.get()` until the 3-hour Gloo receive timeout aborts the entire job.
 - **Two-Layer Fix (Always Apply Both)**:
   1. **Size `agentloop` strictly `<= max_inflight_groups`**: Ideally `~max_inflight_groups / 2` (e.g., `cluster.component_placement.agentloop: 0-17` = `18` workers for `max_inflight_groups: 36` → ~2 groups/worker, `0%` idle workers). Because `RPentAgentLoopWorker` is async I/O-bound, 18 workers easily saturate 36+ concurrent groups.
-  2. **Raise timeouts for multi-day RL runs**: Export `RLINF_TIMEOUT=201600` (`140` days, safely within `int64` `std::chrono::milliseconds`) in driver and all worker `env_vars`, and set `actor.megatron.distributed_timeout_minutes: 201600`.
+  2. **Raise timeouts safely below `INT32_MAX` ms**: Export `RLINF_TIMEOUT=28800` (`20` days = `1.728 × 10⁹ ms < INT32_MAX = 2,147,483,647 ms`) in driver and all worker `env_vars`, and set `actor.megatron.distributed_timeout_minutes: 28800`. Avoid values `> 35791` minutes (such as `201600`), which overflow 32-bit `poll(int timeout_ms)` inside Linux Gloo.
+
+### 4b. DAPO Token-Mean GRPO & BF16 Image Replay Storage / Prefetch / Disk Cleanup
+
+- **Compaction-chain invariant GRPO loss**: All RPent configs use `algorithm.loss_scales: []` + `algorithm.use_valid_token_scale: true` (DAPO token-mean). Because every generated token across compaction chains receives equal global weight `1 / global_valid_tokens`, loss scaling is 100% invariant to whether an episode splits across 1 or multiple compaction chains (and `validate_rpent_async_cfg` rejects combining `turn_level` with `use_valid_token_scale: true`).
+- **BF16 on-disk image replay + async CPU prefetch**: `rlinf/utils/image_replay.py` persists `pixel_values` in `bfloat16` (halving GPFS/SSD footprint vs FP32), while `actor.multimodal: {prefetch_batches: 2, prefetch_bytes: 4294967296, cleanup_after_step: true}` overlaps CPU safetensors decoding with GPU forward/backward.
+- **Automatic replay directory cleanup**: `<output_dir>/<episode_id>/training_images` is automatically reclaimed across every lifecycle path — after `MAMegatronActorWorker.run_training()` (post-`torch.distributed.barrier()` on `is_data_io_rank`), on cancelled/failed episodes in `RPentAgentLoopWorker._run_episode()`, on unselected sync oversampling candidates in `admit_rollout_candidates()`, and on `equal_reward` / `stale` / proactive-eviction / `stop()` drops in `RolloutBufferWorker` — while strictly preserving any `record_artifacts: true` files in `<episode_id>/`. Set `actor.multimodal.cleanup_after_step: false` only when debugging saved replay tensors.
 
 ### 5. Multi-Env Async `RolloutBuffer` Balancing & Scaling Rules
 

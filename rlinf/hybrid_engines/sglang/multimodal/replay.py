@@ -24,6 +24,7 @@ import re
 import shutil
 import stat
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
@@ -34,10 +35,11 @@ from safetensors.torch import load_file, save
 from rlinf.utils.image_replay import REPLAY_FORMAT, replay_positions, store_pixels
 
 CAPTURE_KEY = "rlinf_image_capture"
-_LOCAL_IMAGE_CACHE_MAX = 2048
+_LOCAL_IMAGE_CACHE_MAX = 8192
+_LOCAL_IMAGE_MIN_EVICT_AGE_S = 120.0
 _LOCAL_IMAGE_LOCK = threading.Lock()
 _LOCAL_IMAGE_DIR: Path | None = None
-_LOCAL_IMAGE_LRU: OrderedDict[str, Path] = OrderedDict()
+_LOCAL_IMAGE_LRU: OrderedDict[str, tuple[Path, float]] = OrderedDict()
 
 
 def _cleanup_local_image_dir() -> None:
@@ -51,6 +53,7 @@ def stage_local_images(images: list | None) -> list | None:
         return images
     global _LOCAL_IMAGE_DIR
     staged: list = []
+    now = time.monotonic()
     with _LOCAL_IMAGE_LOCK:
         if _LOCAL_IMAGE_DIR is None:
             cache_dir = Path(gettempdir()) / f"rlinf-mm-imgs-{os.getpid()}"
@@ -62,10 +65,11 @@ def stage_local_images(images: list | None) -> list | None:
                 staged.append(item)
                 continue
             key = hashlib.blake2b(item, digest_size=16).hexdigest()
-            path = _LOCAL_IMAGE_LRU.get(key)
-            if path is not None and path.is_file():
+            cached = _LOCAL_IMAGE_LRU.get(key)
+            if cached is not None and cached[0].is_file():
+                _LOCAL_IMAGE_LRU[key] = (cached[0], now)
                 _LOCAL_IMAGE_LRU.move_to_end(key)
-                staged.append(str(path))
+                staged.append(str(cached[0]))
                 continue
             path = _LOCAL_IMAGE_DIR / f"{key}.png"
             if not path.is_file():
@@ -75,10 +79,13 @@ def stage_local_images(images: list | None) -> list | None:
                 )
                 tmp.write_bytes(item)
                 tmp.replace(path)
-            _LOCAL_IMAGE_LRU[key] = path
+            _LOCAL_IMAGE_LRU[key] = (path, now)
             _LOCAL_IMAGE_LRU.move_to_end(key)
             while len(_LOCAL_IMAGE_LRU) > _LOCAL_IMAGE_CACHE_MAX:
-                _, evicted = _LOCAL_IMAGE_LRU.popitem(last=False)
+                oldest_key, (evicted, last_used) = next(iter(_LOCAL_IMAGE_LRU.items()))
+                if now - last_used < _LOCAL_IMAGE_MIN_EVICT_AGE_S:
+                    break
+                _LOCAL_IMAGE_LRU.pop(oldest_key, None)
                 evicted.unlink(missing_ok=True)
             staged.append(str(path))
     return staged

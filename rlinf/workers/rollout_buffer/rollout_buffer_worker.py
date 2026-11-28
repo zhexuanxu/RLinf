@@ -147,6 +147,14 @@ class RolloutBuffer:
 
         if any(v < 0 for v in self.min_groups_per_task.values()):
             raise ValueError("rollout_buffer.min_groups_per_task values must be >= 0")
+        for task_name, floor in self.min_groups_per_task.items():
+            if floor > 0 and task_name in self.max_inflight_per_task:
+                if self.max_inflight_per_task[task_name] <= 0:
+                    raise ValueError(
+                        f"rollout_buffer.max_inflight_per_task[{task_name!r}]="
+                        f"{self.max_inflight_per_task[task_name]} must be > 0 when "
+                        f"min_groups_per_task[{task_name!r}]={floor}"
+                    )
         if sum(self.min_groups_per_task.values()) > self.rollout_batch_size:
             raise ValueError(
                 f"sum(min_groups_per_task)={sum(self.min_groups_per_task.values())} "
@@ -892,7 +900,7 @@ class RolloutBufferWorker(Worker):
             else:
                 metadata = result.group_metadata()
             if self.reject_equal_reward and rewards_all_equal(metadata.rewards):
-                await self._release_payload(metadata)
+                await self._release_payload(metadata, result)
                 self.buffer.drop_group(
                     metadata.group_id,
                     "equal_reward",
@@ -911,7 +919,7 @@ class RolloutBufferWorker(Worker):
                 # version; release_batch re-checks against the version the
                 # training batch actually runs under, which is the
                 # authoritative one.
-                await self._release_payload(metadata)
+                await self._release_payload(metadata, result)
                 self.buffer.drop_group(
                     metadata.group_id,
                     "stale",
@@ -941,8 +949,8 @@ class RolloutBufferWorker(Worker):
                 ):
                     # Read the entry before drop_group pops it: the
                     # payload ref is what tells where to release.
-                    metadata = task["buffer"][group_id][0]
-                    await self._release_payload(metadata)
+                    metadata, buffered_result = task["buffer"][group_id]
+                    await self._release_payload(metadata, buffered_result)
                     self.buffer.drop_group(
                         group_id,
                         "stale",
@@ -970,15 +978,23 @@ class RolloutBufferWorker(Worker):
                 self._release_waiter.set_result(None)
             self._release_waiter = None
 
-    async def _release_payload(self, metadata: GroupMetadata) -> None:
-        """Drop a discarded group's payload from its channel.
+    async def _release_payload(
+        self, metadata: GroupMetadata, result: Any = None
+    ) -> None:
+        """Drop a discarded group's payload from its channel and clean disk replay images.
 
         The actor fetches payloads by key, so a group dropped here would
         never be fetched and its queue would hold the container forever.
         Metadata without a payload ref (the channel path) owns nothing to
-        release. A failed remove_key propagates: nothing else would ever
-        detect the leak.
+        release from channels, but may still own on-disk image replay files.
         """
+        if result is not None:
+            from rlinf.utils.image_replay import (
+                cleanup_replay_dirs,
+                collect_result_replay_dirs,
+            )
+
+            cleanup_replay_dirs(collect_result_replay_dirs(result))
         ref = metadata.payload_ref
         if ref is None:
             return
@@ -1014,6 +1030,22 @@ class RolloutBufferWorker(Worker):
 
     async def set_loaded_versions(self, versions: dict[int, int]):
         self.buffer.set_loaded_versions(versions)
+        if self.max_actor_accept_staleness is not None:
+            min_loaded = self.buffer.min_loaded_version()
+            if min_loaded is not None:
+                for task_name, task in list(self.buffer.tasks.items()):
+                    for group_id in self.buffer.stale_group_ids(
+                        task, min_loaded, self.max_actor_accept_staleness
+                    ):
+                        metadata, buffered_result = task["buffer"][group_id]
+                        await self._release_payload(metadata, buffered_result)
+                        self.buffer.drop_group(
+                            group_id,
+                            "stale",
+                            self.max_dropped_groups_per_step,
+                            already_buffered=True,
+                            task_name=task_name,
+                        )
 
     async def get_metrics(self) -> dict:
         return self.buffer.get_step_metrics()
@@ -1094,6 +1126,17 @@ class RolloutBufferWorker(Worker):
             self.buffer.dataloader.load_state_dict(state_dict)
 
     async def stop(self):
-        """Cancel the resident coroutines; in-flight prompts are dropped."""
+        """Cancel the resident coroutines and clean up buffered replay images."""
         if self._resident_task is not None and not self._resident_task.done():
             self._resident_task.cancel()
+        from rlinf.utils.image_replay import (
+            cleanup_replay_dirs,
+            collect_result_replay_dirs,
+        )
+
+        replay_dirs: set = set()
+        for task in self.buffer.tasks.values():
+            for _metadata, buffered_result in task["buffer"].values():
+                replay_dirs.update(collect_result_replay_dirs(buffered_result))
+        if replay_dirs:
+            cleanup_replay_dirs(replay_dirs)

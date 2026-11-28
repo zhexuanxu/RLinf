@@ -42,6 +42,7 @@ from rlinf.config import release_image_replay_enabled
 from rlinf.data.schema.reasoning_requests import RolloutRequest
 from rlinf.data.schema.reasoning_results import DynamicRolloutResult
 from rlinf.scheduler import Channel
+from rlinf.utils.image_replay import cleanup_replay_dirs, collect_result_replay_dirs
 from rlinf.utils.placement import ModelParallelComponentPlacement
 from rlinf.workers.agent.agent_loop import (
     AgentLoopOutput,
@@ -59,19 +60,33 @@ _BINARY_EXECUTE_MEDIA_TYPE = "application/vnd.rpent.execute+octet-stream"
 def _unpack_execute_response(payload: bytes) -> tuple[dict[str, Any], list[bytes]]:
     """Unpack binary /sessions/{sid}/execute payload into (meta, raw_png_bytes)."""
     mv = memoryview(payload)
-    if len(mv) < 8:
+    n = len(mv)
+    if n < 8:
         raise ValueError("Truncated binary execute response")
-    (meta_len,) = struct.unpack_from("!I", mv, 0)
-    pos = 4 + meta_len
-    meta = json.loads(bytes(mv[4:pos]).decode("utf-8"))
-    (n_images,) = struct.unpack_from("!I", mv, pos)
-    pos += 4
-    images: list[bytes] = []
-    for _ in range(n_images):
-        (img_len,) = struct.unpack_from("!I", mv, pos)
+    try:
+        (meta_len,) = struct.unpack_from("!I", mv, 0)
+        pos = 4 + meta_len
+        if pos + 4 > n:
+            raise ValueError("Truncated binary execute response metadata")
+        meta = json.loads(bytes(mv[4:pos]).decode("utf-8"))
+        (n_images,) = struct.unpack_from("!I", mv, pos)
         pos += 4
-        images.append(bytes(mv[pos : pos + img_len]))
-        pos += img_len
+        images: list[bytes] = []
+        for _ in range(n_images):
+            if pos + 4 > n:
+                raise ValueError("Truncated binary execute response image header")
+            (img_len,) = struct.unpack_from("!I", mv, pos)
+            pos += 4
+            if pos + img_len > n:
+                raise ValueError("Truncated binary execute response image body")
+            images.append(bytes(mv[pos : pos + img_len]))
+            pos += img_len
+        if pos != n:
+            raise ValueError(
+                f"Trailing bytes in binary execute response ({n - pos} bytes)"
+            )
+    except (struct.error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Malformed binary execute response: {exc}") from exc
     return meta, images
 
 
@@ -292,6 +307,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         conv: EpisodeConversation,
         history: AppendOnlyHistory,
         weight_version: int | None,
+        store_dir: str | None = None,
     ) -> tuple[
         AgentLoopOutput | None,
         list[dict[str, Any]],
@@ -303,17 +319,22 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         max_new = int(self.cfg.algorithm.sampling_params.max_new_tokens)
         seq_limit = int(self.cfg.runner.seq_length)
         release_capture = release_image_replay_enabled(self.cfg.rollout)
-        store_dir = (
-            str(Path(self.cfg.tools.rpent.output_dir) / episode_id / "training_images")
-            if self.cfg.tools.rpent.get("store_images_on_disk", False)
-            and self.cfg.tools.rpent.get("output_dir")
-            else None
-        )
+        if store_dir is None:
+            store_dir = (
+                str(
+                    Path(self.cfg.tools.rpent.output_dir)
+                    / episode_id
+                    / "training_images"
+                )
+                if self.cfg.tools.rpent.get("store_images_on_disk", False)
+                and self.cfg.tools.rpent.get("output_dir")
+                else None
+            )
 
         for overflow_attempt in range(2):
             messages = conv.wire_messages()
             conv_images = conv.images()
-            with history.request():
+            with history.request() as commit_history:
                 rendered = await asyncio.to_thread(
                     history.render_turn, messages, conv.tools, conv_images
                 )
@@ -406,6 +427,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                     response_ids, conv.tools, turn_idx
                 )
                 history.record(messages, conv.tools, prompt_ids, response_ids, message)
+                commit_history()
 
                 turn_output = AgentLoopOutput(
                     prompt_ids=prompt_ids,
@@ -435,6 +457,12 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
         client = self._client()
         max_turns = int(self.cfg.agentloop.max_turns)
         episode_timeout_s = float(self.cfg.agentloop.get("episode_timeout_s", 7200))
+        store_dir = (
+            str(Path(self.cfg.tools.rpent.output_dir) / episode_id / "training_images")
+            if self.cfg.tools.rpent.get("store_images_on_disk", False)
+            and self.cfg.tools.rpent.get("output_dir")
+            else None
+        )
 
         async with (
             self._episode_sem if self._episode_sem is not None else nullcontext()
@@ -458,13 +486,19 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
             success = bool(opened["success"])
             truncated = bool(opened["truncated"])
             reason = "success" if success else "planner_completed"
+            est_at_last_record = 0
 
             try:
                 while not done and len(turns) < max_turns:
                     if time.monotonic() - started > episode_timeout_s:
                         reason = "episode_timeout"
                         break
-                    conv.maybe_compact(current_tokens=history.token_length or None)
+                    if history.token_length > 0:
+                        delta_est = max(0, conv.estimate_tokens() - est_at_last_record)
+                        proactive_tokens: int | None = history.token_length + delta_est
+                    else:
+                        proactive_tokens = None
+                    conv.maybe_compact(current_tokens=proactive_tokens)
                     (
                         turn_output,
                         calls,
@@ -477,6 +511,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                         conv=conv,
                         history=history,
                         weight_version=weight_version,
+                        store_dir=store_dir,
                     )
                     if turn_output is None:
                         reason = finish
@@ -487,6 +522,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                         reasoning_content=message.get("reasoning_content"),
                         tool_calls=message.get("tool_calls"),
                     )
+                    est_at_last_record = conv.estimate_tokens()
                     if finish == "length":
                         reason = "response_truncated"
                         break
@@ -518,7 +554,10 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                             )
                         else:
                             executed = exec_resp.json()
-                            images = []
+                            images = [
+                                base64.b64decode(b64)
+                                for b64 in executed.get("images_b64") or ()
+                            ]
                     except (httpx.HTTPError, OSError, ValueError) as exc:
                         raise RPentEpisodeError(
                             f"Tool {calls[0]['name']} failed on {endpoint}: {exc}",
@@ -546,6 +585,9 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                         reason = "success"
                     elif truncated:
                         reason = "environment_step_limit"
+            except BaseException:
+                cleanup_replay_dirs([store_dir])
+                raise
             finally:
                 try:
                     await asyncio.wait_for(
@@ -555,6 +597,7 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
                     pass
 
         if not turns:
+            cleanup_replay_dirs([store_dir])
             raise RPentEpisodeError(
                 f"Episode {episode_id} ended with 0 sampled turns ({reason})",
                 kind="env_setup",
@@ -748,13 +791,20 @@ class RPentAgentLoopWorker(MultiAgentLoopWorker):
     async def admit_rollout_candidates(
         self, cohort_id: str, output_channel: Channel | None
     ) -> dict[str, Any]:
-        """Emit selected candidate payloads and return admitted rollout metrics."""
+        """Emit selected candidate payloads, clean unselected replay dirs, and return metrics."""
         state = self._cohort
         self._cohort = None
-        if state is None or state["id"] != cohort_id or output_channel is None:
+        if state is None or state["id"] != cohort_id:
+            return {"admitted_ids": [], "metrics": []}
+        if output_channel is None:
+            for res in state["results"].values():
+                cleanup_replay_dirs(collect_result_replay_dirs(res))
             return {"admitted_ids": [], "metrics": []}
 
         selected = state.get("selected", set())
+        for cid, res in state["results"].items():
+            if cid not in selected:
+                cleanup_replay_dirs(collect_result_replay_dirs(res))
         admitted_ids: list[int] = []
         raw_metrics: list[dict[str, Any]] = []
         for cid in sorted(selected):

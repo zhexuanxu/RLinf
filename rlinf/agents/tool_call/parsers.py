@@ -84,16 +84,17 @@ class Qwen35ToolCallParser:
         types = schema.get("type", [])
         if isinstance(types, str):
             types = [types]
-        for branch in schema.get("anyOf", []):
-            kind = branch.get("type")
-            if isinstance(kind, str):
-                types = [*types, kind]
+        for key in ("anyOf", "oneOf"):
+            for branch in schema.get(key, []):
+                kind = branch.get("type")
+                if isinstance(kind, str):
+                    types = [*types, kind]
+        if "null" in types and value in {"null", "None"}:
+            return None
         if not types or "string" in types:
             return value
         if "boolean" in types and value.lower() in {"true", "false"}:
             return value.lower() == "true"
-        if "null" in types and value in {"null", "None"}:
-            return None
         try:
             parsed = json.loads(value)
             json.dumps(parsed, allow_nan=False)

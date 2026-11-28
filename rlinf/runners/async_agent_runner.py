@@ -316,6 +316,9 @@ class AsyncAgentRunner(AgentRunner):
         data_save_path = os.path.join(base_output_dir, "data")
         self.rollout_buffer.save_checkpoint(data_save_path).wait()
 
+    def _load_dataloader_checkpoint(self):
+        self._load_buffer_checkpoint()
+
     def _load_buffer_checkpoint(self):
         """Hand the resume directory to the buffer worker.
 
@@ -332,7 +335,6 @@ class AsyncAgentRunner(AgentRunner):
 
     def init_actor_critic_workers(self):
         super().init_actor_critic_workers()
-        self._load_buffer_checkpoint()
 
     def run(self):
         if self.global_steps >= self.max_steps:

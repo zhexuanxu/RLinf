@@ -37,14 +37,41 @@ IMAGE_PLACEHOLDER_PREFIX = "rpent-image://"
 TOOL_RESPONSE_OPEN = "<tool_response>\n"
 TOOL_RESPONSE_CLOSE = "\n</tool_response>"
 _PATCH_BLOCK = 32  # Qwen3.5 16px patch x 2x2 spatial merge
-_DEFAULT_IMAGE_TOKENS = 1024
+_SMART_RESIZE_MIN_PIXELS = 65536
+_SMART_RESIZE_MAX_PIXELS = 16777216
+_DEFAULT_IMAGE_TOKENS = 256
+
+
+def _smart_resize_dimensions(
+    height: int,
+    width: int,
+    *,
+    factor: int = _PATCH_BLOCK,
+    min_pixels: int = _SMART_RESIZE_MIN_PIXELS,
+    max_pixels: int = _SMART_RESIZE_MAX_PIXELS,
+) -> tuple[int, int]:
+    """Match HuggingFace / SGLang Qwen2VLImageProcessorFast.smart_resize."""
+    if height <= 0 or width <= 0:
+        return factor, factor
+    h_bar = max(factor, round(height / factor) * factor)
+    w_bar = max(factor, round(width / factor) * factor)
+    if h_bar * w_bar > max_pixels:
+        beta = math.sqrt((height * width) / max_pixels)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+    elif h_bar * w_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    return int(h_bar), int(w_bar)
 
 
 def _image_tokens(png_bytes: bytes) -> int:
     try:
         with Image.open(io.BytesIO(png_bytes)) as img:
             w, h = img.size
-        return math.ceil(w / _PATCH_BLOCK) * math.ceil(h / _PATCH_BLOCK)
+        h_bar, w_bar = _smart_resize_dimensions(h, w)
+        return (h_bar // _PATCH_BLOCK) * (w_bar // _PATCH_BLOCK)
     except Exception:
         return _DEFAULT_IMAGE_TOKENS
 
@@ -71,7 +98,7 @@ def _argument_hint(name: str, environment: str) -> str:
         "back_project": "Supply exactly one pixel, box or mask_id; pixel/box must match the displayed camera and frame.",
         "move_to": "Supply xyz, orientation_rpy, or both as three finite numbers.",
         "move_base": "Supply bounded local velocities vx/vy/yaw_rate and duration_s within the declared limits.",
-        "move_lift": "Supply delta_m within +/-0.25 and duration_s within 0.1..5.",
+        "move_lift": "Supply delta_cm within +/-25 (or delta_m within +/-0.25) and duration_s within 0.1..5.",
         "execute_actions": "Supply a non-empty actions list within K; each item must be move_to with a target or set_gripper with opening 0..1, and optional observe must be none, all, or a declared camera.",
     }.get(name, "Follow the declared required fields and value ranges.")
 
@@ -198,7 +225,7 @@ def _strip_message_thinking(msg: LogicalMessage) -> LogicalMessage:
 
 
 def find_safe_cutoff(messages: Sequence[LogicalMessage], keep_messages: int) -> int:
-    """Walk backward from len - keep_messages so no assistant/tool pair is split."""
+    """Walk backward from len - keep_messages so no assistant/tool or assistant/retry pair is split."""
     if keep_messages <= 0 or len(messages) <= keep_messages:
         return 0
     cutoff = len(messages) - keep_messages
@@ -210,6 +237,10 @@ def find_safe_cutoff(messages: Sequence[LogicalMessage], keep_messages: int) -> 
     changed = True
     while changed and cutoff > 0:
         changed = False
+        if messages[cutoff].kind == "retry":
+            cutoff -= 1
+            changed = True
+            continue
         for msg in messages[cutoff:]:
             if msg.kind == "tool":
                 for cid in msg.tool_call_ids:
@@ -355,7 +386,7 @@ class EpisodeConversation:
             i
             for i in range(1, len(self.messages))
             if self.messages[i].kind == "assistant"
-            and any(w.get("reasoning_content") is not None for w in self.messages[i].wire)
+            and any(bool(w.get("reasoning_content")) for w in self.messages[i].wire)
         ]
         keep_think = max(0, cfg.keep_recent_thinking)
         drop_think_set = (
@@ -421,9 +452,14 @@ class EpisodeConversation:
         tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         if message is None:
-            message = {"role": "assistant", "content": content}
+            clean_content = content.strip() if isinstance(content, str) else content
+            if clean_content == "":
+                clean_content = None
+            message = {"role": "assistant", "content": clean_content}
             if reasoning_content is not None:
-                message["reasoning_content"] = reasoning_content
+                clean_reasoning = reasoning_content.strip()
+                if clean_reasoning:
+                    message["reasoning_content"] = clean_reasoning
             if tool_calls:
                 message["tool_calls"] = tool_calls
         call_ids = tuple(tc["id"] for tc in message.get("tool_calls") or ())
@@ -524,6 +560,7 @@ class EpisodeConversation:
                     args = json.loads(raw) if isinstance(raw, str) else raw
                     if not isinstance(args, dict):
                         raise ValueError("tool arguments must be a JSON object")
+                    json.dumps(args, allow_nan=False)
                     errors = list(
                         Draft202012Validator(self._tool_schemas[name]).iter_errors(args)
                     )
@@ -532,17 +569,25 @@ class EpisodeConversation:
                         loc = ".".join(str(x) for x in err.absolute_path)
                         raise ValueError(f"{loc or name}: {err.message}")
                     box = args.get("box")
-                    if box is not None and (box[0] >= box[2] or box[1] >= box[3]):
-                        raise ValueError(
-                            "box must have row_min < row_max and col_min < col_max"
-                        )
+                    if box is not None:
+                        if not isinstance(box, list) or len(box) != 4:
+                            raise ValueError(
+                                "box must be [row_min, col_min, row_max, col_max]"
+                            )
+                        if box[0] >= box[2] or box[1] >= box[3]:
+                            raise ValueError(
+                                "box must have row_min < row_max and col_min < col_max"
+                            )
                     z = args.get("z_range_m", args.get("z_range_cm"))
-                    if z is not None and z[0] > z[1]:
-                        raise ValueError(
-                            "z_range_m must be [low,high] with low <= high"
-                        )
+                    if z is not None:
+                        if not isinstance(z, list) or len(z) != 2:
+                            raise ValueError("z_range must be [low, high]")
+                        if z[0] > z[1]:
+                            raise ValueError(
+                                "z_range must be [low,high] with low <= high"
+                            )
                     parsed = args
-                except (AssertionError, ValueError, TypeError) as exc:
+                except (AssertionError, ValueError, TypeError, IndexError) as exc:
                     err_kind = "tool_arguments"
                     err_msg = (
                         f"Invalid tool arguments: {exc}. "
@@ -661,11 +706,17 @@ class AppendOnlyHistory:
     @contextmanager
     def request(self):
         prev = (self._rendered, self.image_history, self._chain_id)
+        committed = False
+
+        def _commit() -> None:
+            nonlocal committed
+            committed = True
+
         try:
-            yield
-        except BaseException:
-            self._rendered, self.image_history, self._chain_id = prev
-            raise
+            yield _commit
+        finally:
+            if not committed:
+                self._rendered, self.image_history, self._chain_id = prev
 
     def _begin_chain(self) -> None:
         self._chain_id += 1
@@ -806,6 +857,8 @@ def merge_prefix_turns(
             last.response_images = turn.response_images
             if last.version_start is not None and turn.version_start is not None:
                 last.version_start = min(last.version_start, turn.version_start)
+            elif turn.version_start is not None:
+                last.version_start = turn.version_start
             if last.version_end is not None and turn.version_end is not None:
                 last.version_end = max(last.version_end, turn.version_end)
             elif turn.version_end is not None:

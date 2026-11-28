@@ -591,8 +591,35 @@ class MegatronModelManager:
         if hasattr(self, "megatron_type") and self.megatron_type == "sft":
             return
 
-        self.offload_model_weights_and_grad()
-        self.offload_megatron_optimizer()
+        cfg = getattr(self, "_cfg", None)
+        offload_weight = bool(
+            getattr(
+                self,
+                "offload_weight",
+                cfg.get("offload_weight", True) if cfg is not None else True,
+            )
+        )
+        offload_grad = bool(
+            getattr(
+                self,
+                "offload_grad",
+                cfg.get("offload_grad", True) if cfg is not None else True,
+            )
+        )
+        offload_opt = bool(
+            getattr(
+                self,
+                "offload_optimizer",
+                cfg.get("offload_optimizer", True) if cfg is not None else True,
+            )
+        )
+        if offload_weight or offload_grad:
+            self.offload_model_weights_and_grad(
+                offload_grad=offload_grad,
+                offload_weight=offload_weight,
+            )
+        if offload_opt:
+            self.offload_megatron_optimizer()
 
     def save_checkpoint(
         self,

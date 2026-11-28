@@ -15,13 +15,17 @@
 """Read and write the image inputs shared by rollout and learner workers."""
 
 import hashlib
+import shutil
+from collections.abc import Iterable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 
 import torch
 from safetensors.torch import load, save
 
 REPLAY_FORMAT = "rlinf-qwen-image-inputs-v1"
+REPLAY_DIR_NAME = "training_images"
 
 
 def replay_positions(entry: dict, ids: list[int]) -> torch.Tensor:
@@ -40,7 +44,7 @@ def store_pixels(entry: dict, directory: Path) -> None:
     pixels = entry["pixel_values"]
     references = []
     for image in pixels.split(entry["image_grid_thw"].prod(dim=1).tolist()):
-        data = save({"pixels": image.contiguous()})
+        data = save({"pixels": image.to(torch.bfloat16).contiguous()})
         digest = hashlib.sha256(data).hexdigest()
         target = directory / (digest + ".safetensors")
         if not target.exists():
@@ -68,3 +72,73 @@ def replay_pixels(entry: dict) -> torch.Tensor:
             raise ValueError("Captured image tensor checksum mismatch")
         images.append(load(data)["pixels"].to(torch.bfloat16))
     return torch.cat(images)
+
+
+def collect_replay_dirs(entries: Any) -> set[Path]:
+    """Extract unique `<episode>/training_images` directories from multimodal entries."""
+    dirs: set[Path] = set()
+    if not entries:
+        return dirs
+    if isinstance(entries, dict):
+        entries = [entries]
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        refs = entry.get("pixel_refs")
+        if not refs:
+            continue
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            raw_path = ref.get("path")
+            if not raw_path:
+                continue
+            parent = Path(raw_path).parent
+            if parent.name == REPLAY_DIR_NAME:
+                dirs.add(parent)
+    return dirs
+
+
+def collect_result_replay_dirs(result: Any) -> set[Path]:
+    """Extract unique `<episode>/training_images` directories from any rollout result object."""
+    if result is None:
+        return set()
+    dirs: set[Path] = set()
+    if isinstance(result, dict):
+        dirs.update(collect_replay_dirs(result.get("multi_modal_inputs")))
+        dirs.update(collect_replay_dirs(result.get("response_images")))
+        return dirs
+    for attr in ("multi_modal_inputs", "response_images"):
+        val = getattr(result, attr, None)
+        if val is not None:
+            dirs.update(collect_replay_dirs(val))
+    turns = getattr(result, "single_turn_outputs", None)
+    if turns:
+        for turn in turns:
+            dirs.update(collect_replay_dirs(getattr(turn, "response_images", None)))
+    return dirs
+
+
+def cleanup_replay_dirs(dirs: Iterable[str | Path | None]) -> int:
+    """Safely delete `<episode>/training_images` dirs (and empty parent episode dirs).
+
+    Strictly validates `path.name == "training_images"` so recorded artifacts or
+    unrelated files are never touched.
+    """
+    removed = 0
+    seen: set[Path] = set()
+    for raw in dirs:
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.name != REPLAY_DIR_NAME or path in seen:
+            continue
+        seen.add(path)
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+    return removed
