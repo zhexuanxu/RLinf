@@ -205,3 +205,5 @@ The run collects one group of two episodes per simulator and performs one GRPO o
 PYTHONPATH=/path/to/RLinf:/path/to/RPent:/path/to/Megatron-LM \
   pytest tests/unit_tests/test_rpent_grpo.py -v
 ```
+
+- `examples/agent/rpent/config/train_qwen3.5_4b_rpent_grpo_48gpu_async.yaml`: 4-node 32-GPU colocated shared Async GRPO config (`loss_scales: []`, BF16 pixel replay prefetch + `cleanup_after_step: true`, CUDA graphs enabled, `save_interval: 3`).

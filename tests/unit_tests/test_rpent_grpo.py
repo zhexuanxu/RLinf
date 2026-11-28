@@ -1132,6 +1132,7 @@ def test_rpent_configs_use_dapo_token_mean_and_cleanup_after_step() -> None:
     for name in (
         "train_qwen3.5_4b_rpent_grpo.yaml",
         "train_qwen3.5_4b_rpent_grpo_48gpu.yaml",
+        "train_qwen3.5_4b_rpent_grpo_48gpu_async.yaml",
         "train_qwen3.5_4b_rpent_grpo_a100_libero_sync.yaml",
     ):
         cfg = OmegaConf.load(cfg_dir / name)
